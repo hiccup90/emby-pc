@@ -13,6 +13,7 @@
 #include "ui/playerpage.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
@@ -26,9 +27,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMetaObject>
 #include <QMessageBox>
 #include <QPointer>
 #include <QResizeEvent>
@@ -85,6 +88,63 @@ QString displayTrackTitle(const QJsonObject &track, int id)
     return title;
 }
 
+QString mpvKeyNameFromEvent(const QKeyEvent *event)
+{
+    if (!event)
+        return {};
+
+    // Qt 自己的快捷键优先：Esc/F11 由 ui::MainWindow 处理，不转发给 mpv，
+    // 避免同一次按键既退出全屏又触发 mpv 的 ESC 绑定。
+    const int key = event->key();
+    if (key == Qt::Key_Escape || key == Qt::Key_F11)
+        return {};
+
+    // Ctrl/Alt 组合留给 Qt（文件菜单等），只转发无修饰键或 Shift 组合。
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return {};
+
+    QString base;
+    switch (key) {
+    case Qt::Key_Space: base = QStringLiteral("SPACE"); break;
+    case Qt::Key_Left: base = QStringLiteral("LEFT"); break;
+    case Qt::Key_Right: base = QStringLiteral("RIGHT"); break;
+    case Qt::Key_Up: base = QStringLiteral("UP"); break;
+    case Qt::Key_Down: base = QStringLiteral("DOWN"); break;
+    case Qt::Key_Return:
+    case Qt::Key_Enter: base = QStringLiteral("ENTER"); break;
+    case Qt::Key_Backspace: base = QStringLiteral("BACKSPACE"); break;
+    case Qt::Key_Delete: base = QStringLiteral("DELETE"); break;
+    case Qt::Key_Insert: base = QStringLiteral("INSERT"); break;
+    case Qt::Key_Home: base = QStringLiteral("HOME"); break;
+    case Qt::Key_End: base = QStringLiteral("END"); break;
+    case Qt::Key_PageUp: base = QStringLiteral("PGUP"); break;
+    case Qt::Key_PageDown: base = QStringLiteral("PGDN"); break;
+    case Qt::Key_Tab: base = QStringLiteral("TAB"); break;
+    default:
+        break;
+    }
+
+    if (base.isEmpty()) {
+        if (key >= Qt::Key_A && key <= Qt::Key_Z)
+            base = QString(QChar('a' + key - Qt::Key_A));
+        else if (key >= Qt::Key_0 && key <= Qt::Key_9)
+            base = QString(QChar('0' + key - Qt::Key_0));
+        else if (key >= Qt::Key_F1 && key <= Qt::Key_F10)
+            base = QStringLiteral("F%1").arg(key - Qt::Key_F1 + 1);
+        else {
+            const QString text = event->text();
+            if (text.size() == 1 && text.at(0).isPrint())
+                base = text.toLower();
+        }
+    }
+    if (base.isEmpty())
+        return {};
+
+    if (event->modifiers() & Qt::ShiftModifier)
+        return QStringLiteral("Shift+") + base;
+    return base;
+}
+
 } // namespace
 
 PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playerPage,
@@ -103,6 +163,33 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     m_videoHost = new VideoHost(m_playerPage);
     m_videoHost->hide();
     m_player = new MpvPlayer(this);
+
+    // mpv --wid 模式禁用自身窗口输入（mpv issue #4795）：VideoHost 子类化 mpv 子
+    // HWND 后把鼠标消息转成 mpv `mouse` 命令，OSC/点击视频才有输入。
+    connect(m_videoHost, &VideoHost::mouseMoved, this, [this](const QPoint &position) {
+        if (m_player->isReady())
+            m_player->command({QStringLiteral("mouse"), QString::number(position.x()),
+                               QString::number(position.y())});
+    });
+    connect(m_videoHost, &VideoHost::mouseButtonPressed, this,
+            [this](int button, const QPoint &position, bool doubleClick) {
+                if (!m_player->isReady())
+                    return;
+                QStringList args = {QStringLiteral("mouse"), QString::number(position.x()),
+                                    QString::number(position.y()), QString::number(button)};
+                if (doubleClick)
+                    args.append(QStringLiteral("double"));
+                m_player->command(args);
+            });
+    connect(m_videoHost, &VideoHost::mouseWheel, this,
+            [this](int button, const QPoint &position) {
+                if (m_player->isReady())
+                    m_player->command({QStringLiteral("mouse"),
+                                       QString::number(position.x()),
+                                       QString::number(position.y()),
+                                       QString::number(button)});
+            });
+    preparePlayerOverlays();
 
     m_progressTimer = new QTimer(this);
     m_progressTimer->setInterval(7000);
@@ -150,11 +237,16 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     connect(m_player, &MpvPlayer::errorOccurred, this, [this](const QString &message) {
         showStatus(message, 5000);
     });
+    // 全屏状态由 ui::MainWindow 统一维护（m_fullscreen/chrome/stack）。mpv 内的
+    // F/Esc 转成 PlayerPage::fullscreenRequested，复用 UI 的 toggleFullscreen()，
+    // 避免 Controller 自己 showFullScreen 后 UI 状态不同步，Esc 直接退出播放。
     connect(m_player, &MpvPlayer::toggleFullscreenRequested, this, [this]() {
-        setFullscreen(!m_window->isFullScreen());
+        if (m_playerPage)
+            QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
     });
     connect(m_player, &MpvPlayer::exitFullscreenRequested, this, [this]() {
-        setFullscreen(false);
+        if (m_playerPage && m_window->isFullScreen())
+            QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
     });
 
     // PlayerPage 的控制信号 -> MpvPlayer。
@@ -205,17 +297,36 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             [this](const QString &trackId) {
                 if (!m_player->isReady())
                     return;
-                m_player->setPropertyString("aid", trackId);
+                if (!m_player->setPropertyString("aid", trackId)) {
+                    showStatus(tr("音轨 %1 切换失败").arg(trackId), 5000);
+                    refreshTracks();
+                    return;
+                }
+                const int switchSerial = ++m_audioSwitchSerial;
                 showStatus(tr("已选择音轨 %1").arg(trackId));
                 reportPlaybackProgress(QStringLiteral("AudioTrackChange"));
                 QTimer::singleShot(150, this, &PlayerController::refreshTracks);
+                // mpv 对无效/不可解码轨道可能先接受 aid、随后回退；延迟核对实际 aid。
+                QTimer::singleShot(900, this, [this, trackId, switchSerial]() {
+                    if (!m_player->isReady() || switchSerial != m_audioSwitchSerial)
+                        return;
+                    const QString actual = m_player->getPropertyString("aid");
+                    if (!actual.isEmpty() && actual != trackId) {
+                        qWarning() << "audio track switch failed:" << trackId
+                                   << "actual aid:" << actual;
+                        showStatus(tr("音轨 %1 不可用，mpv 已回退到 %2")
+                                       .arg(trackId, actual),
+                                   5000);
+                        refreshTracks();
+                    }
+                });
             });
     // 从播放页返回时恢复 Qt 控制条（它只在真实播放时隐藏），并上报停止。
     connect(m_playerPage, &ui::PlayerPage::backRequested, this, [this]() {
         if (!m_embyItemId.isEmpty())
             clearEmbySession();
-        if (auto *bar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar")))
-            bar->show();
+        if (m_window->isPlayerMode())
+            m_window->setPlayerMode(false);
     });
 
     // 离开播放页（返回按钮/Esc/切页）时停止 mpv 并上报 Stopped。
@@ -231,6 +342,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                 m_player->stop();
             if (!m_embyItemId.isEmpty() || m_reporting)
                 clearEmbySession();
+            if (m_window->isPlayerMode())
+                m_window->setPlayerMode(false);
         });
     }
 
@@ -246,6 +359,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // 放宽最小尺寸并启用右下角 resize grip（最大化/拖边框仍由系统窗口管理）。
     const QSize uiMinimum = m_window->minimumSize();
     m_window->installEventFilter(this);
+    if (QCoreApplication *app = QCoreApplication::instance())
+        app->installEventFilter(this);
     m_window->setMinimumSize(QSize(720, 480));
     m_window->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
     if (QStatusBar *status = m_window->statusBar())
@@ -275,6 +390,21 @@ PlayerController::~PlayerController() = default;
 
 bool PlayerController::eventFilter(QObject *watched, QEvent *event)
 {
+    // 键盘转发：mpv 子窗口在 --wid 下收不到输入，Qt 主窗口把按键转成
+    // mpv `keypress`，空格/方向键/F/n/p/i 等 input.conf 绑定才会生效。
+    // Esc/F11 留给 Qt 自己的快捷键；Ctrl/Alt 组合也不转发。
+    if (event->type() == QEvent::KeyPress && m_window && m_window->isPlayerMode()
+        && m_window->isActiveWindow() && m_player && m_player->isReady()
+        && !QApplication::activeModalWidget()) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        const QString keyName = mpvKeyNameFromEvent(keyEvent);
+        if (!keyName.isEmpty()) {
+            m_player->command({QStringLiteral("keypress"), keyName});
+            if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
+                qInfo() << "forward key to mpv" << keyName;
+        }
+    }
+
     if (watched == m_window && event->type() == QEvent::Resize) {
         auto *resizeEvent = static_cast<QResizeEvent *>(event);
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -284,6 +414,16 @@ bool PlayerController::eventFilter(QObject *watched, QEvent *event)
                     << resizeEvent->size() << "minimum" << m_window->minimumSize();
         }
     }
+
+    // 全屏时点“返回”先退出全屏，不直接退出播放。PlayerPage 的返回按钮
+    // 直接发 backRequested，UI 的槽会优先退出 player mode；这里在按钮事件层
+    // 拦截真实鼠标释放，保证全屏状态下第一次点击只退出全屏。
+    if (watched == m_backButton && event->type() == QEvent::MouseButtonRelease
+        && m_window && m_window->isFullScreen() && m_playerPage) {
+        QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
+        return true;
+    }
+
     return QObject::eventFilter(watched, event);
 }
 
@@ -654,12 +794,24 @@ void PlayerController::showPlayerPage()
 {
     if (!m_playerPage)
         return;
+
+    // T17：播放时让主窗口进入 player mode（隐藏 sidebar/topbar/statusbar，
+    // PlayerPage 铺满客户区），退出由 backRequested/stack currentChanged 恢复。
+    if (!m_window->isPlayerMode())
+        m_window->setPlayerMode(true);
+
     ensurePlayerControlsVisible();
     QStackedWidget *stack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget());
     if (!stack)
         stack = m_window->findChild<QStackedWidget *>(QStringLiteral("ContentStack"));
     if (stack)
         stack->setCurrentWidget(m_playerPage);
+
+    if (QWidget *container = m_playerPage->videoSurfaceContainer()) {
+        qInfo() << "player mode: page" << m_playerPage->geometry()
+                << "videoArea" << container->geometry()
+                << "videoHost" << (m_videoHost ? m_videoHost->geometry() : QRect());
+    }
     if (auto *controlBar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar"))) {
         qInfo() << "controls: PlayerControlBar visible" << controlBar->isVisible()
                 << "geometry" << controlBar->geometry();
@@ -688,6 +840,47 @@ void PlayerController::playEpisodeAt(int index)
                  entry.startPositionTicks);
 }
 
+QList<ui::TrackInfo> PlayerController::audioTracksFromTrackList(const QString &json,
+                                                                 int *filteredCount)
+{
+    if (filteredCount)
+        *filteredCount = 0;
+
+    QList<ui::TrackInfo> audio;
+    const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
+    if (!doc.isArray())
+        return audio;
+
+    for (const QJsonValue &value : doc.array()) {
+        const QJsonObject track = value.toObject();
+        if (track.value(QStringLiteral("type")).toString() != QLatin1String("audio"))
+            continue;
+
+        const int id = track.value(QStringLiteral("id")).toInt();
+        if (id <= 0)
+            continue;
+
+        const QString codec = track.value(QStringLiteral("codec")).toString().trimmed();
+        // 实机问题：aid=1 的 codec 为空，mpv 解码失败回退到 aid=2，但菜单仍列出
+        // 这条坏轨道。codec 为空（或 none）的 audio 轨道不进入菜单。
+        if (codec.isEmpty()
+            || codec.compare(QStringLiteral("none"), Qt::CaseInsensitive) == 0) {
+            if (filteredCount)
+                ++(*filteredCount);
+            continue;
+        }
+
+        ui::TrackInfo info;
+        info.id = QString::number(id);
+        info.language = track.value(QStringLiteral("lang")).toString();
+        info.codec = codec;
+        info.title = displayTrackTitle(track, id);
+        info.selected = track.value(QStringLiteral("selected")).toBool();
+        audio.append(info);
+    }
+    return audio;
+}
+
 void PlayerController::refreshTracks()
 {
     if (!m_player->isReady())
@@ -700,11 +893,11 @@ void PlayerController::refreshTracks()
         return;
 
     QList<ui::TrackInfo> subtitles;
-    QList<ui::TrackInfo> audio;
     bool subtitleSelected = false;
     for (const QJsonValue &value : doc.array()) {
         const QJsonObject track = value.toObject();
-        const QString type = track.value(QStringLiteral("type")).toString();
+        if (track.value(QStringLiteral("type")).toString() != QLatin1String("sub"))
+            continue;
         const int id = track.value(QStringLiteral("id")).toInt();
         if (id <= 0)
             continue;
@@ -714,13 +907,15 @@ void PlayerController::refreshTracks()
         info.codec = track.value(QStringLiteral("codec")).toString();
         info.title = displayTrackTitle(track, id);
         info.selected = track.value(QStringLiteral("selected")).toBool();
-        if (type == QLatin1String("sub")) {
-            subtitles.append(info);
-            subtitleSelected = subtitleSelected || info.selected;
-        } else if (type == QLatin1String("audio")) {
-            audio.append(info);
-        }
+        subtitles.append(info);
+        subtitleSelected = subtitleSelected || info.selected;
     }
+
+    int filteredAudio = 0;
+    const QList<ui::TrackInfo> audio = audioTracksFromTrackList(json, &filteredAudio);
+    if (filteredAudio > 0)
+        qInfo() << "track-list: hidden" << filteredAudio
+                << "audio track(s) with empty/none codec";
 
     ui::TrackInfo off;
     off.id = QStringLiteral("no");
@@ -730,17 +925,6 @@ void PlayerController::refreshTracks()
 
     m_playerPage->setSubtitleTracks(subtitles);
     m_playerPage->setAudioTracks(audio);
-}
-
-void PlayerController::setFullscreen(bool fullscreen)
-{
-    if (!m_window)
-        return;
-    if (fullscreen)
-        m_window->showFullScreen();
-    else
-        m_window->showNormal();
-    m_playerPage->setFullscreen(fullscreen);
 }
 
 void PlayerController::updatePositionUi()
@@ -764,11 +948,25 @@ void PlayerController::ensurePlayerControlsVisible()
 {
     if (!m_playerPage)
         return;
+    // T18：PlayerTopBar/PlayerControlBar 是独立顶层半透明窗口，显隐与自动隐藏
+    // 由 PlayerPage 统一管理，这里只请求显示，不要再直接 show()/raise()。
     m_playerPage->setControlsVisible(true);
-    if (auto *controlBar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar"))) {
-        controlBar->show();
-        controlBar->raise();
-    }
+}
+
+void PlayerController::preparePlayerOverlays()
+{
+    if (!m_playerPage)
+        return;
+
+    m_backButton = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerBackButton"));
+    if (m_backButton)
+        m_backButton->installEventFilter(this);
+
+    // T18：浮层是独立顶层窗口，定位/显隐/自动隐藏由 PlayerPage 管理；
+    // 这里只挂返回按钮的全屏拦截事件过滤器。
+    qInfo() << "player overlays: top" << (m_playerPage->topOverlay() != nullptr)
+            << "bottom" << (m_playerPage->bottomOverlay() != nullptr)
+            << "backButton" << (m_backButton != nullptr);
 }
 
 void PlayerController::logMpvState(const QString &reason)

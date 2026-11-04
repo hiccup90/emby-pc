@@ -9,8 +9,12 @@
 
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
+#include <commctrl.h>
+#include <windowsx.h>
 
 namespace {
+
+constexpr UINT_PTR kMpvMouseSubclassId = 1;
 
 struct ResizeChildrenContext
 {
@@ -18,6 +22,9 @@ struct ResizeChildrenContext
     HWND host = nullptr;
     bool debug = false;
 };
+
+LRESULT CALLBACK mpvMouseSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+                                      UINT_PTR idSubclass, DWORD_PTR refData);
 
 BOOL CALLBACK resizeChildWindow(HWND child, LPARAM param)
 {
@@ -79,6 +86,61 @@ BOOL CALLBACK collectChildWindow(HWND child, LPARAM param)
     return TRUE;
 }
 
+LRESULT CALLBACK mpvMouseSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+                                      UINT_PTR idSubclass, DWORD_PTR refData)
+{
+    Q_UNUSED(idSubclass);
+    auto *host = reinterpret_cast<VideoHost *>(refData);
+    if (!host)
+        return ::DefSubclassProc(hwnd, message, wParam, lParam);
+
+    const QPoint position(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+    switch (message) {
+    case WM_MOUSEMOVE:
+        host->notifyMouseMove(position);
+        break;
+    case WM_LBUTTONDOWN:
+        host->notifyMouseButton(0, position, false);
+        break;
+    case WM_LBUTTONDBLCLK:
+        host->notifyMouseButton(0, position, true);
+        break;
+    case WM_RBUTTONDOWN:
+        host->notifyMouseButton(2, position, false);
+        break;
+    case WM_MBUTTONDOWN:
+        host->notifyMouseButton(1, position, false);
+        break;
+    case WM_LBUTTONUP:
+        host->notifyMouseRelease(0);
+        break;
+    case WM_RBUTTONUP:
+        host->notifyMouseRelease(2);
+        break;
+    case WM_MBUTTONUP:
+        host->notifyMouseRelease(1);
+        break;
+    case WM_MOUSEWHEEL: {
+        // WM_MOUSEWHEEL 的 lParam 是屏幕坐标，转成视频子窗口客户区坐标。
+        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ::ScreenToClient(hwnd, &point);
+        const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        const int button = delta > 0 ? 3 : 4; // mpv: 3=WHEEL_UP, 4=WHEEL_DOWN
+        const int steps = qMax(1, qAbs(delta) / WHEEL_DELTA);
+        for (int i = 0; i < steps; ++i)
+            host->notifyMouseWheel(button, QPoint(point.x, point.y));
+        break;
+    }
+    case WM_NCDESTROY:
+        ::RemoveWindowSubclass(hwnd, mpvMouseSubclassProc, kMpvMouseSubclassId);
+        host->notifyChildDestroyed(reinterpret_cast<quintptr>(hwnd));
+        break;
+    default:
+        break;
+    }
+    return ::DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
 } // namespace
 #endif
 
@@ -98,6 +160,17 @@ VideoHost::VideoHost(QWidget *parent)
     m_syncTimer->setInterval(120);
     connect(m_syncTimer, &QTimer::timeout, this, &VideoHost::syncMpvChildGeometry);
     m_syncTimer->start();
+}
+
+VideoHost::~VideoHost()
+{
+#ifdef Q_OS_WIN
+    if (m_mpvChildHandle) {
+        ::RemoveWindowSubclass(reinterpret_cast<HWND>(m_mpvChildHandle),
+                               mpvMouseSubclassProc, kMpvMouseSubclassId);
+        m_mpvChildHandle = 0;
+    }
+#endif
 }
 
 quintptr VideoHost::nativeWindow()
@@ -155,7 +228,85 @@ void VideoHost::syncMpvChildGeometry()
         qInfo() << "VideoHost: synced" << context.resized << "mpv child window(s) to"
                 << width << "x" << height;
     }
+
+    // 输入转发：--wid 模式下 mpv 禁用自己窗口的输入（mpv issue #4795），
+    // 宿主必须把 mpv 子 HWND 的鼠标消息转发成 mpv 的 `mouse` 命令。
+    if (m_mpvChildHandle && !::IsWindow(reinterpret_cast<HWND>(m_mpvChildHandle)))
+        m_mpvChildHandle = 0;
+    if (HWND child = ::GetWindow(host, GW_CHILD))
+        installMouseSubclass(reinterpret_cast<quintptr>(child));
 #endif
+}
+
+void VideoHost::installMouseSubclass(quintptr child)
+{
+#ifdef Q_OS_WIN
+    if (!child)
+        return;
+    if (m_mpvChildHandle == child)
+        return;
+    if (m_mpvChildHandle) {
+        ::RemoveWindowSubclass(reinterpret_cast<HWND>(m_mpvChildHandle),
+                               mpvMouseSubclassProc, kMpvMouseSubclassId);
+        m_mpvChildHandle = 0;
+    }
+    m_mpvChildHandle = child;
+    if (!::SetWindowSubclass(reinterpret_cast<HWND>(child), mpvMouseSubclassProc,
+                             kMpvMouseSubclassId, reinterpret_cast<DWORD_PTR>(this))) {
+        qWarning() << "VideoHost: SetWindowSubclass failed for mpv child"
+                   << child << "error" << ::GetLastError();
+        m_mpvChildHandle = 0;
+        return;
+    }
+    qInfo() << "VideoHost: mouse subclass installed on mpv child" << child;
+#else
+    Q_UNUSED(child);
+#endif
+}
+
+void VideoHost::notifyMouseMove(const QPoint &position)
+{
+    ++m_mouseEventCount;
+    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0
+        && (m_mouseEventCount == 1 || m_mouseEventCount % 20 == 0)) {
+        qInfo() << "VideoHost: mouse move forwarded" << position
+                << "count" << m_mouseEventCount;
+    }
+    emit mouseMoved(position);
+}
+
+void VideoHost::notifyMouseButton(int button, const QPoint &position, bool doubleClick)
+{
+    ++m_mouseEventCount;
+    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0) {
+        qInfo() << "VideoHost: mouse button forwarded" << button << position
+                << "double" << doubleClick << "count" << m_mouseEventCount;
+    }
+    emit mouseButtonPressed(button, position, doubleClick);
+}
+
+void VideoHost::notifyMouseRelease(int button)
+{
+    ++m_mouseEventCount;
+    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0)
+        qInfo() << "VideoHost: mouse release forwarded" << button;
+    emit mouseButtonReleased(button);
+}
+
+void VideoHost::notifyMouseWheel(int button, const QPoint &position)
+{
+    ++m_mouseEventCount;
+    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0) {
+        qInfo() << "VideoHost: mouse wheel forwarded" << button << position
+                << "count" << m_mouseEventCount;
+    }
+    emit mouseWheel(button, position);
+}
+
+void VideoHost::notifyChildDestroyed(quintptr child)
+{
+    if (m_mpvChildHandle == child)
+        m_mpvChildHandle = 0;
 }
 
 QString VideoHost::diagnosticSummary()
@@ -187,6 +338,9 @@ QString VideoHost::diagnosticSummary()
                      .arg(clientRect.bottom - clientRect.top)
                      .arg(windowRect.right - windowRect.left)
                      .arg(windowRect.bottom - windowRect.top));
+    lines.append(QStringLiteral("  mouse subclass hwnd=0x%1 forwarded_events=%2")
+                     .arg(m_mpvChildHandle, 0, 16)
+                     .arg(m_mouseEventCount));
     lines.append(QStringLiteral("  mpv child windows:"));
     ::EnumChildWindows(host, collectChildWindow, reinterpret_cast<LPARAM>(&lines));
 #else

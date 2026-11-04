@@ -1,4 +1,4 @@
-# app/src/ui — Qt Widgets UI（T4）+ 登录/会话（T6）+ 真实媒体库（T7 / M2-B）
+# app/src/ui — Qt Widgets UI（T4）+ 登录/会话（T6）+ 真实媒体库（T7 / M2-B）+ 播放器全窗口（T16）
 
 Emby PC 客户端的表现层：**Qt 6 Widgets + 深色 QSS**。T4 完成主窗口/媒体库/详情/播放页骨架，
 T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）把 mock 数据替换为真实 Emby API：
@@ -17,7 +17,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `posterdelegate.h/.cpp` | 海报卡片绘制：圆角海报、评分角标、观看进度条、hover/选中态 |
 | `mediamodel.h/.cpp` | `MediaListModel`（QAbstractListModel）+ `MediaFilterProxyModel` 搜索过滤 |
 | `detailview.h/.cpp` | 详情页：背景/海报、标题元数据、简介、播放按钮、真实季/集列表 |
-| `playerpage.h/.cpp` | 播放页容器：VideoHost 占位 + 播放/暂停/上下集/字幕/音轨等信号 |
+| `playerpage.h/.cpp` | 播放页容器：视频区铺满整页，顶层半透明浮层控制条（自动隐藏/鼠标轮询） |
 | `thumbnailcache.h/.cpp` | 缩略图缓存接口：同步 get + 异步 request + LRU，默认生成离线占位海报 |
 | `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：QNetworkAccessManager + Authorization 头异步下载，失败回填占位图 |
 | `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（离线占位资源） |
@@ -162,7 +162,31 @@ playerPage->attachVideoSurface(host);            // 替换占位，stack 自动�
 playerPage->releaseVideoSurface();               // 停止播放/退出时恢复占位
 ```
 
-### 2. 控制信号（PlayerPage → 播放控制层）
+### 2. 播放器模式与浮层（T16 / T18）
+
+进入播放时整个主窗口客户区都是视频（黑边由 mpv 按宽高比绘制），侧边栏/顶栏/状态栏隐藏；
+顶部返回/标题条与底部控制条是**独立顶层半透明窗口**（Tool/Frameless/Translucent/不抢焦点），
+压在 mpv 原生子窗口之上，不占布局高度，并自动隐藏：
+
+```cpp
+ui::MainWindow window;
+window.setPlayerMode(true);    // 隐藏 chrome，栈切到 PlayerPage 并铺满
+window.setPlayerMode(false);   // 恢复进入前的页面 + 侧边栏/顶栏/状态栏
+bool active = window.isPlayerMode();
+ui::PlayerPage *player = window.playerPage();
+
+player->setOverlayAutoHide(true);      // 默认开启
+player->setOverlayHideDelay(2500);     // 静止 2.5s 隐藏
+player->setControlsVisible(true);      // 手动显示/隐藏
+```
+
+- 顶层 overlay 由 `PlayerPage` 管理：安装 eventFilter 到主窗口，跟随 Move/Resize/Show/Hide/
+  WindowStateChange；底部条宽度 = 主窗口客户区宽度、高 96、贴底；顶部条左上角、宽度自适应内容。
+- 自动隐藏：`QTimer` 每 150ms 轮询 `QCursor::pos()`（不依赖 mpv 子窗口的 mouse move）：
+  光标在主窗口内移动 → 显示并重置计时；静止 2.5s → 隐藏；暂停时保持显示。
+- 播放页背景纯黑（`#000`）；`EMBY_PC_PLAYER_OVERLAY=0` 时退回页面内浮层（排障/无合成器环境）。
+
+### 3. 控制信号（PlayerPage → 播放控制层）
 
 | 信号 | 触发 |
 |---|---|
@@ -179,7 +203,7 @@ playerPage->releaseVideoSurface();               // 停止播放/退出时恢复
 回填接口：`setEpisodeInfo(title, subtitle)`、`setPosition(posMs, durationMs)`、`setPlaying(bool)`、
 `setSubtitleTracks(QList<TrackInfo>)`、`setAudioTracks(...)`、`setVolume(int)`、`setFullscreen(bool)`。
 
-### 3. 媒体数据（真实 Emby API）
+### 4. 媒体数据（真实 Emby API）
 
 `ui::LibraryData` 负责把 `emby::MediaItem` 映射成 `ui::MediaItem`（见 `uitypes.h`），
 `LibraryView::setItems()/appendItems()` 与 `HomeView::setRecentItems()` 只消费 UI DTO。
@@ -192,11 +216,15 @@ playerPage->releaseVideoSurface();               // 停止播放/退出时恢复
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **71 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **94 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
 - 播放页信号、`attachVideoSurface()/releaseVideoSurface()`；
+- T16/T18 播放器模式：侧边栏/顶栏/状态栏隐藏、视频区铺满客户区；
+  - 顶层 overlay 创建（Tool/Frameless/Translucent/不抢焦点）、跟随窗口 resize/move、贴边几何；
+  - 自动隐藏（注入光标位置，静止 180ms 测试值后隐藏、移动恢复、暂停保持）；
+  - 退出播放器模式恢复 chrome 并隐藏 overlay；`EMBY_PC_PLAYER_OVERLAY=0` 页面内兜底；
 - 假 Emby 服务器（QTcpServer）上的真实链路：
   - 登录/401/连接拒绝/TokenStore 持久化/启动自动恢复/过期 token 回登录页；
   - /Views 生成 2 个动态媒体库按钮；
@@ -236,10 +264,16 @@ playerPage->releaseVideoSurface();               // 停止播放/退出时恢复
 | 最小尺寸详情页 | [09-detail-960x600.png](preview/09-detail-960x600.png) |
 | 最小尺寸播放页 | [10-player-960x600.png](preview/10-player-960x600.png) |
 | 登录对话框 | [11-login-dialog.png](preview/11-login-dialog.png) |
+| **播放器模式 1280x760（视频铺满 + 浮层）** | [12-player-mode-1280x760.png](preview/12-player-mode-1280x760.png) |
+| **播放器模式 960x600（视频铺满 + 浮层）** | [13-player-mode-960x600.png](preview/13-player-mode-960x600.png) |
+| **播放器模式 · 浮层自动隐藏后（纯视频）** | [14-player-mode-autohide.png](preview/14-player-mode-autohide.png) |
 
 ## 已知限制 / 后续
 
-- 未接真实播放器（播放页仅状态演示）；播放链路在 T8 接 mpv/PlaybackInfo。
+- 未接真实播放器（播放页仅状态演示）；播放链路在 T8/T17 接 mpv/PlaybackInfo。
+- 顶层 overlay 在 Windows 上需要实测点击穿透/焦点行为（已用 Tool + WindowDoesNotAcceptFocus +
+  ShowWithoutActivating 避免抢焦点；若某些系统仍激活窗口，T17 可加 WS_EX_NOACTIVATE）。
+- 自动隐藏基于全局光标轮询，多显示器/高 DPI 下依赖 QCursor 全局坐标；已用主窗口 mapToGlobal 对齐。
 - 真实海报已按 Authorization 异步下载；失败/离线时回退程序生成的抽象占位图。
 - 播放器控制条当前为 Qt 控件版（方案 B 的骨架）；最终采用 mpv OSC（方案 A）时，
   `PlayerPage` 的控制条可切换为隐藏/纯状态显示，视频区仍由 `attachVideoSurface` 挂载。

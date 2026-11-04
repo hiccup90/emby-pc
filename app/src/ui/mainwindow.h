@@ -82,6 +82,12 @@ public:
     bool isMockMode() const { return m_mockMode; }
     void setMockMode(bool enabled);
 
+    // T16：播放器模式。进入时隐藏侧边栏/顶栏/状态栏，让播放页铺满整个客户区；
+    // 退出时恢复原 chrome 与进入前的页面（由 T17 在播放开始/结束时调用）。
+    void setPlayerMode(bool enabled);
+    bool isPlayerMode() const { return m_playerMode; }
+    PlayerPage *playerPage() const { return m_player; }
+
     QStringList libraryIds() const;
     QStringList sectionNames() const;
     // 当前可见的完整 item（真实数据包含简介/季集等字段），供播放链路和自测使用。
@@ -95,6 +101,7 @@ signals:
     // 真实数据加载状态：首屏媒体库/首页加载完成（成功或失败）。
     void dataLoaded(bool ok, const QString &error);
     void mockModeChanged(bool enabled);
+    void playerModeChanged(bool enabled);
 
 private:
     enum StackPage {
@@ -185,7 +192,9 @@ private:
     int m_currentDurationMs = 0;
     int m_lastContentIndex = StackHome;
     int m_fullscreenReturnIndex = StackHome;
+    int m_playerReturnIndex = StackHome;
     bool m_fullscreen = false;
+    bool m_playerMode = false;
 
     QList<TrackInfo> m_subtitleTracks;
     QList<TrackInfo> m_audioTracks;

@@ -65,7 +65,8 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(emby-pc PRIVATE user32)
+    # comctl32: VideoHost 用 SetWindowSubclass 子类化 mpv 子窗口做输入转发。
+    target_link_libraries(emby-pc PRIVATE user32 comctl32)
     if(EXISTS "${LIBMPV_DIR}/libmpv-2.dll")
         add_custom_command(TARGET emby-pc POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

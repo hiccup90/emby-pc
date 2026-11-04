@@ -245,6 +245,13 @@ void MainWindow::connectSignals()
             });
 
     connect(m_player, &PlayerPage::backRequested, this, [this]() {
+        // 播放器模式下“返回”先退出接管，恢复进入前的页面与侧边栏/顶栏。
+        if (m_playerMode) {
+            if (m_fullscreen)
+                toggleFullscreen();
+            setPlayerMode(false);
+            return;
+        }
         if (!m_currentItem.id.isEmpty())
             openDetail(m_currentItem.id);
         else
@@ -291,6 +298,8 @@ void MainWindow::connectSignals()
 
 void MainWindow::navigateTo(Page page)
 {
+    if (m_playerMode)
+        setPlayerMode(false);
     if (page == Page::Home) {
         m_sidebar->setCurrentIndex(0);
         m_stack->setCurrentIndex(StackHome);
@@ -689,6 +698,8 @@ bool MainWindow::openDetail(const QString &itemId)
 
 void MainWindow::showDetailFor(const MediaItem &item)
 {
+    if (m_playerMode)
+        setPlayerMode(false);
     m_knownItems.insert(item.id, item);
     m_currentItem = item;
     m_detail->setItem(item);
@@ -782,7 +793,7 @@ void MainWindow::playItem(const QString &itemId, int seasonNumber, int episodeNu
     m_player->setSubtitleTracks(m_subtitleTracks);
     m_player->setAudioTracks(m_audioTracks);
 
-    m_stack->setCurrentIndex(StackPlayer);
+    setPlayerMode(true);
 }
 
 void MainWindow::stepEpisode(int delta)
@@ -822,15 +833,58 @@ void MainWindow::stepEpisode(int delta)
     }
 }
 
+void MainWindow::setPlayerMode(bool enabled)
+{
+    if (!m_player)
+        return;
+
+    if (enabled) {
+        if (!m_playerMode) {
+            m_playerReturnIndex = m_stack->currentIndex();
+            m_playerMode = true;
+        }
+        m_sidebar->hide();
+        m_topBar->hide();
+        statusBar()->hide();
+        m_stack->setCurrentIndex(StackPlayer);
+        m_player->setPlayerModeActive(true);
+        emit playerModeChanged(true);
+        return;
+    }
+
+    if (!m_playerMode)
+        return;
+    if (m_fullscreen) {
+        // T17 可能在全屏播放中直接结束播放：先退出全屏，才能恢复窗口 chrome。
+        showNormal();
+        m_fullscreen = false;
+        m_player->setFullscreen(false);
+    }
+    m_playerMode = false;
+    m_player->setPlayerModeActive(false);
+    m_sidebar->show();
+    m_topBar->show();
+    statusBar()->show();
+    const int returnIndex = qBound(static_cast<int>(StackHome), m_playerReturnIndex,
+                                   static_cast<int>(StackPlayer));
+    m_stack->setCurrentIndex(returnIndex);
+    m_player->setFullscreen(m_fullscreen);
+    emit playerModeChanged(false);
+}
+
 void MainWindow::toggleFullscreen()
 {
     if (m_fullscreen) {
         showNormal();
         m_fullscreen = false;
-        m_sidebar->show();
-        m_topBar->show();
-        m_stack->setCurrentIndex(m_fullscreenReturnIndex);
         m_player->setFullscreen(false);
+        if (!m_playerMode) {
+            m_player->setPlayerModeActive(false);
+            m_sidebar->show();
+            m_topBar->show();
+            statusBar()->show();
+            m_stack->setCurrentIndex(m_fullscreenReturnIndex);
+        }
         return;
     }
 
@@ -838,7 +892,9 @@ void MainWindow::toggleFullscreen()
     m_fullscreen = true;
     m_sidebar->hide();
     m_topBar->hide();
+    statusBar()->hide();
     m_stack->setCurrentIndex(StackPlayer);
+    m_player->setPlayerModeActive(true);
     m_player->setFullscreen(true);
     showFullScreen();
 }
@@ -847,6 +903,10 @@ void MainWindow::handleEscape()
 {
     if (m_fullscreen) {
         toggleFullscreen();
+        return;
+    }
+    if (m_playerMode) {
+        setPlayerMode(false);
         return;
     }
     if (m_stack->currentIndex() == StackPlayer) {
@@ -980,6 +1040,8 @@ void MainWindow::onLoggedIn(const emby::ServerProfile &profile, const emby::Serv
 
 void MainWindow::logout()
 {
+    if (m_playerMode)
+        setPlayerMode(false);
     m_tokenStore->clear();
     m_sessionProfile = emby::ServerProfile();
     m_serverInfo = {};

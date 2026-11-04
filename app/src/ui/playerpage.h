@@ -2,12 +2,16 @@
 
 #include "uitypes.h"
 
+#include <QElapsedTimer>
+#include <QPoint>
 #include <QWidget>
 
 class QLabel;
 class QPushButton;
+class QResizeEvent;
 class QSlider;
 class QStackedWidget;
+class QTimer;
 
 namespace ui {
 
@@ -25,6 +29,7 @@ class PlayerPage : public QWidget
     Q_OBJECT
 public:
     explicit PlayerPage(QWidget *parent = nullptr);
+    ~PlayerPage() override;
 
     // 挂载真实视频宿主；传 nullptr 恢复占位图。
     // 不接管 surface 的所有权（由主窗口/播放器模块负责生命周期）。
@@ -41,7 +46,31 @@ public:
     void setVolume(int volume);
     int volume() const;
     void setFullscreen(bool fullscreen);
+
+    // 播放器模式：显示/隐藏顶层 overlay，并启停自动隐藏轮询。
+    // MainWindow::setPlayerMode() 负责调用。
+    void setPlayerModeActive(bool active);
+    bool isPlayerModeActive() const { return m_playerModeActive; }
+
+    // 手动显示/隐藏（false 时自动隐藏不会再把浮层弹出来）。
     void setControlsVisible(bool visible);
+    bool controlsVisible() const { return m_overlaysVisible; }
+
+    // 自动隐藏：QTimer 轮询 QCursor::pos()，鼠标在主窗口内移动 -> 显示并重置计时；
+    // 静止 hideDelay（默认 2500ms）-> 隐藏；暂停时保持显示。
+    void setOverlayAutoHide(bool enabled);
+    bool overlayAutoHideEnabled() const { return m_autoHide; }
+    void setOverlayHideDelay(int milliseconds);
+    int overlayHideDelay() const { return m_hideDelayMs; }
+
+    // 测试/无鼠标环境注入光标位置（全局坐标）。
+    void setOverlayCursorPositionForTest(const QPoint &globalPos, bool hasPosition = true);
+
+    // true：浮层是独立顶层窗口（默认）；false：EMBY_PC_PLAYER_OVERLAY=0 的页面内兜底。
+    bool usesTopLevelOverlay() const { return m_topLevelOverlay; }
+    bool overlaysVisible() const { return m_overlaysVisible; }
+    QWidget *topOverlay() const { return m_topBar; }
+    QWidget *bottomOverlay() const { return m_controlBar; }
 
 signals:
     void backRequested();
@@ -55,8 +84,26 @@ signals:
     void fullscreenRequested();
     void volumeChanged(int volume);
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void buildUi();
+    void createOverlayWindows();
+    void ensureHostWindow();
+    void syncOverlayGeometry();
+    void updateDockedOverlayGeometry();
+    void showOverlays();
+    void hideOverlays();
+    void applyOverlayVisibility();
+    void pollOverlayCursor();
+    QPoint currentCursorPosition() const;
+    QRect hostGlobalRect() const;
+    void startAutoHideTimer();
+    void stopAutoHideTimer();
     void showTrackMenu(QPushButton *button, const QList<TrackInfo> &tracks, bool audio);
 
     QWidget *m_topBar = nullptr;
@@ -85,6 +132,20 @@ private:
     bool m_playing = false;
     bool m_fullscreen = false;
     bool m_updatingSlider = false;
+
+    // overlay 模式与自动隐藏状态
+    bool m_topLevelOverlay = true;
+    bool m_playerModeActive = false;
+    bool m_autoHide = true;
+    bool m_controlsRequested = true;
+    bool m_overlaysVisible = false;
+    int m_hideDelayMs = 2500;
+    QTimer *m_overlayTimer = nullptr;
+    QWidget *m_hostWindow = nullptr;
+    QPoint m_lastCursorPos;
+    QElapsedTimer m_lastInteraction;
+    bool m_hasTestCursor = false;
+    QPoint m_testCursorPos;
 };
 
 } // namespace ui

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/uitypes.h"
+
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -41,6 +43,11 @@ public:
     // 在 ui::MainWindow 的菜单栏上安装“文件”菜单（打开文件/打开文件夹/退出）。
     void installMenus();
 
+    // T17 自测：从 mpv track-list JSON 解析可用音轨，过滤 codec 为空/非 audio 的轨道。
+    // filteredCount 返回被过滤掉的 audio 轨道数（可为 nullptr）。
+    static QList<ui::TrackInfo> audioTracksFromTrackList(const QString &json,
+                                                         int *filteredCount = nullptr);
+
 public slots:
     void openFile();
     void openFolder();
@@ -57,10 +64,10 @@ private:
 
     void playFiles(const QStringList &files, int startIndex = 0);
     bool ensurePlayer(const QStringList &httpHeaderLines = QStringList());
-    void setFullscreen(bool fullscreen);
     void updatePositionUi();
     void showStatus(const QString &message, int timeoutMs = 3000);
     void ensurePlayerControlsVisible();
+    void preparePlayerOverlays();
     void logMpvState(const QString &reason);
     void exportDiagnostics();
     QString diagnosticSummary();
@@ -99,6 +106,7 @@ private:
 
     QString m_currentSubtitle;
     bool m_surfaceAttached = false;
+    QWidget *m_backButton = nullptr;
 
     // Emby 播放会话状态（m_embyItemId 非空表示当前是 Emby 播放）。
     QString m_embyItemId;
@@ -110,6 +118,7 @@ private:
     bool m_reporting = false;
     bool m_autoNextEpisode = true;
     int m_requestSerial = 0;
+    int m_audioSwitchSerial = 0;
     double m_pendingSeekSeconds = 0.0;
     qint64 m_lastWindowResizeLogMs = 0;
 

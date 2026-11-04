@@ -5,16 +5,21 @@
 #include <QAction>
 #include <QActionGroup>
 #include <climits>
+#include <QCursor>
+#include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QShowEvent>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace ui {
@@ -97,21 +102,7 @@ protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        QLinearGradient gradient(rect().topLeft(), rect().bottomRight());
-        gradient.setColorAt(0.0, QColor(0x08, 0x0B, 0x12));
-        gradient.setColorAt(0.55, QColor(0x0B, 0x11, 0x1C));
-        gradient.setColorAt(1.0, QColor(0x05, 0x07, 0x0B));
-        p.fillRect(rect(), gradient);
-
-        const QRectF frame = QRectF(rect()).adjusted(22, 22, -22, -22);
-        QPen pen(QColor(0x33, 0x41, 0x55, 150));
-        pen.setStyle(Qt::DashLine);
-        pen.setWidthF(1.2);
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        p.drawRoundedRect(frame, 12, 12);
+        p.fillRect(rect(), QColor(0, 0, 0));
     }
 };
 
@@ -120,7 +111,41 @@ PlayerPage::PlayerPage(QWidget *parent)
 {
     setObjectName(QStringLiteral("PlayerPage"));
     setAttribute(Qt::WA_StyledBackground, true);
+
+    // EMBY_PC_PLAYER_OVERLAY=0 时退回页面内浮层（排障/无合成器环境）。
+    const QString overlayEnv = qEnvironmentVariable("EMBY_PC_PLAYER_OVERLAY");
+    m_topLevelOverlay = overlayEnv != QLatin1String("0");
+
     buildUi();
+
+    m_overlayTimer = new QTimer(this);
+    m_overlayTimer->setInterval(150);
+    connect(m_overlayTimer, &QTimer::timeout, this, &PlayerPage::pollOverlayCursor);
+    m_lastInteraction.start();
+    hideOverlays();
+}
+
+PlayerPage::~PlayerPage() = default;
+
+void PlayerPage::createOverlayWindows()
+{
+    const Qt::WindowFlags overlayFlags =
+        Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus;
+    auto makeOverlay = [this, overlayFlags](const QString &objectName) {
+        QWidget *overlay = m_topLevelOverlay ? new QWidget(this, overlayFlags) : new QWidget(this);
+        overlay->setObjectName(objectName);
+        overlay->setAttribute(Qt::WA_StyledBackground, true);
+        if (m_topLevelOverlay) {
+            overlay->setAttribute(Qt::WA_TranslucentBackground, true);
+            overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
+            overlay->setAttribute(Qt::WA_NoSystemBackground, true);
+            overlay->setFocusPolicy(Qt::NoFocus);
+        }
+        overlay->hide();
+        return overlay;
+    };
+    m_topBar = makeOverlay(QStringLiteral("PlayerTopBar"));
+    m_controlBar = makeOverlay(QStringLiteral("PlayerControlBar"));
 }
 
 void PlayerPage::buildUi()
@@ -129,9 +154,9 @@ void PlayerPage::buildUi()
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // 顶部信息栏
-    m_topBar = new QWidget(this);
-    m_topBar->setObjectName(QStringLiteral("PlayerTopBar"));
+    createOverlayWindows();
+
+    // 顶部信息栏：不加入布局，作为浮层压在视频上。
     auto *topLayout = new QHBoxLayout(m_topBar);
     topLayout->setContentsMargins(14, 8, 20, 8);
     topLayout->setSpacing(12);
@@ -152,8 +177,9 @@ void PlayerPage::buildUi()
 
     auto *modeBadge = new QLabel(QStringLiteral("演示模式"), m_topBar);
     modeBadge->setObjectName(QStringLiteral("PlayerModeBadge"));
-    topLayout->addWidget(modeBadge);
-    root->addWidget(m_topBar);
+    modeBadge->setFixedHeight(24);
+    modeBadge->setAlignment(Qt::AlignCenter);
+    topLayout->addWidget(modeBadge, 0, Qt::AlignVCenter);
 
     // 视频区域
     m_surfaceStack = new QStackedWidget(this);
@@ -162,9 +188,7 @@ void PlayerPage::buildUi()
     m_surfaceStack->addWidget(m_placeholder);
     root->addWidget(m_surfaceStack, 1);
 
-    // 控制条
-    m_controlBar = new QWidget(this);
-    m_controlBar->setObjectName(QStringLiteral("PlayerControlBar"));
+    // 底部控制条：同样作为浮层，不占视频布局高度。
     auto *controls = new QVBoxLayout(m_controlBar);
     controls->setContentsMargins(22, 10, 22, 12);
     controls->setSpacing(6);
@@ -242,7 +266,6 @@ void PlayerPage::buildUi()
                                         QStringLiteral("FullscreenButton"), m_controlBar);
     buttonRow->addWidget(m_fullscreenButton);
     controls->addLayout(buttonRow);
-    root->addWidget(m_controlBar);
 
     connect(m_backButton, &QPushButton::clicked, this, &PlayerPage::backRequested);
     connect(m_playButton, &QPushButton::clicked, this, &PlayerPage::playPauseRequested);
@@ -263,14 +286,301 @@ void PlayerPage::buildUi()
         if (!m_updatingSlider)
             emit seekRequested(m_seekSlider->value());
     });
+
+    if (!m_topLevelOverlay)
+        updateDockedOverlayGeometry();
+}
+
+void PlayerPage::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (m_topLevelOverlay) {
+        if (m_playerModeActive)
+            syncOverlayGeometry();
+    } else {
+        updateDockedOverlayGeometry();
+    }
+}
+
+void PlayerPage::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    ensureHostWindow();
+    if (m_playerModeActive) {
+        m_lastCursorPos = currentCursorPosition();
+        m_lastInteraction.restart();
+        showOverlays();
+        if (m_autoHide)
+            startAutoHideTimer();
+    }
+}
+
+void PlayerPage::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    hideOverlays();
+    stopAutoHideTimer();
+}
+
+bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_hostWindow) {
+        switch (event->type()) {
+        case QEvent::Move:
+        case QEvent::Resize:
+        case QEvent::ScreenChangeInternal:
+            if (m_playerModeActive)
+                syncOverlayGeometry();
+            break;
+        case QEvent::Show:
+            if (m_playerModeActive) {
+                showOverlays();
+                if (m_autoHide)
+                    startAutoHideTimer();
+            }
+            break;
+        case QEvent::Hide:
+        case QEvent::Close:
+            hideOverlays();
+            stopAutoHideTimer();
+            break;
+        case QEvent::WindowStateChange:
+            if (m_hostWindow && m_hostWindow->isMinimized()) {
+                hideOverlays();
+                stopAutoHideTimer();
+            } else if (m_playerModeActive) {
+                showOverlays();
+                if (m_autoHide)
+                    startAutoHideTimer();
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void PlayerPage::ensureHostWindow()
+{
+    QWidget *host = window();
+    if (host == this)
+        host = nullptr;
+    if (host == m_hostWindow)
+        return;
+    if (m_hostWindow)
+        m_hostWindow->removeEventFilter(this);
+    m_hostWindow = host;
+    if (m_hostWindow)
+        m_hostWindow->installEventFilter(this);
+}
+
+QRect PlayerPage::hostGlobalRect() const
+{
+    QWidget *host = m_hostWindow ? m_hostWindow : window();
+    if (!host || host == this)
+        return QRect(mapToGlobal(QPoint(0, 0)), size());
+    return QRect(host->mapToGlobal(QPoint(0, 0)), host->size());
+}
+
+void PlayerPage::syncOverlayGeometry()
+{
+    if (!m_topBar || !m_controlBar)
+        return;
+    if (!m_topLevelOverlay) {
+        updateDockedOverlayGeometry();
+        return;
+    }
+
+    ensureHostWindow();
+    const QRect host = hostGlobalRect();
+    if (!host.isValid() || host.isEmpty())
+        return;
+
+    const int topHeight = 76;
+    const int maxTopWidth = qMax(200, host.width() - 24);
+    const int topWidth = qMin(qMax(260, m_topBar->sizeHint().width()), maxTopWidth);
+    m_topBar->setGeometry(host.left() + 12, host.top() + 10, topWidth, topHeight);
+
+    // 底部控制条宽度跟随主窗口客户区，贴底；顶层窗口不会被 mpv 原生子窗口盖住。
+    const int controlHeight = 96;
+    m_controlBar->setGeometry(host.left(), host.top() + host.height() - controlHeight,
+                              host.width(), controlHeight);
+
+    if (m_overlaysVisible) {
+        m_topBar->raise();
+        m_controlBar->raise();
+    }
+}
+
+void PlayerPage::updateDockedOverlayGeometry()
+{
+    if (!m_topBar || !m_controlBar)
+        return;
+    const int topHeight = qBound(58, height() / 9, 84);
+    const int controlHeight = qBound(96, height() / 7, 112);
+    m_topBar->setGeometry(0, 0, width(), topHeight);
+    m_controlBar->setGeometry(0, height() - controlHeight, width(), controlHeight);
+    if (m_overlaysVisible) {
+        m_topBar->raise();
+        m_controlBar->raise();
+    }
+}
+
+void PlayerPage::showOverlays()
+{
+    if (!m_controlsRequested || !m_playerModeActive || !isVisible())
+        return;
+    syncOverlayGeometry();
+    m_topBar->show();
+    m_controlBar->show();
+    m_overlaysVisible = true;
+    m_topBar->raise();
+    m_controlBar->raise();
+}
+
+void PlayerPage::hideOverlays()
+{
+    m_overlaysVisible = false;
+    if (m_topBar)
+        m_topBar->hide();
+    if (m_controlBar)
+        m_controlBar->hide();
+}
+
+void PlayerPage::applyOverlayVisibility()
+{
+    if (m_controlsRequested && m_playerModeActive)
+        showOverlays();
+    else
+        hideOverlays();
+}
+
+void PlayerPage::setPlayerModeActive(bool active)
+{
+    if (m_playerModeActive == active) {
+        if (active) {
+            showOverlays();
+            if (m_autoHide)
+                startAutoHideTimer();
+        }
+        return;
+    }
+
+    m_playerModeActive = active;
+    if (active) {
+        ensureHostWindow();
+        m_controlsRequested = true;
+        m_lastCursorPos = currentCursorPosition();
+        m_lastInteraction.restart();
+        showOverlays();
+        if (m_autoHide)
+            startAutoHideTimer();
+        else
+            stopAutoHideTimer();
+    } else {
+        stopAutoHideTimer();
+        hideOverlays();
+    }
+}
+
+void PlayerPage::setControlsVisible(bool visible)
+{
+    m_controlsRequested = visible;
+    if (!visible) {
+        stopAutoHideTimer();
+        hideOverlays();
+        return;
+    }
+    if (!m_playerModeActive)
+        return;
+    m_lastInteraction.restart();
+    showOverlays();
+    if (m_autoHide)
+        startAutoHideTimer();
+}
+
+void PlayerPage::setOverlayAutoHide(bool enabled)
+{
+    m_autoHide = enabled;
+    if (!enabled)
+        stopAutoHideTimer();
+    if (m_playerModeActive && m_controlsRequested) {
+        showOverlays();
+        m_lastInteraction.restart();
+        if (enabled)
+            startAutoHideTimer();
+    }
+}
+
+void PlayerPage::setOverlayHideDelay(int milliseconds)
+{
+    m_hideDelayMs = qMax(0, milliseconds);
+}
+
+void PlayerPage::setOverlayCursorPositionForTest(const QPoint &globalPos, bool hasPosition)
+{
+    m_hasTestCursor = hasPosition;
+    m_testCursorPos = globalPos;
+    if (hasPosition)
+        pollOverlayCursor();
+}
+
+QPoint PlayerPage::currentCursorPosition() const
+{
+    return m_hasTestCursor ? m_testCursorPos : QCursor::pos();
+}
+
+void PlayerPage::startAutoHideTimer()
+{
+    if (!m_overlayTimer)
+        return;
+    if (m_autoHide && m_playerModeActive)
+        m_overlayTimer->start();
+}
+
+void PlayerPage::stopAutoHideTimer()
+{
+    if (m_overlayTimer)
+        m_overlayTimer->stop();
+}
+
+void PlayerPage::pollOverlayCursor()
+{
+    if (!m_playerModeActive || !m_autoHide || !m_controlsRequested)
+        return;
+
+    const QPoint position = currentCursorPosition();
+    const QRect host = hostGlobalRect();
+    const bool inside = host.contains(position);
+
+    // 鼠标在主窗口内移动：显示浮层并重置隐藏计时。
+    if (inside && position != m_lastCursorPos) {
+        m_lastCursorPos = position;
+        m_lastInteraction.restart();
+        showOverlays();
+        return;
+    }
+    if (!inside)
+        m_lastCursorPos = position;
+
+    // 暂停时保持显示（常见播放器行为）。
+    if (!m_playing) {
+        showOverlays();
+        return;
+    }
+
+    if (m_lastInteraction.isValid() && m_lastInteraction.elapsed() >= m_hideDelayMs)
+        hideOverlays();
 }
 
 void PlayerPage::attachVideoSurface(QWidget *surface)
 {
     // T15：真实播放时也必须保留 Qt 控制条；mpv OSC 在部分 libmpv 构建里不可用。
-    m_topBar->setVisible(true);
-    m_controlBar->setVisible(true);
-    m_controlBar->raise();
+    if (m_playerModeActive)
+        showOverlays();
+    else
+        syncOverlayGeometry();
     if (m_surface == surface)
         return;
     if (m_surface) {
@@ -303,6 +613,8 @@ void PlayerPage::setEpisodeInfo(const QString &title, const QString &subtitle)
 {
     m_titleLabel->setText(title);
     m_subtitleLabel->setText(subtitle);
+    if (m_playerModeActive)
+        syncOverlayGeometry();
 }
 
 void PlayerPage::setPosition(qint64 positionMs, qint64 durationMs)
@@ -326,6 +638,18 @@ void PlayerPage::setPlaying(bool playing)
     m_playing = playing;
     m_playButton->setIcon(icon(playing ? Icon::Pause : Icon::Play, QColor(0xFF, 0xFF, 0xFF), 24));
     m_playButton->setToolTip(playing ? QStringLiteral("暂停") : QStringLiteral("播放"));
+
+    if (!m_playerModeActive)
+        return;
+    if (playing) {
+        m_lastInteraction.restart();
+        if (m_autoHide)
+            startAutoHideTimer();
+    } else {
+        // 暂停时保持控制条可见，方便继续播放/选集。
+        showOverlays();
+        stopAutoHideTimer();
+    }
 }
 
 void PlayerPage::setSubtitleTracks(const QList<TrackInfo> &tracks)
@@ -373,12 +697,6 @@ void PlayerPage::setFullscreen(bool fullscreen)
     m_fullscreenButton->setIcon(icon(fullscreen ? Icon::ExitFullscreen : Icon::Fullscreen,
                                      QColor(0xE2, 0xE8, 0xF0), 22));
     m_fullscreenButton->setToolTip(fullscreen ? QStringLiteral("退出全屏") : QStringLiteral("全屏"));
-}
-
-void PlayerPage::setControlsVisible(bool visible)
-{
-    m_topBar->setVisible(visible);
-    m_controlBar->setVisible(visible);
 }
 
 void PlayerPage::showTrackMenu(QPushButton *button, const QList<TrackInfo> &tracks, bool audio)

@@ -26,10 +26,13 @@ compile_commands.json
 .qmake.stash
 *.autosave
 
-# ---- 日志 / 临时文件 ----
+# ---- 日志 / 诊断 / 临时文件（含用户实机上传，绝不入库）----
 *.log
 app.log*
 mpv.log*
+diagnostics.txt
+diagnostics*.txt
+diagnostics-*/
 *.tmp
 *.bak
 *.orig
