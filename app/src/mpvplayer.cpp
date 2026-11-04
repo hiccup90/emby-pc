@@ -85,7 +85,7 @@ const char kInputConf[] =
     "f          script-message app-toggle-fullscreen\n"
     "ESC        script-message app-exit-fullscreen\n"
     // 用中键做探针，避免覆盖 OSC 的左键点击绑定。
-    "MBTN_MIDDLE script-message app-mouse-probe\n";
+    "MBTN_MID script-message app-mouse-probe\n";
 
 QString writeInputConf()
 {
@@ -418,7 +418,7 @@ void MpvPlayer::handleEvent(mpv_event *event)
         else if (name == QLatin1String("app-exit-fullscreen"))
             emit exitFullscreenRequested();
         else if (name == QLatin1String("app-mouse-probe"))
-            qInfo() << "mpv mouse probe: MBTN_MIDDLE received in embedded window";
+            qInfo() << "mpv mouse probe: MBTN_MID received in embedded window";
         break;
     }
     default:

@@ -104,11 +104,11 @@ mpv 官方 issue #4795 确认：`--wid` 嵌入时 mpv 会禁用自己窗口的�
 - `EMBY_PC_MPV_OSC=1` 时 mpv `osc=yes`；VideoHost 在 `EMBY_PC_MPV_OSC=1` 下记录鼠标事件计数（首次 + 每 20 次）。
 - input.conf 新增**中键探针**（避免覆盖 OSC 左键点击）：
   ```
-  MBTN_MIDDLE script-message app-mouse-probe
+  MBTN_MID script-message app-mouse-probe
   ```
   mpv 收到后 app.log 输出：
   ```
-  mpv mouse probe: MBTN_MIDDLE received in embedded window
+  mpv mouse probe: MBTN_MID received in embedded window
   ```
   这条日志能端到端验证：VideoHost 子类化 → mouse 命令 → mpv input handler → client message。若没有这条日志，说明鼠标消息/转发链路有问题；若有，OSC 左键/移动也应能收到同类事件。
 
