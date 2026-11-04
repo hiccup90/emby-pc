@@ -1,0 +1,51 @@
+# ---- 上游参考仓库（仅本地分析用，约 20MB，不入库）----
+/qEmby/
+
+# ---- 构建产物 ----
+/app/build-linux/
+/app/build-windows/
+/app/build-*/
+build/
+build-*/
+/out/
+/dist/
+*.zip
+*.7z
+
+# ---- libmpv 运行时 DLL（由 scripts/fetch-libmpv.ps1 获取，不入库）----
+/app/libs/libmpv/libmpv-2.dll
+
+# ---- CMake / Qt 本地生成物 ----
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+compile_commands.json
+*.user
+*.user.*
+.qmake.stash
+*.autosave
+
+# ---- 日志 / 临时文件 ----
+*.log
+app.log*
+mpv.log*
+*.tmp
+*.bak
+*.orig
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- 敏感文件（绝不入库；token/密码只用环境变量或本地配置）----
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+secrets/

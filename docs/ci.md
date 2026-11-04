@@ -1,0 +1,177 @@
+# GitHub Actions 构建说明（docs/ci.md）
+
+> 文档：docs/ci.md · 维护：release-engineer（T11）· 2026-11-04
+> 仓库：`hiccup90/emby-pc`（默认 private）· 工作流：`.github/workflows/windows-build.yml`
+
+---
+
+## 1. 这个工作流做什么
+
+在 **windows-latest** 上构建 Windows x64 Release 包，产物是一个可直接解压运行的 zip。
+
+| 步骤 | 内容 |
+|---|---|
+| Checkout | 拉取仓库 |
+| Install Qt | `jurplel/install-qt-action@v4` 安装 Qt 6.8.x MSVC 2022 x64（`QT_ROOT_DIR`） |
+| Fetch libmpv | `app/scripts/fetch-libmpv.ps1` 下载 shinchiro mpv-dev x86_64 包，**URL 固定 + SHA-256 校验**，安装 `libmpv-2.dll` 与 `include/mpv` |
+| Configure | `cmake -S app -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=<Qt>` |
+| Build | `cmake --build build --config Release --parallel` |
+| Emby tests | 单独构建 `app/src/emby`（`EMBY_BUILD_TESTS=ON`）并跑 `ctest` |
+| Package | `app/scripts/package-windows.ps1 -SkipBuild`：windeployqt + 复制 libmpv-2.dll + 打 zip |
+| Upload | 上传 artifact **emby-pc-win64**（`dist/emby-pc-win64.zip`，保留 **30 天**） |
+
+触发条件：`push` 到 `main`，或在 Actions 页面点 **Run workflow**（`workflow_dispatch`）。
+
+- Actions 页面：<https://github.com/hiccup90/emby-pc/actions/workflows/windows-build.yml>
+- 单次构建约 5~10 分钟（Qt 缓存命中会更快）。
+
+---
+
+## 2. 下载构建产物（给验收人）
+
+### 方式 A：网页
+
+1. 打开 <https://github.com/hiccup90/emby-pc/actions>，进入 **windows-build**。
+2. 选择最近一次绿色（成功）的 run。
+3. 页面底部 **Artifacts** 区域点击 **emby-pc-win64** 下载。
+4. 解压后目录里应有：`emby-pc.exe`、`libmpv-2.dll`、`platforms\qwindows.dll`、`WINDOWS-ACCEPTANCE.md`、`README-运行.txt`。
+
+### 方式 B：gh CLI
+
+```bash
+# 查看最近 run
+gh run list --repo hiccup90/emby-pc --workflow windows-build
+
+# 下载指定 run 的 artifact 到 dist/
+gh run download <run-id> --repo hiccup90/emby-pc -n emby-pc-win64 -D dist
+
+# 或者直接下载最近一次成功的 artifact
+gh run download --repo hiccup90/emby-pc -n emby-pc-win64 -D dist
+```
+
+> artifact 保留 30 天；过期后重新触发一次 workflow 即可。
+
+---
+
+## 3. 手动触发 / 重跑
+
+```bash
+# 触发 main 分支的最新 workflow（需要 workflow_dispatch，本工作流已开启）
+gh workflow run windows-build.yml --repo hiccup90/emby-pc --ref main
+
+# 重新运行某次失败的 run
+gh run rerun <run-id> --repo hiccup90/emby-pc
+```
+
+也可以在 Actions 页面右侧点 **Re-run all jobs**。
+
+## 4. 如何改版本号
+
+当前版本号出现在三处，发布时保持一致：
+
+| 位置 | 说明 |
+|---|---|
+| `app/CMakeLists.txt` 的 `project(emby-pc ... VERSION x.y.z)` | 若存在，`package-windows.ps1` 会自动读取用于 zip 命名；当前文件未写 VERSION，脚本回退 0.1.0 |
+| `app/src/main.cpp` 的 `app.setApplicationVersion("0.1.0")` | 应用内显示/日志版本 |
+| `app/scripts/package-windows.ps1 -Version x.y.z` | 可选，覆盖上面自动读取的版本（只影响 zip 文件名） |
+
+改完后提交并 push，CI 会自动产出 `dist/emby-pc-<version>-win64.zip`；若只是想打一个特定版本号、不改代码，可在本地运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPrefix C:\Qt\6.8.3\msvc2022_64 -Version 0.1.1
+```
+
+如需给 release 打 tag，建议格式 `v0.1.1`（工作流当前不监听 tag；需要的话可给 `on.push.tags` 增加 `v*`）。
+
+---
+
+## 5. 如何升级 libmpv
+
+libmpv 版本固定在 workflow 顶部的 `env` 中：
+
+```yaml
+env:
+  LIBMPV_URL: "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261104/mpv-dev-x86_64-20261104-git-46787be250.7z"
+  LIBMPV_SHA256: "5ae0aaa85b2e690e9c574a44e10a86f3d5fe4b406ef6dfa684f5ab25e6bf6306"
+```
+
+升级步骤：
+
+1. 打开 shinchiro 发布页 <https://github.com/shinchiro/mpv-winbuild-cmake/releases>，选最新的 `mpv-dev-x86_64-*.7z`（**dev** 包）。
+2. 拿到下载 URL 与 SHA-256（release notes 里每个 asset 都带 sha256；也可本地 `Get-FileHash` 算）。
+3. 同时更新：
+   - `.github/workflows/windows-build.yml` 的 `LIBMPV_URL` / `LIBMPV_SHA256`；
+   - `docs/libmpv-source.md` 的获取记录（跑本地 `fetch-libmpv.ps1` 会自动回写标记区）。
+4. push 后看 CI 是否通过；通过后在 Windows 上跑一遍 [windows-acceptance.md](windows-acceptance.md) 的 S1~S5。
+
+> 本地下载校验（推荐先跑一遍，避免 CI 反复失败）：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File app\scripts\fetch-libmpv.ps1 -Url "<新 URL>" -Sha256 "<新 SHA256>"
+> ```
+
+---
+
+## 6. 失败时怎么看日志
+
+1. Actions → 失败的 run → 左侧点失败的 job（**Windows x64 Release**）。
+2. 展开红色步骤，看命令输出；或命令行拉完整日志：
+   ```bash
+   gh run list --repo hiccup90/emby-pc --workflow windows-build
+   gh run view <run-id> --repo hiccup90/emby-pc --log-failed
+   ```
+3. 下载完整日志：Actions 页面右上 **⋯ → Download log archive**。
+
+### 常见失败与处理
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `fetch-libmpv.ps1 failed ... SHA-256 校验失败` | URL 与 SHA-256 不匹配（选了别的架构/别的日期，或上游文件被替换）。重新从 release 页复制同一 asset 的 URL 和 sha256 |
+| `Invoke-WebRequest` 403/404 | shinchiro release 的 asset 名写错（注意日期/git commit 后缀）；或 GitHub 网络临时问题，重跑 |
+| `找不到 Qt（windeployqt.exe）` | Qt 安装步骤失败或 `QT_ROOT_DIR` 为空；看 Install Qt 步骤日志，确认 `arch: win64_msvc2022_64` |
+| cmake configure 失败 | 看 CMake 输出；常见是 Qt 版本/编译器不匹配（MSVC 2022 x64）、或 `CMAKE_PREFIX_PATH` 没指到 Qt 根目录 |
+| 编译/link 失败 | 看具体 .cpp/链接错误；本地用 `cmake -S app -B build-windows -G "Visual Studio 17 2022" -A x64` 复现 |
+| ctest 失败 | 单独跑 `build-emby\Release\emby_tests.exe --verbose`；单元测试不依赖真实 Emby 服务器（用本地假服务器） |
+| `windeployqt` 失败 | 确认在 Runner 上有 VS 运行时；必要时把 `--compiler-runtime` 去掉（仅影响 VC 运行库打包） |
+| artifact 里没有 zip | 看 Package 步骤输出；`dist/emby-pc-*-win64.zip` 未生成时检查 `package-windows.ps1` 的报错 |
+
+---
+
+## 7. 敏感信息约定（push 前必读）
+
+本仓库是 **private**，但仍按公开仓库标准处理，**绝不允许**提交：
+
+- 任何 AccessToken / API Key / 密码 / cookie；
+- 内网服务器地址（如 10.x / 192.168.x 的真实地址）、真实服务器名、测试账号；
+- 私钥/证书（`*.pem` / `*.key` / `*.pfx`）。
+
+约定：
+
+1. 凭据只通过环境变量（`EMBY_URL` / `EMBY_USER` / `EMBY_PASSWORD`）或本地临时配置传入；`live_probe.cpp` 只读环境变量、不打印 token/password。
+2. 文档/截图中的地址用示例地址（如 `192.168.1.10`），不要用真实内网 IP。
+3. 提交前扫描：
+   ```bash
+   # 在仓库根目录执行；有输出就逐条确认
+   grep -rInE '10\.10\.10\.|192\.168\.|api_key=|X-Emby-Token:|AccessToken' --exclude-dir=.git --exclude-dir=qEmby --exclude-dir=build-linux .
+   ```
+4. 万一误提交：立即在 GitHub 撤销/删除仓库或使用 `git filter-repo` 清理历史，并**轮换**相关 token/密码。
+5. 仓库不需要任何 GitHub Secrets 就能构建（libmpv 是公开下载 + SHA-256 校验），不要把任何 token 放进 Secrets 以外的文件。
+
+---
+
+## 8. 本地复现 CI（Windows 上）
+
+```powershell
+# 与 CI 等价的关键命令
+powershell -ExecutionPolicy Bypass -File app\scripts\fetch-libmpv.ps1 -Url "<CI 里的 LIBMPV_URL>" -Sha256 "<CI 里的 LIBMPV_SHA256>"
+
+cmake -S app -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=C:\Qt\6.8.3\msvc2022_64
+cmake --build build --config Release --parallel
+
+cmake -S app/src/emby -B build-emby -G "Visual Studio 17 2022" -A x64 -DEMBY_BUILD_TESTS=ON -DCMAKE_PREFIX_PATH=C:\Qt\6.8.3\msvc2022_64
+cmake --build build-emby --config Release --parallel
+ctest --test-dir build-emby -C Release --output-on-failure
+
+powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPrefix C:\Qt\6.8.3\msvc2022_64 -BuildDir build -SkipBuild
+```
+
+> Linux 容器（本开发环境）只能验证编译，不产出 Windows 包；Windows 包以 Actions artifact 为准。

@@ -1,0 +1,82 @@
+name: windows-build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  LIBMPV_URL: "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261104/mpv-dev-x86_64-20261104-git-46787be250.7z"
+  LIBMPV_SHA256: "5ae0aaa85b2e690e9c574a44e10a86f3d5fe4b406ef6dfa684f5ab25e6bf6306"
+
+jobs:
+  windows:
+    name: Windows x64 Release
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Qt 6.8 (MSVC 2022 x64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Fetch libmpv (fixed URL + SHA-256)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./app/scripts/fetch-libmpv.ps1 -Url "$env:LIBMPV_URL" -Sha256 "$env:LIBMPV_SHA256" -SkipDocUpdate
+          if ($LASTEXITCODE -ne 0) { throw "fetch-libmpv.ps1 failed (exit $LASTEXITCODE)" }
+
+      - name: Configure CMake (Release, x64)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake -S app -B build -G "Visual Studio 17 2022" -A x64 "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
+
+      - name: Build (Release)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed (exit $LASTEXITCODE)" }
+
+      - name: Emby API tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake -S app/src/emby -B build-emby -G "Visual Studio 17 2022" -A x64 -DEMBY_BUILD_TESTS=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure (emby tests) failed (exit $LASTEXITCODE)" }
+          cmake --build build-emby --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "emby tests build failed (exit $LASTEXITCODE)" }
+          ctest --test-dir build-emby -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "emby tests failed (exit $LASTEXITCODE)" }
+
+      - name: Package (windeployqt + libmpv + zip)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./app/scripts/package-windows.ps1 -QtPrefix $env:QT_ROOT_DIR -BuildDir build -SkipBuild
+          if ($LASTEXITCODE -ne 0) { throw "package-windows.ps1 failed (exit $LASTEXITCODE)" }
+          $zip = Get-ChildItem -Path dist -Filter "emby-pc-*-win64.zip" | Select-Object -First 1
+          if ($null -eq $zip) { throw "dist 下没有生成发布 zip" }
+          Copy-Item $zip.FullName "dist/emby-pc-win64.zip" -Force
+          Write-Host ("Artifact source: " + $zip.FullName)
+
+      - name: Upload artifact (30 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: emby-pc-win64
+          path: dist/emby-pc-win64.zip
+          if-no-files-found: error
+          retention-days: 30

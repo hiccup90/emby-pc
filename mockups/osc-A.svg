@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#0a0e13"/>
+      <stop offset="0.55" stop-color="#141c26"/>
+      <stop offset="1" stop-color="#20303f"/>
+    </linearGradient>
+    <radialGradient id="vig" cx="0.45" cy="0.38" r="0.8">
+      <stop offset="0" stop-color="#33506b" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur40" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect width="1280" height="720" fill="url(#vig)"/>
+  <linearGradient id="skyg" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#0a1520"/>
+    <stop offset="0.5" stop-color="#1a3247"/>
+    <stop offset="1" stop-color="#2c4c66"/>
+  </linearGradient>
+  <rect width="1280" height="720" fill="url(#skyg)"/>
+  <radialGradient id="sung" cx="0.62" cy="0.44" r="0.4">
+    <stop offset="0" stop-color="#FFCE9B" stop-opacity="0.30"/>
+    <stop offset="1" stop-color="#FFCE9B" stop-opacity="0"/>
+  </radialGradient>
+  <rect width="1280" height="720" fill="url(#sung)"/>
+  <path d="M0 486 L150 396 L318 466 L470 378 L640 470 L820 392 L980 466 L1140 406 L1280 476 L1280 720 L0 720 Z" fill="#142434" opacity="0.9"/>
+  <path d="M0 556 L220 486 L420 560 L610 496 L820 566 L1010 500 L1200 570 L1280 536 L1280 720 L0 720 Z" fill="#0b141d"/>
+  <rect y="640" width="1280" height="80" fill="#070c11"/>
+
+
+  <!-- 模拟视频画面里的字幕（ASS 特效字幕） -->
+  <text x="640" y="588" text-anchor="middle" font-size="26" font-weight="600" fill="#000" stroke="#000" stroke-width="5">这是 ASS 特效字幕示例</text>
+  <text x="640" y="588" text-anchor="middle" font-size="26" font-weight="600" fill="#ffffff">这是 ASS 特效字幕示例</text>
+  <text x="640" y="620" text-anchor="middle" font-size="15" fill="#000" stroke="#000" stroke-width="4" opacity="0.9">顶部特效 · 描边 · 卡拉OK · 多位置</text>
+  <text x="640" y="620" text-anchor="middle" font-size="15" fill="#ffffff" opacity="0.85">顶部特效 · 描边 · 卡拉OK · 多位置</text>
+
+  <!-- 统计（mpv stats.lua，按 i 呼出） -->
+  <g font-family="DejaVu Sans Mono, monospace">
+    <rect x="32" y="32" width="452" height="116" rx="4" fill="#000000" opacity="0.55"/>
+    <text x="48" y="58" font-size="13" fill="#7DD3FC">mpv stats · 按 i 呼出</text>
+    <text x="48" y="80" font-size="13" fill="#E2E8F0">1920x1080 · HEVC · 10bit · 23.976 fps</text>
+    <text x="48" y="100" font-size="13" fill="#E2E8F0">hwdec d3d11va · vo gpu-next · 12.4 Mbps</text>
+    <text x="48" y="120" font-size="13" fill="#E2E8F0">dropped 0 · avsync +0.002s · cache 18.2s</text>
+  </g>
+
+  <!-- 标注 -->
+  <g>
+    <rect x="964" y="24" width="284" height="30" rx="15" fill="#3B82F6" opacity="0.92"/>
+    <text x="1106" y="44" text-anchor="middle" font-size="12.5" fill="#ffffff">方案 A · mpv OSC（Lua / ASS 绘制）</text>
+  </g>
+
+  <!-- 标题（OSC 悬浮标题） -->
+  <text x="40" y="616" font-size="13" fill="#ffffff" opacity="0.72">第 2 季 · 第 3 集 · 剧集标题</text>
+
+  <!-- OSC 底栏 -->
+  <rect x="0" y="636" width="1280" height="84" fill="#000000" opacity="0.72"/>
+  <rect x="0" y="636" width="1280" height="1" fill="#ffffff" opacity="0.08"/>
+
+  <!-- 进度条 -->
+  <rect x="72" y="652" width="1136" height="3" rx="1.5" fill="#ffffff" opacity="0.18"/>
+  <rect x="72" y="652" width="812" height="3" rx="1.5" fill="#ffffff" opacity="0.10"/>
+  <rect x="72" y="652" width="512" height="3" rx="1.5" fill="#3B82F6"/>
+  <circle cx="584" cy="653.5" r="5" fill="#ffffff"/>
+
+  <!-- 时间 -->
+  <text x="40" y="657" font-size="12" fill="#ffffff" opacity="0.85" font-family="DejaVu Sans Mono, monospace">12:34</text>
+  <text x="1240" y="657" text-anchor="end" font-size="12" fill="#ffffff" opacity="0.55" font-family="DejaVu Sans Mono, monospace">45:12</text>
+
+  <!-- 左侧按钮：上一集 / 播放 / 下一集 -->
+  <g fill="#ffffff" transform="translate(40,674) scale(1.05)">
+    <rect x="2" y="4" width="2.6" height="16" rx="1"/>
+    <path d="M22 4 L22 20 L9.5 12 Z"/>
+  </g>
+  <g fill="#ffffff" transform="translate(92,672) scale(1.1)">
+    <path d="M7 4 L7 20 L21 12 Z"/>
+  </g>
+  <g fill="#ffffff" transform="translate(144,674) scale(1.05)">
+    <rect x="19.4" y="4" width="2.6" height="16" rx="1"/>
+    <path d="M2 4 L2 20 L14.5 12 Z"/>
+  </g>
+
+  <!-- 右侧按钮：音轨 / 字幕 / 统计 / 全屏 -->
+  <g fill="#ffffff" opacity="0.88" transform="translate(1108,676) scale(0.95)">
+    <path d="M3 9 h4.4 L14 4.4 v15.2 L7.4 15 H3 Z"/>
+    <path d="M16.6 8.4 a5.2 5.2 0 0 1 0 7.2" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(1156,676) scale(0.95)">
+    <rect x="1.5" y="5" width="21" height="14" rx="3" fill="none" stroke="#ffffff" stroke-width="1.7" opacity="0.88"/>
+    <text x="12" y="15.4" text-anchor="middle" font-size="9" font-weight="700" fill="#ffffff" opacity="0.9">CC</text>
+  </g>
+  <g fill="#ffffff" opacity="0.88" transform="translate(1204,676) scale(0.95)">
+    <rect x="4" y="12" width="3.2" height="7" rx="1"/>
+    <rect x="10.4" y="8" width="3.2" height="11" rx="1"/>
+    <rect x="16.8" y="4" width="3.2" height="15" rx="1"/>
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" opacity="0.88" transform="translate(1244,678) scale(0.9)">
+    <path d="M2 8 V4 a2 2 0 0 1 2 -2 h4"/>
+    <path d="M22 8 V4 a2 2 0 0 0 -2 -2 h-4"/>
+    <path d="M2 16 v4 a2 2 0 0 0 2 2 h4"/>
+    <path d="M22 16 v4 a2 2 0 0 1 -2 2 h-4"/>
+  </g>
+</svg>

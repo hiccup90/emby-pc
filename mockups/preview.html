@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>qEmby-like 播放器控制条方案对比</title>
+<style>
+  body { margin: 0; background: #0b0f14; color: #e2e8f0; font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 1360px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; }
+  p.sub { color: #94a3b8; font-size: 14px; margin: 0 0 28px; }
+  section { margin-bottom: 40px; }
+  h2 { font-size: 16px; margin: 0 0 10px; display: flex; align-items: center; gap: 10px; }
+  .tag { font-size: 12px; padding: 2px 10px; border-radius: 20px; background: #3b82f6; color: #fff; }
+  .tag.alt { background: #0ea5e9; }
+  img { width: 100%; border-radius: 12px; border: 1px solid #1e293b; display: block; }
+  ul { margin: 10px 0 0; padding-left: 20px; color: #cbd5e1; font-size: 14px; line-height: 1.8; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #1e293b; color: #cbd5e1; }
+  th { color: #94a3b8; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>播放器控制条：方案 A vs 方案 B</h1>
+  <p class="sub">需求：播放/暂停 · 上一集/下一集 · 字幕选择 · 音轨选择 · 键盘快进快退 · 播放统计（SDR 输出）</p>
+
+  <section>
+    <h2>方案 A <span class="tag">mpv OSC · Lua / ASS 绘制</span></h2>
+    <img src="osc-A.svg" alt="方案 A：mpv OSC">
+    <ul>
+      <li>控制条由 mpv 自己绘制（OSC 脚本），色彩处理与视频同一条管线，永远正确</li>
+      <li>键鼠由 mpv 原生接管，默认绑定齐全；统计面板按 i 呼出</li>
+      <li>可用 osc.conf 换配色/布局/图标；也可以 fork osc.lua 或自写 Lua</li>
+      <li>限制：只能画 ASS（文字/矢量图形），没有原生下拉菜单与复杂动画</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>方案 B <span class="tag alt">Qt 覆盖窗口 · QWidget 绘制</span></h2>
+    <img src="qt-B.svg" alt="方案 B：Qt 覆盖窗口">
+    <ul>
+      <li>控制条是 Qt 控件，设计完全自由：渐变、圆角、缩略图、动画、自定义菜单</li>
+      <li>输入、焦点、全屏、DPI 都由 Qt 管理</li>
+      <li>代价：要做透明覆盖窗口的 z 序/点击穿透/焦点切换，工作量明显更大</li>
+    </ul>
+  </section>
+
+  <h2>功能对照</h2>
+  <table>
+    <tr><th>需求</th><th>方案 A（mpv OSC）</th><th>方案 B（Qt 覆盖）</th></tr>
+    <tr><td>播放 / 暂停</td><td>✔ 内置</td><td>✔</td></tr>
+    <tr><td>上一集 / 下一集</td><td>✔ 需把剧集做成播放列表，或绑定 script-message 通知宿主</td><td>✔ 直接调宿主接口</td></tr>
+    <tr><td>字幕选择</td><td>✔ mpv 内置 select 菜单</td><td>✔ 自定义菜单（更自由）</td></tr>
+    <tr><td>音轨选择</td><td>✔ 同上</td><td>✔ 同上</td></tr>
+    <tr><td>键盘快进 / 快退</td><td>✔ mpv 默认绑定（←/→）</td><td>✔ Qt 自己实现</td></tr>
+    <tr><td>播放统计</td><td>✔ mpv stats.lua（i 键）；可加自定义按钮</td><td>✔ 自定义面板，可做得更精致</td></tr>
+    <tr><td>视觉设计自由度</td><td>中（ASS 绘制）</td><td>高（Qt 控件）</td></tr>
+    <tr><td>工作量</td><td>低</td><td>中高</td></tr>
+  </table>
+</div>
+</body>
+</html>

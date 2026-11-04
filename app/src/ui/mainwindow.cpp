@@ -1,0 +1,1090 @@
+#include "mainwindow.h"
+
+#include "authutils.h"
+#include "detailview.h"
+#include "embyclient.h"
+#include "embythumbnailcache.h"
+#include "homeview.h"
+#include "icons.h"
+#include "libraryview.h"
+#include "logindialog.h"
+#include "mocklibrary.h"
+#include "playerpage.h"
+#include "settingspage.h"
+#include "sidebar.h"
+#include "theme.h"
+#include "thumbnailcache.h"
+#include "tokenstore.h"
+
+#include <QApplication>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QShortcut>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QTimer>
+#include <QVBoxLayout>
+
+#include <algorithm>
+
+namespace ui {
+namespace {
+
+TrackInfo makeTrack(const QString &id, const QString &language, const QString &title,
+                    const QString &codec, bool selected)
+{
+    TrackInfo track;
+    track.id = id;
+    track.language = language;
+    track.title = title;
+    track.codec = codec;
+    track.selected = selected;
+    return track;
+}
+
+bool isUnauthorized(const emby::ApiError &error)
+{
+    return error.httpStatus == 401 || error.httpStatus == 403;
+}
+
+} // namespace
+
+MainWindow::MainWindow(const Options &options, QWidget *parent)
+    : QMainWindow(parent)
+    , m_options(options)
+{
+    Theme::apply(*qApp);
+    m_client = new emby::EmbyClient(this);
+    m_client->setRequestTimeout(12000);
+    if (m_options.tokenStore) {
+        m_tokenStore = m_options.tokenStore;
+    } else {
+        m_tokenStore = new QSettingsTokenStore();
+        m_ownsTokenStore = true;
+    }
+
+    m_cache = new EmbyThumbnailCache(this);
+    m_cache->setClient(m_client);
+    m_data = new LibraryData(m_client, this);
+
+    // Options.requireAuthentication == false：demo / 截图 / UI 自测，直接进入 mock。
+    m_mockMode = !m_options.requireAuthentication;
+    m_mockLibrary = makeMockLibrary(200);
+    for (int i = 0; i < m_mockLibrary.size(); ++i)
+        m_mockIndex.insert(m_mockLibrary.at(i).id, i);
+
+    setWindowTitle(QStringLiteral("Emby PC — 自研客户端"));
+    setMinimumSize(960, 600);
+    resize(1280, 760);
+
+    buildUi();
+    connectSignals();
+    applyMockMode();
+    m_settings->setTokenBackendName(m_tokenStore->backendName());
+    updateSessionUi();
+
+    statusBar()->setSizeGripEnabled(false);
+    statusBar()->showMessage(m_mockMode
+                                 ? QStringLiteral("演示数据：本地 mock，共 %1 部影片/剧集")
+                                       .arg(m_mockLibrary.size())
+                                 : QStringLiteral("正在连接媒体库…"));
+
+    if (m_options.requireAuthentication)
+        QTimer::singleShot(0, this, &MainWindow::restoreSession);
+}
+
+MainWindow::~MainWindow()
+{
+    if (m_ownsTokenStore)
+        delete m_tokenStore;
+}
+
+void MainWindow::buildUi()
+{
+    auto *root = new QWidget(this);
+    root->setObjectName(QStringLiteral("AppRoot"));
+    auto *rootLayout = new QHBoxLayout(root);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    m_sidebar = new Sidebar(root);
+    rootLayout->addWidget(m_sidebar);
+
+    auto *column = new QWidget(root);
+    column->setObjectName(QStringLiteral("MainColumn"));
+    auto *columnLayout = new QVBoxLayout(column);
+    columnLayout->setContentsMargins(0, 0, 0, 0);
+    columnLayout->setSpacing(0);
+
+    // 顶栏
+    m_topBar = new QWidget(column);
+    m_topBar->setObjectName(QStringLiteral("TopBar"));
+    m_topBar->setFixedHeight(64);
+    auto *topLayout = new QHBoxLayout(m_topBar);
+    topLayout->setContentsMargins(24, 0, 20, 0);
+    topLayout->setSpacing(14);
+
+    m_search = new QLineEdit(m_topBar);
+    m_search->setObjectName(QStringLiteral("SearchBox"));
+    m_search->setPlaceholderText(QStringLiteral("搜索电影、剧集、类型…"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setMaximumWidth(460);
+    m_search->setMinimumWidth(260);
+    m_search->setFixedHeight(38);
+    m_search->addAction(icon(Icon::Search, QColor(0x94, 0xA3, 0xB8), 18),
+                        QLineEdit::LeadingPosition);
+    topLayout->addWidget(m_search);
+
+    topLayout->addStretch(1);
+
+    m_sessionStatus = new QLabel(QStringLiteral("演示数据 · 本地 Mock"), m_topBar);
+    m_sessionStatus->setObjectName(QStringLiteral("TopStatus"));
+    topLayout->addWidget(m_sessionStatus);
+
+    m_avatar = new QPushButton(mockUserInitial(), m_topBar);
+    m_avatar->setObjectName(QStringLiteral("TopAvatar"));
+    m_avatar->setFixedSize(34, 34);
+    m_avatar->setCursor(Qt::PointingHandCursor);
+    m_avatar->setToolTip(QStringLiteral("当前用户：%1").arg(mockUserName()));
+    topLayout->addWidget(m_avatar);
+
+    columnLayout->addWidget(m_topBar);
+
+    // 页面栈
+    m_stack = new QStackedWidget(column);
+    m_stack->setObjectName(QStringLiteral("ContentStack"));
+
+    m_home = new HomeView(m_cache, m_stack);
+    m_home->setObjectName(QStringLiteral("HomePage"));
+    m_home->recentView()->setObjectName(QStringLiteral("HomeLibrary"));
+
+    m_libraryView = new LibraryView(m_cache, m_stack);
+    m_libraryView->setObjectName(QStringLiteral("LibraryContent"));
+    m_libraryView->setTitle(QStringLiteral("媒体库"));
+
+    m_settings = new SettingsPage(m_stack);
+    m_detail = new DetailView(m_cache, m_stack);
+    m_player = new PlayerPage(m_stack);
+
+    m_stack->addWidget(m_home);         // StackHome
+    m_stack->addWidget(m_libraryView);  // StackLibrary
+    m_stack->addWidget(m_settings);     // StackSettings
+    m_stack->addWidget(m_detail);       // StackDetail
+    m_stack->addWidget(m_player);       // StackPlayer
+
+    columnLayout->addWidget(m_stack, 1);
+    rootLayout->addWidget(column, 1);
+    setCentralWidget(root);
+}
+
+void MainWindow::connectSignals()
+{
+    connect(m_sidebar, &Sidebar::sectionSelected, this, [this](int index) {
+        const int libraryCount = m_sidebar->sections().size();
+        if (index <= 0) {
+            navigateTo(Page::Home);
+        } else if (index <= libraryCount) {
+            selectSection(index - 1);
+        } else {
+            navigateTo(Page::Settings);
+        }
+    });
+
+    m_searchTimer = new QTimer(this);
+    m_searchTimer->setSingleShot(true);
+    m_searchTimer->setInterval(320);
+    connect(m_searchTimer, &QTimer::timeout, this, &MainWindow::applySearchFilter);
+    connect(m_search, &QLineEdit::textChanged, this, [this]() { m_searchTimer->start(); });
+    connect(m_search, &QLineEdit::returnPressed, this, &MainWindow::applySearchFilter);
+
+    // 首页
+    connect(m_home, &HomeView::itemActivated, this, [this](const QString &itemId) {
+        openDetail(itemId);
+    });
+    connect(m_home, &HomeView::playRequested, this,
+            [this](const QString &itemId) { playItem(itemId, -1, -1); });
+    connect(m_home, &HomeView::sortChanged, this, [this](int mode) {
+        if (m_mockMode) {
+            m_home->recentView()->setSortMode(mode);
+        } else {
+            // 真实首页最近添加固定按 DateCreated 排序，切到媒体库页应用排序。
+            Q_UNUSED(mode);
+        }
+    });
+
+    // 媒体库
+    connect(m_libraryView, &LibraryView::itemActivated, this, [this](const QString &itemId) {
+        openDetail(itemId);
+    });
+    connect(m_libraryView, &LibraryView::playRequested, this,
+            [this](const QString &itemId) { playItem(itemId, -1, -1); });
+    connect(m_libraryView, &LibraryView::loadMoreRequested, this, [this]() {
+        if (m_mockMode || m_libraryLoading || !m_libraryHasMore)
+            return;
+        m_libraryLoading = true;
+        m_libraryView->setLoadingMore(true);
+        loadLibraryPage();
+    });
+    connect(m_libraryView, &LibraryView::sortChanged, this, [this](int) {
+        if (!m_mockMode)
+            reloadLibrary();
+    });
+
+    connect(m_detail, &DetailView::backRequested, this, [this]() {
+        m_stack->setCurrentIndex(m_lastContentIndex);
+    });
+    connect(m_detail, &DetailView::playRequested, this,
+            [this](const QString &itemId, int season, int episode) {
+                playItem(itemId, season, episode);
+            });
+    connect(m_detail, &DetailView::episodeActivated, this,
+            [this](const QString &itemId, int season, int episode) {
+                playItem(itemId, season, episode);
+            });
+
+    connect(m_player, &PlayerPage::backRequested, this, [this]() {
+        if (!m_currentItem.id.isEmpty())
+            openDetail(m_currentItem.id);
+        else
+            m_stack->setCurrentIndex(qBound(StackHome, m_lastContentIndex, StackSettings));
+    });
+    connect(m_player, &PlayerPage::playPauseRequested, this, [this]() {
+        m_player->setPlaying(!m_player->isPlaying());
+    });
+    connect(m_player, &PlayerPage::previousEpisodeRequested, this, [this]() { stepEpisode(-1); });
+    connect(m_player, &PlayerPage::nextEpisodeRequested, this, [this]() { stepEpisode(1); });
+    connect(m_player, &PlayerPage::seekRequested, this, [this](qint64 position) {
+        m_player->setPosition(position, m_currentDurationMs);
+    });
+    connect(m_player, &PlayerPage::fullscreenRequested, this, &MainWindow::toggleFullscreen);
+    connect(m_player, &PlayerPage::statsRequested, this, [this]() {
+        statusBar()->showMessage(QStringLiteral("播放统计面板待接入（mpv stats.lua）"), 2500);
+    });
+    connect(m_player, &PlayerPage::volumeChanged, this, [this](int volume) {
+        statusBar()->showMessage(QStringLiteral("音量 %1%").arg(volume), 1200);
+    });
+    connect(m_player, &PlayerPage::subtitleTrackSelected, this, [this](const QString &trackId) {
+        for (TrackInfo &track : m_subtitleTracks)
+            track.selected = (track.id == trackId);
+        m_player->setSubtitleTracks(m_subtitleTracks);
+        statusBar()->showMessage(QStringLiteral("已选择字幕轨道：%1").arg(trackId), 1800);
+    });
+    connect(m_player, &PlayerPage::audioTrackSelected, this, [this](const QString &trackId) {
+        for (TrackInfo &track : m_audioTracks)
+            track.selected = (track.id == trackId);
+        m_player->setAudioTracks(m_audioTracks);
+        statusBar()->showMessage(QStringLiteral("已选择音轨：%1").arg(trackId), 1800);
+    });
+
+    connect(m_settings, &SettingsPage::loginRequested, this, &MainWindow::requestLogin);
+    connect(m_settings, &SettingsPage::logoutRequested, this, &MainWindow::logout);
+    connect(m_settings, &SettingsPage::mockModeChanged, this, &MainWindow::setMockMode);
+
+    auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    connect(escape, &QShortcut::activated, this, &MainWindow::handleEscape);
+    auto *fullscreenKey = new QShortcut(QKeySequence(Qt::Key_F11), this);
+    connect(fullscreenKey, &QShortcut::activated, this, &MainWindow::toggleFullscreen);
+}
+
+void MainWindow::navigateTo(Page page)
+{
+    switch (page) {
+    case Page::Home:
+        m_sidebar->setCurrentIndex(0);
+        m_stack->setCurrentIndex(StackHome);
+        m_lastContentIndex = StackHome;
+        if (m_mockMode) {
+            if (m_home->recentView()->itemCount() == 0)
+                loadMockHome();
+        } else if (hasSession()) {
+            loadRealHome();
+        }
+        break;
+    case Page::Library:
+    case Page::Movies:
+    case Page::Series:
+        if (!m_sections.isEmpty()) {
+            int wanted = 0;
+            if (page == Page::Movies) {
+                for (int i = 0; i < m_sections.size(); ++i)
+                    if (m_sections.at(i).collectionType == QLatin1String("movies")) {
+                        wanted = i;
+                        break;
+                    }
+            } else if (page == Page::Series) {
+                for (int i = 0; i < m_sections.size(); ++i)
+                    if (m_sections.at(i).collectionType == QLatin1String("tvshows")) {
+                        wanted = i;
+                        break;
+                    }
+            }
+            selectSection(wanted);
+        }
+        break;
+    case Page::Settings:
+        m_sidebar->setCurrentIndex(m_sidebar->sections().size() + 1);
+        m_stack->setCurrentIndex(StackSettings);
+        m_lastContentIndex = StackSettings;
+        break;
+    }
+}
+
+void MainWindow::applyMockMode()
+{
+    if (m_mockMode) {
+        QList<LibrarySection> sections;
+        LibrarySection movies;
+        movies.id = QStringLiteral("mock-movies");
+        movies.name = QStringLiteral("电影");
+        movies.collectionType = QStringLiteral("movies");
+        sections.append(movies);
+        LibrarySection series;
+        series.id = QStringLiteral("mock-series");
+        series.name = QStringLiteral("剧集");
+        series.collectionType = QStringLiteral("tvshows");
+        sections.append(series);
+        m_sections = sections;
+        m_currentSection = -1;
+        loadMockHome();
+        if (m_stack->currentIndex() == StackLibrary)
+            selectSection(0);
+    } else if (hasSession()) {
+        loadRealViews();
+        if (m_stack->currentIndex() == StackHome)
+            loadRealHome();
+        else if (m_stack->currentIndex() == StackLibrary && m_currentSection >= 0)
+            reloadLibrary();
+    } else {
+        m_sections.clear();
+        m_currentSection = -1;
+        m_home->setLoading(false);
+        m_home->setResumeItems({});
+        m_home->setRecentItems({});
+        m_home->recentView()->setLocalFilteringEnabled(true);
+        m_home->recentView()->setTotalCount(0);
+        m_home->setError(QStringLiteral("未登录：请先在设置页登录 Emby 服务器。"));
+        m_libraryView->clearItems();
+        m_libraryView->setError(QStringLiteral("未登录：请先登录 Emby 服务器。"));
+    }
+    rebuildSidebar();
+    refreshServerCard();
+    m_settings->setMockMode(m_mockMode);
+    updateSessionUi();
+    statusBar()->showMessage(m_mockMode ? QStringLiteral("已切换到演示数据（本地 Mock）")
+                                        : QStringLiteral("已切换到真实 Emby 媒体库"),
+                             2200);
+}
+
+void MainWindow::rebuildSidebar()
+{
+    m_sidebar->setSections(m_sections);
+    if (m_stack->currentIndex() == StackHome)
+        m_sidebar->setCurrentIndex(0);
+    else if (m_stack->currentIndex() == StackSettings)
+        m_sidebar->setCurrentIndex(m_sections.size() + 1);
+    else if (m_currentSection >= 0)
+        m_sidebar->setCurrentIndex(m_currentSection + 1);
+}
+
+void MainWindow::refreshServerCard()
+{
+    const bool connected = hasSession() && !m_mockMode;
+    const QString serverName = connected ? (m_serverInfo.serverName.isEmpty()
+                                                ? m_sessionProfile.baseUrl()
+                                                : m_serverInfo.serverName)
+                                         : QString();
+    const QString userName = connected ? m_sessionProfile.userName : QString();
+    m_sidebar->setServerInfo(serverName, userName, !connected);
+}
+
+void MainWindow::loadMockHome()
+{
+    m_home->recentView()->setLocalFilteringEnabled(true);
+    m_home->recentView()->setLocalSortingEnabled(true);
+    m_home->recentView()->setTitle(QStringLiteral("最近添加"));
+    m_home->recentView()->setFilterText(QString());
+
+    QList<MediaItem> resume;
+    for (const MediaItem &item : m_mockLibrary) {
+        if (item.progress > 0.0 && item.progress < 0.99 && resume.size() < 10)
+            resume.append(item);
+    }
+    m_home->setResumeItems(resume);
+    m_home->setRecentItems(m_mockLibrary);
+    m_home->recentView()->setTotalCount(m_mockLibrary.size());
+    m_home->recentView()->setHasMore(false);
+    m_home->setLoading(false);
+    m_realHomeLoaded = false;
+}
+
+void MainWindow::loadMockSection(int sectionIndex)
+{
+    if (sectionIndex < 0 || sectionIndex >= m_sections.size())
+        return;
+    const LibrarySection &section = m_sections.at(sectionIndex);
+    QList<MediaItem> items;
+    for (const MediaItem &item : m_mockLibrary) {
+        if (section.collectionType == QLatin1String("movies") && !item.isSeries())
+            items.append(item);
+        else if (section.collectionType == QLatin1String("tvshows") && item.isSeries())
+            items.append(item);
+        else if (section.collectionType != QLatin1String("movies")
+                 && section.collectionType != QLatin1String("tvshows"))
+            items.append(item);
+    }
+    m_libraryView->setLocalFilteringEnabled(true);
+    m_libraryView->setLocalSortingEnabled(true);
+    m_libraryView->setTitle(section.name);
+    m_libraryView->setFilterText(m_search ? m_search->text() : QString());
+    m_libraryView->setItems(items);
+    m_libraryView->setHasMore(false);
+    m_libraryView->setTotalCount(items.size());
+}
+
+void MainWindow::loadRealViews()
+{
+    if (!m_data || !hasSession())
+        return;
+    m_data->fetchViews([this](const QList<LibrarySection> &sections, const QString &error) {
+        if (!error.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("加载媒体库列表失败：%1").arg(error), 5000);
+            emit dataLoaded(false, error);
+            return;
+        }
+        m_sections = sections;
+        rebuildSidebar();
+        // 默认选中第一个媒体库，供首页“搜索/浏览”与后续切换使用。
+        if (!m_sections.isEmpty()) {
+            if (m_currentSection < 0)
+                m_currentSection = 0;
+            m_currentSection = qBound(0, m_currentSection, m_sections.size() - 1);
+        } else {
+            m_currentSection = -1;
+        }
+    });
+}
+
+void MainWindow::loadRealHome()
+{
+    if (!m_data || !hasSession()) {
+        m_home->setError(QStringLiteral("未登录：请先在设置页登录 Emby 服务器。"));
+        return;
+    }
+    const int generation = ++m_homeGeneration;
+    m_home->setLoading(true, QStringLiteral("正在加载首页…"));
+    m_home->recentView()->setLocalFilteringEnabled(false);
+    m_home->recentView()->setLocalSortingEnabled(false);
+    m_home->recentView()->setTitle(QStringLiteral("最近添加"));
+
+    m_data->fetchHome(12, 24, [this, generation](const QList<MediaItem> &resume,
+                                                 const QList<MediaItem> &recent,
+                                                 const QString &error) {
+        if (generation != m_homeGeneration)
+            return;
+        if (!error.isEmpty()) {
+            m_home->setError(error);
+            emit dataLoaded(false, error);
+            return;
+        }
+        m_home->setResumeItems(resume);
+        m_home->setRecentItems(recent);
+        m_home->setLoading(false);
+        m_home->recentView()->setTotalCount(recent.size());
+        m_home->recentView()->setHasMore(false);
+        m_realHomeLoaded = true;
+        rememberItems(resume);
+        rememberItems(recent);
+        emit dataLoaded(true, QString());
+        statusBar()->showMessage(QStringLiteral("已连接真实媒体库 · 最近添加 %1 项")
+                                     .arg(recent.size()),
+                                 3000);
+    });
+}
+
+void MainWindow::selectSection(int sectionIndex)
+{
+    if (sectionIndex < 0 || sectionIndex >= m_sections.size())
+        return;
+    m_currentSection = sectionIndex;
+    m_sidebar->setCurrentIndex(sectionIndex + 1);
+    m_stack->setCurrentIndex(StackLibrary);
+    m_lastContentIndex = StackLibrary;
+
+    if (m_mockMode) {
+        loadMockSection(sectionIndex);
+        return;
+    }
+    reloadLibrary();
+}
+
+void MainWindow::reloadLibrary()
+{
+    if (!m_data || !hasSession()) {
+        m_libraryView->setError(QStringLiteral("未登录：请先登录 Emby 服务器。"));
+        return;
+    }
+    if (m_currentSection < 0)
+        return;
+
+    ++m_libraryGeneration;
+    m_libraryStart = 0;
+    m_libraryHasMore = false;
+    m_libraryLoading = true;
+    m_libraryView->setLocalFilteringEnabled(false);
+    m_libraryView->setLocalSortingEnabled(false);
+    m_libraryView->clearItems();
+    m_libraryView->setInitialLoading(true,
+                                    QStringLiteral("正在加载 %1…").arg(m_sections.at(m_currentSection).name));
+    loadLibraryPage();
+}
+
+void MainWindow::loadLibraryPage()
+{
+    if (!m_data || !hasSession() || m_currentSection < 0) {
+        m_libraryLoading = false;
+        return;
+    }
+
+    const int generation = m_libraryGeneration;
+    const int start = m_libraryStart;
+    const LibrarySection section = m_sections.at(m_currentSection);
+    const int sortMode = m_libraryView->sortMode();
+    const QString searchTerm = m_search ? m_search->text().trimmed() : QString();
+
+    m_data->fetchItems(section, start, 60, sortMode, searchTerm,
+                       [this, generation, start](const QList<MediaItem> &items, int total,
+                                                 bool hasMore, const QString &error) {
+                           if (generation != m_libraryGeneration)
+                               return;
+                           m_libraryLoading = false;
+                           if (!error.isEmpty()) {
+                               if (start == 0) {
+                                   m_libraryView->setError(error);
+                                   emit dataLoaded(false, error);
+                               } else {
+                                   m_libraryView->setLoadingMore(false);
+                                   statusBar()->showMessage(
+                                       QStringLiteral("加载更多失败：%1").arg(error), 4000);
+                               }
+                               return;
+                           }
+
+                           rememberItems(items);
+                           if (start == 0) {
+                               m_libraryView->setItems(items);
+                               m_libraryView->setTotalCount(total);
+                               m_libraryView->setHasMore(hasMore);
+                           } else {
+                               m_libraryView->appendItems(items, hasMore);
+                               m_libraryView->setTotalCount(total);
+                           }
+                           m_libraryStart = start + items.size();
+                           m_libraryHasMore = hasMore;
+                           if (start == 0)
+                               emit dataLoaded(true, QString());
+                       });
+}
+
+void MainWindow::applySearchFilter()
+{
+    if (!m_search)
+        return;
+    const QString text = m_search->text();
+    if (m_mockMode) {
+        m_home->recentView()->setFilterText(text);
+        m_libraryView->setFilterText(text);
+        return;
+    }
+
+    // 真实数据走服务器 SearchTerm：切到媒体库页重新请求，避免把已加载的 60 条本地过滤。
+    if (!hasSession())
+        return;
+    const bool onLibrary = m_stack->currentIndex() == StackLibrary && m_currentSection >= 0;
+    const bool onHome = m_stack->currentIndex() == StackHome;
+    if (!onLibrary && !onHome)
+        return;
+    if (onHome) {
+        if (!text.trimmed().isEmpty() && !m_sections.isEmpty()) {
+            selectSection(0);
+        } else {
+            loadRealHome();
+        }
+        return;
+    }
+    reloadLibrary();
+}
+
+void MainWindow::setMockMode(bool enabled)
+{
+    if (m_mockMode == enabled) {
+        m_settings->setMockMode(enabled);
+        return;
+    }
+    if (!enabled && !hasSession()) {
+        // 没有真实会话：保持 mock，勾选框回退，并拉起登录框。
+        m_settings->setMockMode(true);
+        requestLogin();
+        return;
+    }
+
+    m_mockMode = enabled;
+    m_cache->clear();
+    m_libraryGeneration++;
+    m_homeGeneration++;
+    m_libraryLoading = false;
+    m_currentSection = -1;
+    if (m_search)
+        m_search->clear();
+    applyMockMode();
+    emit mockModeChanged(enabled);
+}
+
+bool MainWindow::openDetail(const QString &itemId)
+{
+    if (m_mockMode) {
+        const MediaItem *item = findMockItem(itemId);
+        if (!item)
+            return false;
+        showDetailFor(*item);
+        return true;
+    }
+
+    if (!hasSession())
+        return false;
+
+    MediaItem known;
+    const bool hasKnown = knownItem(itemId, &known);
+    if (hasKnown)
+        showDetailFor(known);
+
+    const int generation = ++m_libraryGeneration;
+    m_data->fetchDetail(itemId, [this, generation, itemId](const MediaItem &item,
+                                                          const QString &error) {
+        if (generation != m_libraryGeneration)
+            return;
+        if (!error.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("加载详情失败：%1").arg(error), 5000);
+            if (!m_detail->currentItem().id.isEmpty())
+                return;
+            return;
+        }
+        rememberItems({item});
+        showDetailFor(item);
+    });
+    return hasKnown || !itemId.isEmpty();
+}
+
+void MainWindow::showDetailFor(const MediaItem &item)
+{
+    m_knownItems.insert(item.id, item);
+    m_currentItem = item;
+    m_detail->setItem(item);
+    m_stack->setCurrentIndex(StackDetail);
+}
+
+void MainWindow::openPlayerDemo(const QString &itemId, int seasonNumber, int episodeNumber)
+{
+    playItem(itemId, seasonNumber, episodeNumber);
+}
+
+void MainWindow::playItem(const QString &itemId, int seasonNumber, int episodeNumber)
+{
+    MediaItem item;
+    if (!knownItem(itemId, &item))
+        return;
+
+    m_currentItem = item;
+    m_currentSeason = -1;
+    m_currentEpisode = -1;
+    int durationMinutes = item.runtimeMinutes;
+    QString subtitle;
+
+    if (item.isSeries() && !item.seasons.isEmpty()) {
+        int season = seasonNumber;
+        if (season < 0)
+            season = item.seasons.first().number;
+        const Season *seasonPtr = nullptr;
+        for (const Season &candidate : item.seasons) {
+            if (candidate.number == season) {
+                seasonPtr = &candidate;
+                break;
+            }
+        }
+        if (!seasonPtr)
+            seasonPtr = &item.seasons.first();
+
+        int episode = episodeNumber;
+        if (episode < 0 && !seasonPtr->episodes.isEmpty())
+            episode = seasonPtr->episodes.first().number;
+
+        m_currentSeason = seasonPtr->number;
+        m_currentEpisode = episode;
+        QString episodeTitle;
+        for (const Episode &candidate : seasonPtr->episodes) {
+            if (candidate.number == episode) {
+                episodeTitle = candidate.title;
+                durationMinutes = candidate.runtimeMinutes;
+                break;
+            }
+        }
+        subtitle = QStringLiteral("S%1:E%2 · %3 · %4 分钟")
+                       .arg(m_currentSeason, 2, 10, QLatin1Char('0'))
+                       .arg(m_currentEpisode, 2, 10, QLatin1Char('0'))
+                       .arg(episodeTitle)
+                       .arg(durationMinutes);
+    } else {
+        subtitle = QStringLiteral("%1 · %2 · %3 分钟")
+                       .arg(item.year)
+                       .arg(item.genreText())
+                       .arg(durationMinutes);
+    }
+
+    m_currentDurationMs = durationMinutes * 60 * 1000;
+    m_player->setEpisodeInfo(item.title, subtitle);
+    m_player->setPosition(0, m_currentDurationMs);
+    m_player->setPlaying(true);
+    m_player->setFullscreen(m_fullscreen);
+
+    m_subtitleTracks = {
+        makeTrack(QStringLiteral("sub-chi"), QStringLiteral("chi"), QStringLiteral("中文（简体）"),
+                  QStringLiteral("ass"), true),
+        makeTrack(QStringLiteral("sub-eng"), QStringLiteral("eng"), QStringLiteral("English"),
+                  QStringLiteral("ass"), false),
+        makeTrack(QStringLiteral("sub-off"), QString(), QStringLiteral("关闭字幕"), QString(), false),
+    };
+    m_audioTracks = {
+        makeTrack(QStringLiteral("aud-chi"), QStringLiteral("chi"), QStringLiteral("中文 · 5.1"),
+                  QStringLiteral("eac3"), true),
+        makeTrack(QStringLiteral("aud-eng"), QStringLiteral("eng"), QStringLiteral("English · 5.1"),
+                  QStringLiteral("eac3"), false),
+    };
+    m_player->setSubtitleTracks(m_subtitleTracks);
+    m_player->setAudioTracks(m_audioTracks);
+
+    m_stack->setCurrentIndex(StackPlayer);
+}
+
+void MainWindow::stepEpisode(int delta)
+{
+    if (!m_currentItem.isSeries() || m_currentSeason < 0 || m_currentEpisode < 0)
+        return;
+
+    QList<Episode> flat;
+    for (const Season &season : m_currentItem.seasons)
+        for (const Episode &episode : season.episodes)
+            flat.append(episode);
+
+    int currentIndex = -1;
+    int index = 0;
+    for (const Season &season : m_currentItem.seasons) {
+        for (const Episode &episode : season.episodes) {
+            if (season.number == m_currentSeason && episode.number == m_currentEpisode)
+                currentIndex = index;
+            ++index;
+        }
+    }
+    if (currentIndex < 0)
+        return;
+    const int nextIndex = currentIndex + delta;
+    if (nextIndex < 0 || nextIndex >= flat.size())
+        return;
+
+    int count = 0;
+    for (const Season &season : m_currentItem.seasons) {
+        for (const Episode &episode : season.episodes) {
+            if (count == nextIndex) {
+                playItem(m_currentItem.id, season.number, episode.number);
+                return;
+            }
+            ++count;
+        }
+    }
+}
+
+void MainWindow::toggleFullscreen()
+{
+    if (m_fullscreen) {
+        showNormal();
+        m_fullscreen = false;
+        m_sidebar->show();
+        m_topBar->show();
+        m_stack->setCurrentIndex(m_fullscreenReturnIndex);
+        m_player->setFullscreen(false);
+        return;
+    }
+
+    m_fullscreenReturnIndex = m_stack->currentIndex();
+    m_fullscreen = true;
+    m_sidebar->hide();
+    m_topBar->hide();
+    m_stack->setCurrentIndex(StackPlayer);
+    m_player->setFullscreen(true);
+    showFullScreen();
+}
+
+void MainWindow::handleEscape()
+{
+    if (m_fullscreen) {
+        toggleFullscreen();
+        return;
+    }
+    if (m_stack->currentIndex() == StackPlayer) {
+        if (!m_currentItem.id.isEmpty())
+            openDetail(m_currentItem.id);
+        else
+            m_stack->setCurrentIndex(qBound(StackHome, m_lastContentIndex, StackSettings));
+    } else if (m_stack->currentIndex() == StackDetail) {
+        m_stack->setCurrentIndex(m_lastContentIndex);
+    }
+}
+
+void MainWindow::requestLogin()
+{
+    showLoginDialog();
+}
+
+void MainWindow::restoreSession()
+{
+    const emby::ServerProfile stored = m_tokenStore->loadProfile();
+    if (!stored.isAuthenticated()) {
+        showLoginDialog();
+        return;
+    }
+
+    m_sessionProfile = stored;
+    m_client->setProfile(stored);
+    statusBar()->showMessage(QStringLiteral("正在恢复上次的登录状态…"), 2000);
+
+    QPointer<MainWindow> self(this);
+    m_client->fetchPublicSystemInfo([self, stored](const emby::ServerInfo &info,
+                                                   const emby::ApiError &error) {
+        if (!self)
+            return;
+        if (error.isError()) {
+            self->showLoginDialog(
+                QStringLiteral("无法连接上次的服务器：%1\n请检查服务器是否在线，或修改服务器地址后重试。")
+                    .arg(friendlyApiError(error)));
+            return;
+        }
+        self->m_serverInfo = info;
+        self->m_client->fetchViews(
+            [self, stored](const emby::ItemQueryResult &, const emby::ApiError &viewError) {
+                if (!self)
+                    return;
+                if (viewError.isError()) {
+                    if (isUnauthorized(viewError)) {
+                        self->m_tokenStore->clear();
+                        self->m_sessionProfile = emby::ServerProfile();
+                        self->m_sessionActive = false;
+                        self->m_client->setProfile(emby::ServerProfile());
+                        self->m_settings->clearSession();
+                        self->updateSessionUi();
+                        self->showLoginDialog(QStringLiteral("登录状态已失效，请重新登录。"));
+                    } else {
+                        self->showLoginDialog(
+                            QStringLiteral("验证登录状态失败：%1").arg(friendlyApiError(viewError)));
+                    }
+                    return;
+                }
+                self->onLoggedIn(stored, self->m_serverInfo);
+            });
+    });
+}
+
+void MainWindow::showLoginDialog(const QString &message)
+{
+    if (!m_client)
+        return;
+    if (m_loginDialog) {
+        m_loginDialog->show();
+        m_loginDialog->raise();
+        m_loginDialog->activateWindow();
+        return;
+    }
+
+    const QString initialUrl = m_sessionProfile.url.isEmpty() ? m_lastServerUrl
+                                                              : m_sessionProfile.url;
+    const QString initialUser = m_sessionProfile.userName.isEmpty() ? m_lastUserName
+                                                                   : m_sessionProfile.userName;
+    auto *dialog = new LoginDialog(m_client, this);
+    dialog->setInitialValues(initialUrl, initialUser, message);
+    connect(dialog, &LoginDialog::loginSucceeded, this,
+            [this, dialog](const emby::ServerProfile &profile) {
+                onLoggedIn(profile, dialog->serverInfo());
+            });
+    connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+        if (m_loginDialog == dialog)
+            m_loginDialog = nullptr;
+        dialog->deleteLater();
+    });
+    m_loginDialog = dialog;
+    dialog->open();
+}
+
+void MainWindow::onLoggedIn(const emby::ServerProfile &profile, const emby::ServerInfo &info)
+{
+    if (!profile.isAuthenticated())
+        return;
+    m_sessionProfile = profile;
+    m_serverInfo = info;
+    m_sessionActive = true;
+    m_lastServerUrl = profile.baseUrl();
+    m_lastUserName = profile.userName;
+    m_client->setProfile(profile);
+    m_tokenStore->saveProfile(profile);
+    m_settings->setSession(profile, info);
+    m_cache->clear();
+
+    // 登录成功即使用真实媒体库；用户随后仍可在设置页手动切回 mock。
+    m_mockMode = false;
+    m_settings->setMockMode(false);
+    m_currentSection = -1;
+    m_realHomeLoaded = false;
+    ++m_homeGeneration;
+    ++m_libraryGeneration;
+    updateSessionUi();
+    rebuildSidebar();
+    refreshServerCard();
+    loadRealViews();
+    if (m_stack->currentIndex() == StackLibrary)
+        selectSection(0);
+    else
+        loadRealHome();
+
+    emit loginStateChanged(true);
+    statusBar()->showMessage(QStringLiteral("已登录：%1 @ %2")
+                                 .arg(profile.userName, profile.baseUrl()),
+                             3000);
+}
+
+void MainWindow::logout()
+{
+    m_tokenStore->clear();
+    m_sessionProfile = emby::ServerProfile();
+    m_serverInfo = {};
+    m_sessionActive = false;
+    m_client->setProfile(emby::ServerProfile());
+    m_client->abortAll();
+    m_cache->clear();
+    m_knownItems.clear();
+    m_sections.clear();
+    m_currentSection = -1;
+    m_realHomeLoaded = false;
+    ++m_homeGeneration;
+    ++m_libraryGeneration;
+    m_libraryLoading = false;
+    m_settings->clearSession();
+    m_home->setResumeItems({});
+    m_home->setRecentItems({});
+    m_home->setError(QStringLiteral("未登录：请先登录 Emby 服务器。"));
+    m_libraryView->clearItems();
+    m_libraryView->setError(QStringLiteral("未登录：请先登录 Emby 服务器。"));
+    rebuildSidebar();
+    refreshServerCard();
+    updateSessionUi();
+    emit loginStateChanged(false);
+    statusBar()->showMessage(QStringLiteral("已退出登录"), 2000);
+    showLoginDialog(QStringLiteral("已退出登录，请重新连接服务器。"));
+}
+
+void MainWindow::updateSessionUi()
+{
+    if (!m_sessionStatus)
+        return;
+    if (hasSession() && !m_mockMode) {
+        m_sessionStatus->setText(QStringLiteral("已登录 · %1").arg(
+            m_sessionProfile.userName.isEmpty() ? m_sessionProfile.baseUrl()
+                                                : m_sessionProfile.userName));
+        m_sessionStatus->setToolTip(m_sessionProfile.baseUrl());
+        if (m_avatar) {
+            m_avatar->setText(m_sessionProfile.userName.left(1).toUpper());
+            m_avatar->setToolTip(QStringLiteral("当前用户：%1").arg(m_sessionProfile.userName));
+        }
+    } else if (hasSession() && m_mockMode) {
+        m_sessionStatus->setText(QStringLiteral("演示数据 · 已登录 %1").arg(m_sessionProfile.userName));
+        m_sessionStatus->setToolTip(QStringLiteral("设置页可切回真实媒体库"));
+        if (m_avatar)
+            m_avatar->setText(m_sessionProfile.userName.left(1).toUpper());
+    } else {
+        m_sessionStatus->setText(m_mockMode
+                                     ? QStringLiteral("演示数据 · 本地 Mock")
+                                     : QStringLiteral("未登录 · 等待登录"));
+        m_sessionStatus->setToolTip(QString());
+        if (m_avatar) {
+            m_avatar->setText(mockUserInitial());
+            m_avatar->setToolTip(QStringLiteral("当前用户：%1").arg(mockUserName()));
+        }
+    }
+}
+
+void MainWindow::setSearchText(const QString &text)
+{
+    m_search->setText(text);
+    applySearchFilter();
+}
+
+QStringList MainWindow::libraryIds() const
+{
+    if (m_mockMode) {
+        QStringList ids;
+        ids.reserve(m_mockLibrary.size());
+        for (const MediaItem &item : m_mockLibrary)
+            ids.append(item.id);
+        return ids;
+    }
+    QStringList ids;
+    if (m_stack && m_stack->currentIndex() == StackLibrary)
+        ids = m_libraryView->visibleItemIds();
+    else
+        ids = m_home->recentView()->visibleItemIds();
+    return ids;
+}
+
+QStringList MainWindow::sectionNames() const
+{
+    QStringList names;
+    for (const LibrarySection &section : m_sections)
+        names.append(section.name);
+    return names;
+}
+
+int MainWindow::currentStackIndex() const
+{
+    return m_stack ? m_stack->currentIndex() : -1;
+}
+
+const MediaItem *MainWindow::findMockItem(const QString &itemId) const
+{
+    const auto it = m_mockIndex.constFind(itemId);
+    if (it == m_mockIndex.constEnd())
+        return nullptr;
+    return &m_mockLibrary.at(it.value());
+}
+
+bool MainWindow::knownItem(const QString &itemId, MediaItem *out) const
+{
+    if (m_mockMode) {
+        const MediaItem *item = findMockItem(itemId);
+        if (!item)
+            return false;
+        if (out)
+            *out = *item;
+        return true;
+    }
+    const auto it = m_knownItems.constFind(itemId);
+    if (it == m_knownItems.constEnd())
+        return false;
+    if (out)
+        *out = it.value();
+    return true;
+}
+
+void MainWindow::rememberItems(const QList<MediaItem> &items)
+{
+    for (const MediaItem &item : items)
+        m_knownItems.insert(item.id, item);
+}
+
+} // namespace ui
