@@ -187,6 +187,8 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | 2026-11-04 | 28a5537 | <https://github.com/hiccup90/emby-pc/actions/runs/41791815017> | emby-pc-win64 / emby-pc-win64.zip（72,186,321 字节） | 首次成功：修复 windows-2022 runner 与 videohost static_cast，全步骤通过（3m54s） |
 | 2026-11-04 | a47403d | <https://github.com/hiccup90/emby-pc/actions/runs/41793756453> | emby-pc-win64 / emby-pc-win64.zip（72,186,309 字节） | T7 真实媒体库（ui 源码 + README + preview PNG），全步骤通过（4m24s） |
 | 2026-11-04 | 5d702e6 | <https://github.com/hiccup90/emby-pc/actions/runs/41841471114> | emby-pc-win64 / emby-pc-win64.zip（72,200,677 字节） | T15 修复：Qt 控制条可见/窗口 720x480+size grip/VideoHost EnumChildWindows/导出诊断；全步骤通过（3m52s），供用户复测 |
+| 2026-11-04 | db9fd51 | <https://github.com/hiccup90/emby-pc/actions/runs/41862539535> | emby-pc-win64 / emby-pc-win64.zip（artifact id 13341056549） | T17/T18 基础版：player mode 接管、mpv 输入转发（SetWindowSubclass/comctl32）、自动隐藏浮层；成功（排队后完成），可作为兜底 |
+| 2026-11-04 | 88d1268 | <https://github.com/hiccup90/emby-pc/actions/runs/41867053696> | emby-pc-win64 / emby-pc-win64.zip（72,211,822 字节，artifact id 13342717652） | **T17/T18 最终版**：MBTN_MID 探针、音轨 serial 修正、player mode 隐藏 QMenuBar、VideoHost 去 windowsx.h（LOWORD/HIWORD）；全步骤通过（4m30s），供用户复测 |
 
 包内容（各次一致，54 个条目，解压约 171MB）：
 emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。

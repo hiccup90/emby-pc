@@ -152,7 +152,8 @@ initial true playerHidden true fsHidden true exitFsHidden true restored true fsN
 ### 6.3 Windows CI
 
 - run `41862539535`（commit `db9fd51`，含 T17 输入转发/`SetWindowSubclass`/`comctl32`）**全绿**：Qt 6.8 MSVC 2022 x64 配置、Release 构建、Emby API 测试、windeployqt 打包、artifact 上传全部成功；artifact `emby-pc-win64` id `13341056549`（72,211,126 bytes）。
-- 该 run 不含本文后续小修（`MBTN_MID` 探针名、音轨 serial、player mode 隐藏 QMenuBar）；最新 run `41864472217` 仍在 GitHub Actions 队列（`degraded_performance`），队列恢复后会覆盖最终代码。
+- 中间 run `41864472217`（`MBTN_MID` + 音轨 serial，commit `fafb03d`）也全绿。
+- **最终 run `41867053696`（commit `88d1268`，含菜单栏隐藏 + 坐标宏）全绿**：配置/Release 构建/Emby API 测试/打包/artifact 上传全部成功；artifact `emby-pc-win64` id `13342717652`（72,211,822 bytes）。
 - 结论：`SetWindowSubclass` + `comctl32` 的 Windows 编译/打包风险已排除；剩余验证是实机鼠标/键盘转发与 OSC 行为。
 
 ### 6.4 实机日志基线（用户此前提供）
