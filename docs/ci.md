@@ -180,16 +180,14 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 
 ---
 
-## 9. 构建记录（首次成功）
+## 9. 构建记录
 
-| 项 | 值 |
-|---|---|
-| 日期 | 2026-11-04 |
-| 提交 | +28a5537+ |
-| Run | <https://github.com/hiccup90/emby-pc/actions/runs/41791815017> |
-| 结果 | ✅ 成功（Set up / Checkout / Install Qt / Fetch libmpv / Configure / Build / Emby tests / Package / Upload 全部通过） |
-| Artifact | +emby-pc-win64+（+emby-pc-win64.zip+，72,186,321 字节，保留 30 天） |
-| 包内容 | +emby-pc-0.1.0-win64/+：emby-pc.exe、libmpv-2.dll、Qt6*.dll、platforms/qwindows.dll、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt（54 个条目，解压约 171MB） |
-| 耗时 | 约 3 分 54 秒 |
+| 日期 | 提交 | Run | Artifact | 备注 |
+|---|---|---|---|---|
+| 2026-11-04 | 28a5537 | <https://github.com/hiccup90/emby-pc/actions/runs/41791815017> | emby-pc-win64 / emby-pc-win64.zip（72,186,321 字节） | 首次成功：修复 windows-2022 runner 与 videohost static_cast，全步骤通过（3m54s） |
+| 2026-11-04 | a47403d | <https://github.com/hiccup90/emby-pc/actions/runs/41793756453> | emby-pc-win64 / emby-pc-win64.zip（72,186,309 字节） | T7 真实媒体库（ui 源码 + README + preview PNG），全步骤通过（4m24s） |
 
-> 后续每次 push 到 main 或手动 Run workflow 都会重新产出同名 artifact；下载方式见第 2 节。
+包内容（两次一致，54 个条目，解压约 171MB）：
+emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
+
+> 后续每次 push 到 main 或手动 Run workflow 都会重新产出同名 artifact（emby-pc-win64，保留 30 天）；下载方式见第 2 节。
