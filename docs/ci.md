@@ -177,3 +177,19 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 ```
 
 > Linux 容器（本开发环境）只能验证编译，不产出 Windows 包；Windows 包以 Actions artifact 为准。
+
+---
+
+## 9. 构建记录（首次成功）
+
+| 项 | 值 |
+|---|---|
+| 日期 | 2026-11-04 |
+| 提交 | +28a5537+ |
+| Run | <https://github.com/hiccup90/emby-pc/actions/runs/41791815017> |
+| 结果 | ✅ 成功（Set up / Checkout / Install Qt / Fetch libmpv / Configure / Build / Emby tests / Package / Upload 全部通过） |
+| Artifact | +emby-pc-win64+（+emby-pc-win64.zip+，72,186,321 字节，保留 30 天） |
+| 包内容 | +emby-pc-0.1.0-win64/+：emby-pc.exe、libmpv-2.dll、Qt6*.dll、platforms/qwindows.dll、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt（54 个条目，解压约 171MB） |
+| 耗时 | 约 3 分 54 秒 |
+
+> 后续每次 push 到 main 或手动 Run workflow 都会重新产出同名 artifact；下载方式见第 2 节。
