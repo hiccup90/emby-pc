@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 
+class QEvent;
 class QWidget;
 class QTimer;
 
@@ -59,6 +60,11 @@ private:
     void setFullscreen(bool fullscreen);
     void updatePositionUi();
     void showStatus(const QString &message, int timeoutMs = 3000);
+    void ensurePlayerControlsVisible();
+    void logMpvState(const QString &reason);
+    void exportDiagnostics();
+    QString diagnosticSummary();
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     // ---- Emby 播放链路 ----
     void connectUiPlaybackSignals();
@@ -105,6 +111,7 @@ private:
     bool m_autoNextEpisode = true;
     int m_requestSerial = 0;
     double m_pendingSeekSeconds = 0.0;
+    qint64 m_lastWindowResizeLogMs = 0;
 
     QList<EpisodeEntry> m_episodeQueue;
     int m_episodeIndex = -1;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
 class QTimer;
@@ -15,6 +16,9 @@ public:
     quintptr nativeWindow();
 
     QSize minimumSizeHint() const override;
+
+    // 导出当前宿主与子窗口几何信息，供“帮助 → 导出诊断信息”使用。
+    QString diagnosticSummary();
 
 protected:
     void resizeEvent(QResizeEvent *event) override;

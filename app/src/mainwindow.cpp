@@ -14,9 +14,15 @@
 
 #include <QAction>
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QDebug>
+#include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -25,9 +31,15 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPointer>
+#include <QResizeEvent>
+#include <QScreen>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStatusBar>
+#include <QSysInfo>
+#include <QTextStream>
 #include <QTimer>
+#include <QUrl>
 #include <QWidget>
 
 namespace {
@@ -112,10 +124,12 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     });
     connect(m_player, &MpvPlayer::fileLoaded, this, [this]() {
         m_playerPage->setPlaying(true);
+        ensurePlayerControlsVisible();
         if (m_pendingSeekSeconds > 0.0) {
             m_player->seekAbsolute(m_pendingSeekSeconds);
             m_pendingSeekSeconds = 0.0;
         }
+        logMpvState(QStringLiteral("file-loaded"));
         showStatus(tr("正在播放"));
         // track-list 在 FILE_LOADED 后才稳定；稍等再取，兼顾部分格式解析延迟。
         QTimer::singleShot(150, this, &PlayerController::refreshTracks);
@@ -227,10 +241,51 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         });
     }
 
+    // T15：ui::MainWindow 构造时 setMinimumSize(960,600) 且状态栏 size grip 关闭，
+    // 在部分高 DPI/小屏上用户会觉得主窗口“不可缩放”。这里在不改 ui 源码的前提下
+    // 放宽最小尺寸并启用右下角 resize grip（最大化/拖边框仍由系统窗口管理）。
+    const QSize uiMinimum = m_window->minimumSize();
+    m_window->installEventFilter(this);
+    m_window->setMinimumSize(QSize(720, 480));
+    m_window->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
+    if (QStatusBar *status = m_window->statusBar())
+        status->setSizeGripEnabled(true);
+    if (QScreen *screen = m_window->screen()) {
+        // 默认 1280x760 在 1366x768/高 DPI 小屏上会超出可用区域，用户容易误以为
+        // 窗口“不能调整”。先按可用区域收紧初始尺寸，再允许自由缩放。
+        const QSize available = screen->availableGeometry().size();
+        if (available.isValid()) {
+            QSize target = m_window->size().boundedTo(available - QSize(48, 96));
+            target = target.expandedTo(QSize(720, 480));
+            if (target != m_window->size())
+                m_window->resize(target);
+        }
+        qInfo() << "window: screen available" << screen->availableGeometry()
+                << "dpr" << screen->devicePixelRatio();
+    }
+    qInfo() << "window: minimum" << uiMinimum << "->" << m_window->minimumSize()
+            << "maximum" << m_window->maximumSize() << "current" << m_window->size()
+            << "sizeGrip" << (m_window->statusBar()
+                                   && m_window->statusBar()->isSizeGripEnabled());
+
     connectUiPlaybackSignals();
 }
 
 PlayerController::~PlayerController() = default;
+
+bool PlayerController::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_window && event->type() == QEvent::Resize) {
+        auto *resizeEvent = static_cast<QResizeEvent *>(event);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - m_lastWindowResizeLogMs >= 500) {
+            m_lastWindowResizeLogMs = now;
+            qInfo() << "window resize event" << resizeEvent->oldSize() << "->"
+                    << resizeEvent->size() << "minimum" << m_window->minimumSize();
+        }
+    }
+    return QObject::eventFilter(watched, event);
+}
 
 void PlayerController::connectUiPlaybackSignals()
 {
@@ -291,6 +346,26 @@ void PlayerController::installMenus()
     QAction *quitAction = fileMenu->addAction(tr("退出"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, m_window, &QWidget::close);
+
+    // main.cpp 里的“帮助”菜单在本函数之后才创建；延迟到事件循环首轮再挂
+    // “导出诊断信息”，这样不需要改 main.cpp 也能保证菜单只出现一次。
+    QTimer::singleShot(0, this, [this]() {
+        QMenu *helpMenu = nullptr;
+        const QList<QAction *> actions = m_window->menuBar()->actions();
+        for (QAction *action : actions) {
+            if (action->menu() && action->text().contains(tr("帮助"))) {
+                helpMenu = action->menu();
+                break;
+            }
+        }
+        if (!helpMenu)
+            helpMenu = m_window->menuBar()->addMenu(tr("帮助(&H)"));
+        if (helpMenu->findChild<QAction *>(QStringLiteral("ExportDiagnosticsAction")))
+            return;
+        QAction *exportAction = helpMenu->addAction(tr("导出诊断信息…"));
+        exportAction->setObjectName(QStringLiteral("ExportDiagnosticsAction"));
+        connect(exportAction, &QAction::triggered, this, &PlayerController::exportDiagnostics);
+    });
 }
 
 void PlayerController::openFile()
@@ -338,9 +413,7 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
     m_playerPage->setEpisodeInfo(firstInfo.fileName(), m_currentSubtitle);
     m_playerPage->setPlaying(true);
     m_playerPage->setVolume(m_playerPage->volume());
-
-    if (auto *controlBar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar")))
-        controlBar->hide();
+    ensurePlayerControlsVisible();
 
     m_window->setWindowTitle(QStringLiteral("Emby PC — %1").arg(firstInfo.fileName()));
     showStatus(tr("已加载 %1 个文件").arg(files.size()), 3000);
@@ -372,6 +445,7 @@ bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
     }
 
     m_player->setVolume(m_playerPage->volume());
+    logMpvState(QStringLiteral("initialized"));
     return true;
 }
 
@@ -569,8 +643,7 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
     m_playerPage->setEpisodeInfo(title.isEmpty() ? itemId : title, m_currentSubtitle);
     m_playerPage->setPlaying(true);
     m_playerPage->setVolume(m_playerPage->volume());
-    if (auto *controlBar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar")))
-        controlBar->hide();
+    ensurePlayerControlsVisible();
 
     m_window->setWindowTitle(QStringLiteral("Emby PC — %1").arg(title.isEmpty() ? itemId : title));
     reportPlaybackStart();
@@ -581,11 +654,16 @@ void PlayerController::showPlayerPage()
 {
     if (!m_playerPage)
         return;
+    ensurePlayerControlsVisible();
     QStackedWidget *stack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget());
     if (!stack)
         stack = m_window->findChild<QStackedWidget *>(QStringLiteral("ContentStack"));
     if (stack)
         stack->setCurrentWidget(m_playerPage);
+    if (auto *controlBar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar"))) {
+        qInfo() << "controls: PlayerControlBar visible" << controlBar->isVisible()
+                << "geometry" << controlBar->geometry();
+    }
 }
 
 void PlayerController::stepEmbyEpisode(int delta)
@@ -680,6 +758,160 @@ void PlayerController::showStatus(const QString &message, int timeoutMs)
 {
     if (m_window && m_window->statusBar())
         m_window->statusBar()->showMessage(message, timeoutMs);
+}
+
+void PlayerController::ensurePlayerControlsVisible()
+{
+    if (!m_playerPage)
+        return;
+    m_playerPage->setControlsVisible(true);
+    if (auto *controlBar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar"))) {
+        controlBar->show();
+        controlBar->raise();
+    }
+}
+
+void PlayerController::logMpvState(const QString &reason)
+{
+    if (!m_player || !m_player->isReady())
+        return;
+
+    // 不要记录 http-header-fields：其中含 Authorization/token。
+    static const QStringList keys = {
+        QStringLiteral("mpv-version"), QStringLiteral("vo"), QStringLiteral("gpu-api"),
+        QStringLiteral("gpu-context"), QStringLiteral("hwdec"),
+        QStringLiteral("hwdec-current"), QStringLiteral("options/osc"),
+        QStringLiteral("options/load-scripts"), QStringLiteral("options/input-vo-keyboard"),
+        QStringLiteral("options/input-cursor"), QStringLiteral("options/wid"),
+        QStringLiteral("options/script-opts"), QStringLiteral("script-list")
+    };
+    QStringList values;
+    for (const QString &key : keys) {
+        const QString value = m_player->getPropertyString(key.toUtf8().constData());
+        if (!value.isEmpty())
+            values.append(key + QLatin1Char('=') + value);
+    }
+    qInfo().noquote() << "mpv state [" << reason << "]:" << values.join(QStringLiteral("; "));
+    if (m_videoHost)
+        qInfo().noquote() << m_videoHost->diagnosticSummary();
+}
+
+QString PlayerController::diagnosticSummary()
+{
+    QStringList lines;
+    lines.append(QStringLiteral("Emby PC diagnostics"));
+    lines.append(QStringLiteral("time: %1").arg(
+        QDateTime::currentDateTime().toString(Qt::ISODate)));
+    lines.append(QStringLiteral("app: %1 Qt %2")
+                     .arg(QCoreApplication::applicationVersion(), QString::fromLatin1(qVersion())));
+    lines.append(QStringLiteral("os: %1 / %2")
+                     .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture()));
+
+    lines.append(QStringLiteral("window: size=%1x%2 minimum=%3x%4 maximum=%5x%6")
+                     .arg(m_window->width())
+                     .arg(m_window->height())
+                     .arg(m_window->minimumWidth())
+                     .arg(m_window->minimumHeight())
+                     .arg(m_window->maximumWidth())
+                     .arg(m_window->maximumHeight()));
+    lines.append(QStringLiteral("window: maximized=%1 fullscreen=%2 sizeGrip=%3")
+                     .arg(m_window->isMaximized() ? QStringLiteral("yes")
+                                                  : QStringLiteral("no"))
+                     .arg(m_window->isFullScreen() ? QStringLiteral("yes")
+                                                   : QStringLiteral("no"))
+                     .arg(m_window->statusBar() && m_window->statusBar()->isSizeGripEnabled()
+                              ? QStringLiteral("yes")
+                              : QStringLiteral("no")));
+    if (QScreen *screen = m_window->screen()) {
+        lines.append(QStringLiteral("screen: available=%1x%2 dpr=%3")
+                         .arg(screen->availableGeometry().width())
+                         .arg(screen->availableGeometry().height())
+                         .arg(screen->devicePixelRatio()));
+    }
+
+    if (m_playerPage) {
+        lines.append(QStringLiteral("PlayerPage: size=%1x%2 visible=%3")
+                         .arg(m_playerPage->width())
+                         .arg(m_playerPage->height())
+                         .arg(m_playerPage->isVisible() ? QStringLiteral("yes")
+                                                        : QStringLiteral("no")));
+        if (auto *bar = m_playerPage->findChild<QWidget *>(QStringLiteral("PlayerControlBar"))) {
+            lines.append(QStringLiteral("PlayerControlBar: visible=%1 geometry=%2,%3 %4x%5")
+                             .arg(bar->isVisible() ? QStringLiteral("yes")
+                                                   : QStringLiteral("no"))
+                             .arg(bar->x())
+                             .arg(bar->y())
+                             .arg(bar->width())
+                             .arg(bar->height()));
+        }
+    }
+
+    if (m_player && m_player->isReady()) {
+        static const QStringList keys = {
+            QStringLiteral("mpv-version"), QStringLiteral("vo"), QStringLiteral("gpu-api"),
+            QStringLiteral("gpu-context"), QStringLiteral("hwdec"),
+            QStringLiteral("hwdec-current"), QStringLiteral("options/osc"),
+            QStringLiteral("options/load-scripts"), QStringLiteral("options/input-vo-keyboard"),
+            QStringLiteral("options/input-cursor"), QStringLiteral("options/wid"),
+            QStringLiteral("options/script-opts"), QStringLiteral("script-list")
+        };
+        for (const QString &key : keys) {
+            const QString value = m_player->getPropertyString(key.toUtf8().constData());
+            if (!value.isEmpty())
+                lines.append(QStringLiteral("mpv %1=%2").arg(key, value));
+        }
+    } else {
+        lines.append(QStringLiteral("mpv: not initialized"));
+    }
+
+    if (m_videoHost)
+        lines.append(m_videoHost->diagnosticSummary());
+
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    lines.append(QStringLiteral("log directory: %1").arg(QDir::toNativeSeparators(dir)));
+    lines.append(QStringLiteral("app.log: %1").arg(
+        QDir::toNativeSeparators(dir + QStringLiteral("/app.log"))));
+    lines.append(QStringLiteral("mpv.log: %1").arg(
+        QDir::toNativeSeparators(dir + QStringLiteral("/mpv.log"))));
+    return lines.join(QLatin1Char('\n'));
+}
+
+void PlayerController::exportDiagnostics()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (dir.isEmpty() || !QDir().mkpath(dir)) {
+        QMessageBox::warning(m_window, tr("导出诊断信息"),
+                             tr("无法创建日志目录：%1").arg(QDir::toNativeSeparators(dir)));
+        return;
+    }
+
+    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
+    const QString path = dir + QStringLiteral("/diagnostics-") + stamp + QStringLiteral(".txt");
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        QMessageBox::warning(m_window, tr("导出诊断信息"),
+                             tr("无法写入诊断文件：%1").arg(QDir::toNativeSeparators(path)));
+        return;
+    }
+    QTextStream stream(&file);
+    stream << diagnosticSummary() << QLatin1Char('\n');
+    file.close();
+
+    // 同时把 app.log / mpv.log 复制到诊断目录，用户只需打包这个目录。
+    const QString bundleDir = dir + QStringLiteral("/diagnostics-") + stamp;
+    if (QDir().mkpath(bundleDir)) {
+        QFile::copy(dir + QStringLiteral("/app.log"),
+                    bundleDir + QStringLiteral("/app.log"));
+        QFile::copy(dir + QStringLiteral("/mpv.log"),
+                    bundleDir + QStringLiteral("/mpv.log"));
+        QFile::copy(path, bundleDir + QStringLiteral("/diagnostics.txt"));
+    }
+
+    const QString shown = bundleDir.isEmpty() ? path : bundleDir;
+    QMessageBox::information(m_window, tr("导出诊断信息"),
+                             tr("诊断信息已导出到：\n%1\n\n请把整个目录打包回传。")
+                                 .arg(QDir::toNativeSeparators(shown)));
+    QDesktopServices::openUrl(QUrl::fromLocalFile(shown));
 }
 
 void PlayerController::reportPlaybackStart()

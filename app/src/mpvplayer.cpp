@@ -3,6 +3,7 @@
 #include <mpv/client.h>
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QLibrary>
@@ -186,16 +187,24 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
     setOption("sub-auto", QStringLiteral("fuzzy"));
 
     // ---- OSD / OSC / 输入 ----
-    setOption("osc", QStringLiteral("yes"));
+    // T15：Qt PlayerControlBar 是主控制条。libmpv 的 builtin scripts 在部分发行包中
+    // 会被裁剪/禁用，OSC 不一定存在；默认关闭 OSC，避免用户“看不到任何控制条”。
+    // 需要排查 OSC 时可设置环境变量 EMBY_PC_MPV_OSC=1 启用，Qt 控制条仍然保留。
+    const bool oscEnabled = qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0;
+    setOption("osc", oscEnabled ? QStringLiteral("yes") : QStringLiteral("no"));
     setOption("osd-bar", QStringLiteral("no"));
     setOption("input-default-bindings", QStringLiteral("yes"));
     setOption("input-vo-keyboard", QStringLiteral("yes"));
+    setOption("input-cursor", QStringLiteral("yes"));
     setOption("input-conf", writeInputConf());
-    setOption("script-opts", QStringLiteral("osc-hidetimeout=1800,osc-boxalpha=170"));
+    if (oscEnabled)
+        setOption("script-opts", QStringLiteral("osc-hidetimeout=1800,osc-boxalpha=170"));
 
     // ---- 隔离用户配置 / 缓存 ----
     setOption("config", QStringLiteral("no"));
     setOption("load-scripts", QStringLiteral("yes"));
+    qInfo() << "mpv options: wid=" << windowId << "osc=" << oscEnabled
+            << "load-scripts=yes input-vo-keyboard=yes input-cursor=yes";
     setOption("keep-open", QStringLiteral("yes"));
     setOption("idle", QStringLiteral("yes"));
     setOption("force-window", QStringLiteral("yes"));

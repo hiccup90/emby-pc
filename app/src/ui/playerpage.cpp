@@ -267,6 +267,10 @@ void PlayerPage::buildUi()
 
 void PlayerPage::attachVideoSurface(QWidget *surface)
 {
+    // T15：真实播放时也必须保留 Qt 控制条；mpv OSC 在部分 libmpv 构建里不可用。
+    m_topBar->setVisible(true);
+    m_controlBar->setVisible(true);
+    m_controlBar->raise();
     if (m_surface == surface)
         return;
     if (m_surface) {
