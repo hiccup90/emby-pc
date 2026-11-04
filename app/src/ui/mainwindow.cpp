@@ -672,19 +672,21 @@ bool MainWindow::openDetail(const QString &itemId)
         return false;
 
     MediaItem known;
-    const bool hasKnown = knownItem(itemId, &known);
+    const bool fromKnown = knownItem(itemId, &known);
+    const bool fromList = !fromKnown && listedItem(itemId, &known);
+    qDebug("openDetail id=%s known=%d list=%d title=%s", qPrintable(itemId), int(fromKnown),
+           int(fromList), qPrintable(known.title));
+    const bool hasKnown = fromKnown || fromList;
     if (hasKnown)
         showDetailFor(known);
 
-    const int generation = ++m_libraryGeneration;
+    const int generation = ++m_detailGeneration;
     m_data->fetchDetail(itemId, [this, generation, itemId](const MediaItem &item,
                                                           const QString &error) {
-        if (generation != m_libraryGeneration)
+        if (generation != m_detailGeneration)
             return;
         if (!error.isEmpty()) {
             statusBar()->showMessage(QStringLiteral("加载详情失败：%1").arg(error), 5000);
-            if (!m_detail->currentItem().id.isEmpty())
-                return;
             return;
         }
         rememberItems({item});
@@ -709,8 +711,16 @@ void MainWindow::openPlayerDemo(const QString &itemId, int seasonNumber, int epi
 void MainWindow::playItem(const QString &itemId, int seasonNumber, int episodeNumber)
 {
     MediaItem item;
-    if (!knownItem(itemId, &item))
+    if (!knownItem(itemId, &item) && !listedItem(itemId, &item))
         return;
+
+    // 剧集如果还没有季/集数据（列表页直接点播放），先补详情再进入播放页。
+    if (!m_mockMode && item.isSeries() && item.seasons.isEmpty()) {
+        if (!openDetail(itemId))
+            return;
+        statusBar()->showMessage(QStringLiteral("正在加载剧集信息，请稍候…"), 2000);
+        return;
+    }
 
     m_currentItem = item;
     m_currentSeason = -1;
@@ -1068,6 +1078,31 @@ QStringList MainWindow::sectionNames() const
     return names;
 }
 
+QList<MediaItem> MainWindow::visibleItems() const
+{
+    if (m_mockMode) {
+        const QList<MediaItem> all = m_mockLibrary;
+        if (m_stack && m_stack->currentIndex() == StackLibrary) {
+            QList<MediaItem> filtered;
+            for (const MediaItem &item : all) {
+                if (m_currentSection >= 0 && m_currentSection < m_sections.size()) {
+                    const QString type = m_sections.at(m_currentSection).collectionType;
+                    if (type == QLatin1String("movies") && item.isSeries())
+                        continue;
+                    if (type == QLatin1String("tvshows") && !item.isSeries())
+                        continue;
+                }
+                filtered.append(item);
+            }
+            return filtered;
+        }
+        return all;
+    }
+    if (m_stack && m_stack->currentIndex() == StackLibrary)
+        return m_libraryView->visibleItems();
+    return m_home->recentView()->visibleItems();
+}
+
 int MainWindow::currentStackIndex() const
 {
     return m_stack ? m_stack->currentIndex() : -1;
@@ -1097,6 +1132,17 @@ bool MainWindow::knownItem(const QString &itemId, MediaItem *out) const
     if (out)
         *out = it.value();
     return true;
+}
+
+// 真实模式下列表页里已经有服务器返回的完整 MediaItem（Fields 已请求），
+// 直接用它，避免再发一次 /Items/{id} 造成详情页等待。
+bool MainWindow::listedItem(const QString &itemId, MediaItem *out) const
+{
+    if (m_home && m_home->recentView()->itemById(itemId, out))
+        return true;
+    if (m_libraryView && m_libraryView->itemById(itemId, out))
+        return true;
+    return false;
 }
 
 void MainWindow::rememberItems(const QList<MediaItem> &items)

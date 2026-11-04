@@ -205,7 +205,11 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     });
 
     // 离开播放页（返回按钮/Esc/切页）时停止 mpv 并上报 Stopped。
-    if (auto *stack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget())) {
+    QStackedWidget *playerStack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget());
+    if (!playerStack)
+        playerStack = m_window->findChild<QStackedWidget *>(QStringLiteral("ContentStack"));
+    if (playerStack) {
+        auto *stack = playerStack;
         connect(stack, &QStackedWidget::currentChanged, this, [this, stack](int index) {
             if (stack->widget(index) == m_playerPage)
                 return;
@@ -577,7 +581,10 @@ void PlayerController::showPlayerPage()
 {
     if (!m_playerPage)
         return;
-    if (auto *stack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget()))
+    QStackedWidget *stack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget());
+    if (!stack)
+        stack = m_window->findChild<QStackedWidget *>(QStringLiteral("ContentStack"));
+    if (stack)
         stack->setCurrentWidget(m_playerPage);
 }
 

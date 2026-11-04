@@ -54,6 +54,13 @@ public:
     int totalCount() const; // 服务器总数 / 已加载项数
     QStringList visibleItemIds() const;
 
+    // 取代理里某个 id 对应的完整 MediaItem（真实模式下列表来自服务器，字段齐全）。
+    bool itemById(const QString &itemId, MediaItem *out) const;
+    QList<MediaItem> loadedItems() const;
+
+    // 按当前代理的可见顺序返回完整 item（可见 id 与 itemById 对齐，供详情/播放入口）。
+    QList<MediaItem> visibleItems() const;
+
 signals:
     void itemActivated(const QString &itemId);
     void playRequested(const QString &itemId);

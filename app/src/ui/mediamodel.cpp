@@ -74,6 +74,16 @@ void MediaListModel::clear()
     endResetModel();
 }
 
+bool MediaListModel::itemById(const QString &id, MediaItem *out) const
+{
+    const int row = indexOfId(id);
+    if (row < 0)
+        return false;
+    if (out)
+        *out = m_items.at(row);
+    return true;
+}
+
 const MediaItem &MediaListModel::itemAt(int row) const
 {
     static const MediaItem empty;

@@ -470,6 +470,41 @@ QStringList LibraryView::visibleItemIds() const
     return ids;
 }
 
+bool LibraryView::itemById(const QString &itemId, MediaItem *out) const
+{
+    for (const MediaItem &item : m_items) {
+        if (item.id == itemId) {
+            if (out)
+                *out = item;
+            return true;
+        }
+    }
+    return false;
+}
+
+QList<MediaItem> LibraryView::loadedItems() const
+{
+    return m_items;
+}
+
+QList<MediaItem> LibraryView::visibleItems() const
+{
+    QList<MediaItem> result;
+    if (!m_proxy)
+        return result;
+    result.reserve(m_proxy->rowCount());
+    for (int row = 0; row < m_proxy->rowCount(); ++row) {
+        const QString id = m_proxy->index(row, 0).data(MediaListModel::ItemIdRole).toString();
+        for (const MediaItem &item : m_items) {
+            if (item.id == id) {
+                result.append(item);
+                break;
+            }
+        }
+    }
+    return result;
+}
+
 void LibraryView::applySort()
 {
     if (!m_localSorting) {

@@ -28,7 +28,9 @@ VideoHost::VideoHost(QWidget *parent)
 
 quintptr VideoHost::nativeWindow()
 {
-    return reinterpret_cast<quintptr>(winId());
+    // Qt6 的 WId 在 Windows 上也是整型（quintptr），MSVC 不允许整型→整型的 reinterpret_cast；
+    // 用 static_cast 保持跨平台（Qt5/HWND 指针场景不再支持，本项目固定 Qt6）。
+    return static_cast<quintptr>(winId());
 }
 
 QSize VideoHost::minimumSizeHint() const

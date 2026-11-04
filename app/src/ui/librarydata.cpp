@@ -197,53 +197,108 @@ void LibraryData::fetchItems(const LibrarySection &section, int startIndex, int 
         return;
     }
 
-    emby::ItemQuery query;
-    query.parentId = section.id;
-    query.recursive = true;
-    query.includeItemTypes = itemTypesForCollection(section.collectionType);
-    query.fields = listFields();
-    query.startIndex = qMax(0, startIndex);
-    query.limit = qBound(1, limit, 200);
-    query.searchTerm = searchTerm.trimmed();
-    switch (sortMode) {
-    case 1:
-        query.sortBy = {QStringLiteral("SortName")};
-        query.sortOrder = QStringLiteral("Ascending");
-        break;
-    case 2:
-        query.sortBy = {QStringLiteral("CommunityRating")};
-        query.sortOrder = QStringLiteral("Descending");
-        break;
-    case 3:
-        query.sortBy = {QStringLiteral("ProductionYear")};
-        query.sortOrder = QStringLiteral("Descending");
-        break;
-    default:
-        query.sortBy = {QStringLiteral("DateCreated")};
-        query.sortOrder = QStringLiteral("Descending");
-        break;
-    }
+    const int pageSize = qBound(1, limit, 200);
 
-    const int requestedLimit = query.limit;
-    m_client->fetchItems(query, [this, handler, requestedLimit](const emby::ItemQueryResult &page,
-                                                               const emby::ApiError &error) {
-        if (error.isError()) {
-            handler({}, 0, false, friendlyApiError(error));
+    auto makeQuery = [&](int start) {
+        emby::ItemQuery query;
+        query.parentId = section.id;
+        query.recursive = true;
+        query.includeItemTypes = itemTypesForCollection(section.collectionType);
+        query.fields = listFields();
+        query.startIndex = qMax(0, start);
+        query.limit = pageSize;
+        query.searchTerm = searchTerm.trimmed();
+        switch (sortMode) {
+        case 1:
+            query.sortBy = {QStringLiteral("SortName")};
+            query.sortOrder = QStringLiteral("Ascending");
+            break;
+        case 2:
+            query.sortBy = {QStringLiteral("CommunityRating")};
+            query.sortOrder = QStringLiteral("Descending");
+            break;
+        case 3:
+            query.sortBy = {QStringLiteral("ProductionYear")};
+            query.sortOrder = QStringLiteral("Descending");
+            break;
+        default:
+            query.sortBy = {QStringLiteral("DateCreated")};
+            query.sortOrder = QStringLiteral("Descending");
+            break;
+        }
+        return query;
+    };
+
+    // Emby 对 ParentId 查询会把 IncludeItemTypes 同时作用于子项：例如 IncludeItemTypes=Series
+    // 时，剧集会按“集数”而不是“剧集数量”计入 TotalRecordCount，导致单次 60 条里只剩 5 个剧集。
+    // 因此这里循环补齐到 limit 条，并把 hasMore 收敛到正确语义。
+    struct ItemsState
+    {
+        QList<MediaItem> items;
+        int total = -1;
+        int next = 0;
+        int initial = 0;
+        int pages = 0;
+        bool exhausted = false;
+        ItemsHandler handler;
+    };
+    auto state = QSharedPointer<ItemsState>::create();
+    state->handler = std::move(handler);
+    state->next = qMax(0, startIndex);
+    state->initial = state->next;
+
+    auto finish = [state, pageSize](bool failed, const QString &message) {
+        if (!state->handler)
+            return;
+        if (failed && state->items.isEmpty() && state->initial == 0) {
+            auto callback = std::move(state->handler);
+            state->handler = nullptr;
+            callback({}, 0, false, message);
             return;
         }
-        QList<MediaItem> items;
-        items.reserve(page.items.size());
-        for (const emby::MediaItem &source : page.items)
-            items.append(toMediaItem(source));
+        const int total = state->total >= 0 ? state->total : state->initial + state->items.size();
+        const bool hasMore = !failed && !state->exhausted;
+        auto callback = std::move(state->handler);
+        state->handler = nullptr;
+        callback(state->items, total, hasMore, QString());
+    };
 
-        const bool hasMore = page.hasMore(requestedLimit);
-        int total = page.totalRecordCount;
-        if (total <= 0) {
-            // Emby 4.9.1.90 的 SearchTerm 可能返回 TotalRecordCount=0 但 Items 非空。
-            total = page.startIndex + items.size() + (hasMore ? 1 : 0);
-        }
-        handler(items, total, hasMore, QString());
-    });
+    auto step = QSharedPointer<std::function<void()>>::create();
+    *step = [this, makeQuery, state, step, pageSize, finish]() {
+        const int requestStart = state->next;
+        m_client->fetchItems(
+            makeQuery(requestStart),
+            [this, state, step, requestStart, pageSize, finish](const emby::ItemQueryResult &page,
+                                                                const emby::ApiError &error) {
+                if (error.isError()) {
+                    finish(true, friendlyApiError(error));
+                    return;
+                }
+
+                if (page.totalRecordCount > state->total)
+                    state->total = page.totalRecordCount;
+                for (const emby::MediaItem &source : page.items)
+                    state->items.append(toMediaItem(source));
+
+                state->next = requestStart + page.items.size();
+                ++state->pages;
+
+                const bool pageFull = page.items.size() >= pageSize;
+                const bool enoughItems = state->items.size() >= pageSize;
+                const bool totalReached = state->total > 0 && state->next >= state->total;
+                if (!pageFull || page.items.isEmpty() || state->pages >= 20 || totalReached) {
+                    state->exhausted = true;
+                    finish(false, QString());
+                    return;
+                }
+                if (enoughItems) {
+                    finish(false, QString());
+                    return;
+                }
+                (*step)();
+            });
+    };
+    (*step)();
 }
 
 void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handler)

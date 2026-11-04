@@ -84,6 +84,8 @@ public:
 
     QStringList libraryIds() const;
     QStringList sectionNames() const;
+    // 当前可见的完整 item（真实数据包含简介/季集等字段），供播放链路和自测使用。
+    QList<MediaItem> visibleItems() const;
     int currentStackIndex() const;
     int currentSectionIndex() const { return m_currentSection; }
 
@@ -127,6 +129,7 @@ private:
     void handleEscape();
     const MediaItem *findMockItem(const QString &itemId) const;
     bool knownItem(const QString &itemId, MediaItem *out) const;
+    bool listedItem(const QString &itemId, MediaItem *out) const;
     void rememberItems(const QList<MediaItem> &items);
 
     // 会话
@@ -172,6 +175,7 @@ private:
     int m_libraryStart = 0;
     int m_libraryGeneration = 0;
     int m_homeGeneration = 0;
+    int m_detailGeneration = 0;
     bool m_libraryLoading = false;
     bool m_libraryHasMore = false;
     bool m_realHomeLoaded = false;

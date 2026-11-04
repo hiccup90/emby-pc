@@ -755,7 +755,6 @@ int runLiveLogin(QApplication &app)
 
 int runLiveData(QApplication &app)
 {
-    Q_UNUSED(app);
     QTextStream out(stdout);
     const QString url = qEnvironmentVariable("EMBY_TEST_URL");
     const QString user = qEnvironmentVariable("EMBY_TEST_USER");
@@ -811,69 +810,78 @@ int runLiveData(QApplication &app)
     window.show();
     check(waitFor([&window]() { return window.hasSession() && !window.isMockMode(); }, 15000),
           QStringLiteral("MainWindow 自动恢复 token 并进入真实数据模式"));
-    check(waitFor([&window]() { return !window.sectionNames().isEmpty(); }, 15000),
-          QStringLiteral("侧边栏加载真实 Views：%1")
-              .arg(window.sectionNames().join(QStringLiteral(" / "))));
 
-    check(waitFor([&window]() { return window.libraryIds().size() > 0; }, 15000),
-          QStringLiteral("首页最近添加加载真实 Items（%1 项）").arg(window.libraryIds().size()));
+    const bool viewsLoaded =
+        waitFor([&window]() { return !window.sectionNames().isEmpty(); }, 15000);
+    out << "INFO  真实 Views：" << window.sectionNames().join(QStringLiteral(" / ")) << "\n";
+    check(viewsLoaded, QStringLiteral("侧边栏加载真实 /Views（%1 个媒体库）")
+                           .arg(window.sectionNames().size()));
 
+    const bool homeLoaded = waitFor([&window]() { return window.libraryIds().size() > 0; }, 15000);
+    out << "INFO  首页最近添加 " << window.libraryIds().size() << " 项\n";
+    check(homeLoaded, QStringLiteral("首页最近添加加载真实 Items"));
+
+    // 媒体库首屏 + 滚动分页
     window.navigateTo(ui::MainWindow::Page::Library);
     auto *library = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
-    check(waitFor([library]() { return library && library->itemCount() > 0; }, 15000),
-          QStringLiteral("媒体库首屏加载 %1 项").arg(library ? library->itemCount() : -1));
+    const bool firstPageOk = waitFor([library]() { return library && library->itemCount() > 0; }, 15000);
+    check(firstPageOk, QStringLiteral("媒体库首屏加载"));
     if (library) {
         const int initialCount = library->itemCount();
         const int total = library->totalCount();
         out << "INFO  首屏 " << initialCount << " / 总数 " << total << "（Limit=60）"
             << " hasMore=" << library->hasMore() << "\n";
-        if (total > initialCount) {
-            auto *grid = library->findChild<QListView *>(QStringLiteral("PosterGrid"));
+        if (library->hasMore() || total > initialCount) {
             settle(app, 300);
-            if (grid) {
-                out << "DEBUG grid max=" << grid->verticalScrollBar()->maximum()
-                    << " viewport=" << grid->viewport()->height() << "\n";
+            if (auto *grid = library->findChild<QListView *>(QStringLiteral("PosterGrid")))
                 grid->verticalScrollBar()->setValue(grid->verticalScrollBar()->maximum());
-            }
-            check(waitFor([library, initialCount]() {
-                      return library->itemCount() > initialCount;
-                  }, 12000),
-                  QStringLiteral("滚动到底部触发分页加载（%1 -> %2）")
-                      .arg(initialCount)
-                      .arg(library->itemCount()));
+            const bool paged = waitFor([library, initialCount]() {
+                return library->itemCount() > initialCount;
+            }, 15000);
+            check(paged, QStringLiteral("滚动到底部触发分页加载（%1 -> %2）")
+                             .arg(initialCount)
+                             .arg(library->itemCount()));
         } else {
             out << "INFO  该媒体库不足一页，跳过分页断言\n";
         }
 
         const QStringList ids = library->visibleItemIds();
+        check(!ids.isEmpty(), QStringLiteral("媒体库返回可见 item"));
         if (!ids.isEmpty()) {
-            const QString firstId = ids.first();
-            window.openDetail(firstId);
+            window.openDetail(ids.first());
             auto *detail = window.findChild<ui::DetailView *>();
-            check(waitFor([detail, firstId]() {
-                      return detail && detail->currentItem().id == firstId
-                             && !detail->currentItem().title.isEmpty();
-                  }, 15000),
-                  QStringLiteral("真实详情加载：%1")
-                      .arg(detail ? detail->currentItem().title : QString()));
+            const bool detailOk = waitFor([detail]() {
+                return detail && !detail->currentItem().id.isEmpty()
+                       && !detail->currentItem().title.isEmpty();
+            }, 15000);
+            out << "INFO  详情：" << (detail ? detail->currentItem().title : QString()) << "\n";
+            check(detailOk, QStringLiteral("真实详情加载"));
         }
     }
 
+    // 剧集详情：季/集
     window.navigateTo(ui::MainWindow::Page::Series);
-    if (waitFor([&window]() { return window.currentSectionIndex() >= 0; }, 8000)) {
-        auto *series = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
-        if (waitFor([series]() { return series && series->itemCount() > 0; }, 15000)) {
-            const QStringList ids = series->visibleItemIds();
-            if (!ids.isEmpty()) {
-                window.openDetail(ids.first());
-                auto *detail = window.findChild<ui::DetailView *>();
-                const bool seasonsOk = waitFor([detail]() {
-                    return detail && !detail->currentItem().seasons.isEmpty()
-                           && !detail->currentItem().seasons.first().episodes.isEmpty();
-                }, 15000);
-                check(seasonsOk, QStringLiteral("剧集详情加载真实季/集（%1 季）")
-                                     .arg(detail ? detail->currentItem().seasons.size() : 0));
-            }
+    const bool seriesSection = waitFor([&window]() { return window.currentSectionIndex() >= 0; }, 8000);
+    auto *series = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
+    const bool seriesLoaded =
+        seriesSection && waitFor([series]() { return series && series->itemCount() > 0; }, 15000);
+    check(seriesLoaded, QStringLiteral("剧集媒体库加载"));
+    if (seriesLoaded) {
+        const QStringList ids = series->visibleItemIds();
+        if (!ids.isEmpty()) {
+            window.openDetail(ids.first());
+            auto *detail = window.findChild<ui::DetailView *>();
+            const bool seasonsOk = waitFor([detail]() {
+                return detail && !detail->currentItem().seasons.isEmpty()
+                       && !detail->currentItem().seasons.first().episodes.isEmpty();
+            }, 15000);
+            out << "INFO  剧集季数 " << (detail ? detail->currentItem().seasons.size() : 0)
+                << "，首季集数 "
+                << (detail && !detail->currentItem().seasons.isEmpty()
+                        ? detail->currentItem().seasons.first().episodes.size()
+                        : 0)
+                << "\n";
+            check(seasonsOk, QStringLiteral("剧集详情加载真实季/集"));
         }
     }
 

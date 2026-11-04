@@ -34,6 +34,9 @@ public:
     void appendItems(const QList<MediaItem> &items);
     void clear();
     const QList<MediaItem> &items() const { return m_items; }
+    // 取完整数据（含季/集、简介等从服务器加载的字段），供详情/播放入口使用。
+    bool itemById(const QString &id, MediaItem *out) const;
+    QList<MediaItem> allItems() const { return m_items; }
     const MediaItem &itemAt(int row) const;
     int indexOfId(const QString &id) const;
 
