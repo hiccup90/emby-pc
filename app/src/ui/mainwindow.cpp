@@ -27,6 +27,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <QDebug>
+
 #include <algorithm>
 
 namespace ui {
@@ -221,6 +223,8 @@ void MainWindow::connectSignals()
     connect(m_libraryView, &LibraryView::playRequested, this,
             [this](const QString &itemId) { playItem(itemId, -1, -1); });
     connect(m_libraryView, &LibraryView::loadMoreRequested, this, [this]() {
+        qDebug("loadMoreRequested mock=%d loading=%d hasMore=%d start=%d", int(m_mockMode),
+               int(m_libraryLoading), int(m_libraryHasMore), m_libraryStart);
         if (m_mockMode || m_libraryLoading || !m_libraryHasMore)
             return;
         m_libraryLoading = true;
@@ -248,7 +252,8 @@ void MainWindow::connectSignals()
         if (!m_currentItem.id.isEmpty())
             openDetail(m_currentItem.id);
         else
-            m_stack->setCurrentIndex(qBound(StackHome, m_lastContentIndex, StackSettings));
+            m_stack->setCurrentIndex(
+                qBound(static_cast<int>(StackHome), m_lastContentIndex, static_cast<int>(StackSettings)));
     });
     connect(m_player, &PlayerPage::playPauseRequested, this, [this]() {
         m_player->setPlaying(!m_player->isPlaying());
@@ -290,8 +295,7 @@ void MainWindow::connectSignals()
 
 void MainWindow::navigateTo(Page page)
 {
-    switch (page) {
-    case Page::Home:
+    if (page == Page::Home) {
         m_sidebar->setCurrentIndex(0);
         m_stack->setCurrentIndex(StackHome);
         m_lastContentIndex = StackHome;
@@ -301,33 +305,33 @@ void MainWindow::navigateTo(Page page)
         } else if (hasSession()) {
             loadRealHome();
         }
-        break;
-    case Page::Library:
-    case Page::Movies:
-    case Page::Series:
-        if (!m_sections.isEmpty()) {
-            int wanted = 0;
-            if (page == Page::Movies) {
-                for (int i = 0; i < m_sections.size(); ++i)
-                    if (m_sections.at(i).collectionType == QLatin1String("movies")) {
-                        wanted = i;
-                        break;
-                    }
-            } else if (page == Page::Series) {
-                for (int i = 0; i < m_sections.size(); ++i)
-                    if (m_sections.at(i).collectionType == QLatin1String("tvshows")) {
-                        wanted = i;
-                        break;
-                    }
-            }
-            selectSection(wanted);
-        }
-        break;
-    case Page::Settings:
+        return;
+    }
+
+    if (page == Page::Settings) {
         m_sidebar->setCurrentIndex(m_sidebar->sections().size() + 1);
         m_stack->setCurrentIndex(StackSettings);
         m_lastContentIndex = StackSettings;
-        break;
+        return;
+    }
+
+    // Page::Library / Movies / Series（后两者是同一页的兼容别名）。
+    if (!m_sections.isEmpty()) {
+        int wanted = 0;
+        if (page == Page::Movies) {
+            for (int i = 0; i < m_sections.size(); ++i)
+                if (m_sections.at(i).collectionType == QLatin1String("movies")) {
+                    wanted = i;
+                    break;
+                }
+        } else if (page == Page::Series) {
+            for (int i = 0; i < m_sections.size(); ++i)
+                if (m_sections.at(i).collectionType == QLatin1String("tvshows")) {
+                    wanted = i;
+                    break;
+                }
+        }
+        selectSection(wanted);
     }
 }
 
@@ -379,7 +383,16 @@ void MainWindow::applyMockMode()
 
 void MainWindow::rebuildSidebar()
 {
-    m_sidebar->setSections(m_sections);
+    QList<SidebarSection> sidebarSections;
+    sidebarSections.reserve(m_sections.size());
+    for (const LibrarySection &section : m_sections) {
+        SidebarSection entry;
+        entry.id = section.id;
+        entry.name = section.name;
+        entry.collectionType = section.collectionType;
+        sidebarSections.append(entry);
+    }
+    m_sidebar->setSections(sidebarSections);
     if (m_stack->currentIndex() == StackHome)
         m_sidebar->setCurrentIndex(0);
     else if (m_stack->currentIndex() == StackSettings)
@@ -553,9 +566,13 @@ void MainWindow::loadLibraryPage()
     const int sortMode = m_libraryView->sortMode();
     const QString searchTerm = m_search ? m_search->text().trimmed() : QString();
 
+    qDebug("loadLibraryPage start=%d sort=%d search=%s gen=%d", start, sortMode,
+           qPrintable(searchTerm), generation);
     m_data->fetchItems(section, start, 60, sortMode, searchTerm,
                        [this, generation, start](const QList<MediaItem> &items, int total,
                                                  bool hasMore, const QString &error) {
+                           qDebug("loadLibraryPage result start=%d count=%d total=%d hasMore=%d err=%s",
+                                  start, int(items.size()), total, int(hasMore), qPrintable(error));
                            if (generation != m_libraryGeneration)
                                return;
                            m_libraryLoading = false;
@@ -834,7 +851,8 @@ void MainWindow::handleEscape()
         if (!m_currentItem.id.isEmpty())
             openDetail(m_currentItem.id);
         else
-            m_stack->setCurrentIndex(qBound(StackHome, m_lastContentIndex, StackSettings));
+            m_stack->setCurrentIndex(
+                qBound(static_cast<int>(StackHome), m_lastContentIndex, static_cast<int>(StackSettings)));
     } else if (m_stack->currentIndex() == StackDetail) {
         m_stack->setCurrentIndex(m_lastContentIndex);
     }

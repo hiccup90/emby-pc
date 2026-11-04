@@ -204,6 +204,74 @@ QLabel#EmptyState {
     font-size: 14px;
 }
 
+QLabel#EmptyState[state="loading"] {
+    color: #93C5FD;
+}
+
+QLabel#EmptyState[state="error"] {
+    color: #FCA5A5;
+}
+
+/* 首页：继续观看横向列表 */
+
+QWidget#ResumeSection {
+    background-color: transparent;
+}
+
+QScrollArea#ResumeScroll {
+    background: transparent;
+    border: none;
+}
+
+QWidget#ResumeContent {
+    background: transparent;
+}
+
+QWidget#ResumeCard {
+    background-color: #111C2E;
+    border: 1px solid #1E293B;
+    border-radius: 10px;
+}
+
+QWidget#ResumeCard:hover {
+    background-color: #16233A;
+    border-color: #3B82F6;
+}
+
+QLabel#ResumeThumbnail {
+    background-color: #0B1220;
+    border-radius: 6px;
+    color: #475569;
+    font-size: 10px;
+}
+
+QLabel#ResumeCardTitle {
+    color: #E2E8F0;
+    font-size: 12px;
+}
+
+QLabel#ResumeCardMeta {
+    color: #64748B;
+    font-size: 10px;
+}
+
+QProgressBar#ResumeProgress {
+    background-color: #1E293B;
+    border: none;
+    border-radius: 2px;
+}
+
+QProgressBar#ResumeProgress::chunk {
+    background-color: #3B82F6;
+    border-radius: 2px;
+}
+
+QLabel#SettingHint {
+    color: #64748B;
+    font-size: 11px;
+    padding-right: 6px;
+}
+
 /* 首页 banner */
 
 QWidget#HeroBanner {

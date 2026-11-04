@@ -44,6 +44,8 @@ public:
 
     void setTotalCount(int totalCount);
     void setHasMore(bool hasMore);
+    bool hasMore() const { return m_hasMore; }
+    bool loadingMore() const { return m_loadingMore; }
     void setInitialLoading(bool loading, const QString &message = QString());
     void setLoadingMore(bool loading);
     void setError(const QString &message);

@@ -37,6 +37,7 @@
 #include <QTextStream>
 #include <QThread>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QTimer>
 
 #include <functional>
@@ -83,6 +84,8 @@ public:
     }
 
     QStringList requestedTargets;
+    QStringList imageRequests;
+    QString lastImageAuthorization;
 
 protected:
     void incomingConnection(qintptr socketDescriptor) override
@@ -94,6 +97,11 @@ protected:
     }
 
 private:
+    static QByteArray fakeResumeJson()
+    {
+        return R"({"Id":"m1","Name":"假电影","Type":"Movie","ProductionYear":2023,"RunTimeTicks":54000000000,"ImageTags":{"Primary":"tagm1"},"BackdropImageTags":["bdm1"],"UserData":{"Played":false,"PlaybackPositionTicks":6000000000,"PlayedPercentage":11.1}})";
+    }
+
     QHash<QTcpSocket *, QByteArray> m_buffers;
 
     void onReadyRead(QTcpSocket *socket)
@@ -156,19 +164,65 @@ private:
                 reason = "Unauthorized";
                 responseBody = R"({"Message":"Invalid username or password"})";
             }
-        } else if (method == QLatin1String("GET") && path == QLatin1String("/Users/u1/Views")) {
+        } else {
             const QString authorization = headers.value(QStringLiteral("authorization"));
-            if (!authorization.contains(QStringLiteral("Token=\"token-test-123\""))) {
+            const bool authorized =
+                authorization.contains(QStringLiteral("Token=\"token-test-123\""));
+            if (!authorized) {
                 status = 401;
                 reason = "Unauthorized";
                 responseBody = R"({"Message":"Invalid token"})";
+            } else if (method == QLatin1String("GET") && path == QLatin1String("/Users/u1/Views")) {
+                responseBody =
+                    R"({"Items":[{"Id":"v-movies","Name":"电影","Type":"CollectionFolder","CollectionType":"movies"},{"Id":"v-tv","Name":"电视节目","Type":"CollectionFolder","CollectionType":"tvshows"}],"TotalRecordCount":2})";
+            } else if (method == QLatin1String("GET")
+                       && path.startsWith(QLatin1String("/Items/"))
+                       && path.endsWith(QLatin1String("/Images/Primary"))) {
+                imageRequests.append(target);
+                lastImageAuthorization = authorization;
+                status = 404;
+                reason = "Not Found";
+                responseBody = R"({"Message":"no image"})";
+            } else if (method == QLatin1String("GET")
+                       && path == QLatin1String("/Users/u1/Items/Resume")) {
+                responseBody = QStringLiteral(
+                                   R"({"Items":[%1],"TotalRecordCount":1})")
+                                   .arg(fakeResumeJson())
+                                   .toUtf8();
+            } else if (method == QLatin1String("GET") && path == QLatin1String("/Users/u1/Items")) {
+                const QUrlQuery query(QUrl(QStringLiteral("http://localhost") + target));
+                const QString parentId = query.queryItemValue(QStringLiteral("ParentId"));
+                const QString includeTypes = query.queryItemValue(QStringLiteral("IncludeItemTypes"));
+                const QString searchTerm = query.queryItemValue(QStringLiteral("SearchTerm"));
+                if (includeTypes.contains(QLatin1String("Season"))) {
+                    responseBody = R"({"Items":[{"Id":"sea1","Name":"第 1 季","Type":"Season","IndexNumber":1,"ParentId":"s1"}],"TotalRecordCount":1})";
+                } else if (includeTypes.contains(QLatin1String("Episode"))) {
+                    responseBody =
+                        R"({"Items":[{"Id":"e1","Name":"试播集","Type":"Episode","IndexNumber":1,"ParentIndexNumber":1,"SeriesId":"s1","RunTimeTicks":27000000000,"UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"e2","Name":"第二集","Type":"Episode","IndexNumber":2,"ParentIndexNumber":1,"SeriesId":"s1","RunTimeTicks":27000000000,"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":2})";
+                } else if (searchTerm == QLatin1String("不存在")) {
+                    responseBody = R"({"Items":[],"TotalRecordCount":0})";
+                } else if (parentId == QLatin1String("v-tv")) {
+                    responseBody =
+                        R"({"Items":[{"Id":"s1","Name":"假剧集","Type":"Series","ProductionYear":2024,"CommunityRating":8.5,"ImageTags":{"Primary":"tags1"},"BackdropImageTags":["bds1"],"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":1})";
+                } else {
+                    responseBody =
+                        R"({"Items":[{"Id":"m1","Name":"假电影","Type":"Movie","ProductionYear":2023,"CommunityRating":7.8,"RunTimeTicks":54000000000,"ImageTags":{"Primary":"tagm1"},"BackdropImageTags":["bdm1"],"Genres":["科幻"],"Overview":"测试用简介","UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"s1","Name":"假剧集","Type":"Series","ProductionYear":2024,"CommunityRating":8.5,"ImageTags":{"Primary":"tags1"},"BackdropImageTags":["bds1"],"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":2})";
+                }
+            } else if (method == QLatin1String("GET")
+                       && path.startsWith(QLatin1String("/Users/u1/Items/"))) {
+                const QString itemId = path.mid(QStringLiteral("/Users/u1/Items/").size());
+                if (itemId == QLatin1String("s1")) {
+                    responseBody =
+                        R"({"Id":"s1","Name":"假剧集","Type":"Series","ProductionYear":2024,"CommunityRating":8.5,"Overview":"剧集简介","ImageTags":{"Primary":"tags1"},"BackdropImageTags":["bds1"],"UserData":{"Played":false,"PlaybackPositionTicks":0}})";
+                } else {
+                    responseBody =
+                        R"({"Id":"m1","Name":"假电影","Type":"Movie","ProductionYear":2023,"CommunityRating":7.8,"RunTimeTicks":54000000000,"Overview":"测试用简介","ImageTags":{"Primary":"tagm1"},"BackdropImageTags":["bdm1"],"Genres":["科幻"],"UserData":{"Played":false,"PlaybackPositionTicks":0}})";
+                }
             } else {
-                responseBody = R"({"Items":[],"TotalRecordCount":0})";
+                status = 404;
+                reason = "Not Found";
+                responseBody = R"({"Message":"unexpected request"})";
             }
-        } else {
-            status = 404;
-            reason = "Not Found";
-            responseBody = R"({"Message":"unexpected request"})";
         }
 
         QByteArray response = "HTTP/1.1 " + QByteArray::number(status) + " " + reason + "\r\n";
@@ -201,6 +255,13 @@ int runSelfTest(QApplication &app)
     check(window.currentStackIndex() == 0, QStringLiteral("默认页面为首页（stack=0）"));
     check(qApp->styleSheet().contains(QStringLiteral("QWidget#Sidebar")),
           QStringLiteral("深色 QSS 已加载"));
+
+    check(window.isMockMode() && window.sectionNames()
+              == QStringList({QStringLiteral("电影"), QStringLiteral("剧集")}),
+          QStringLiteral("mock 模式侧边栏媒体库来自 2 个 section"));
+    check(window.findChild<QWidget *>(QStringLiteral("ResumeSection")) != nullptr
+              && window.findChildren<QWidget *>(QStringLiteral("ResumeCard")).size() > 0,
+          QStringLiteral("首页继续观看横向列表已渲染 Resume 卡片"));
 
     auto *home = window.findChild<ui::LibraryView *>(QStringLiteral("HomeLibrary"));
     check(home != nullptr && home->totalCount() == 200,
@@ -245,24 +306,31 @@ int runSelfTest(QApplication &app)
                   .arg(elapsed / qMax(1, frames)));
     }
 
-    // 导航
+    // 导航：电影/剧集复用同一个 LibraryView
     window.navigateTo(ui::MainWindow::Page::Movies);
-    check(window.currentStackIndex() == 1, QStringLiteral("侧边栏切换到电影页（stack=1）"));
-    if (auto *movies = window.findChild<ui::LibraryView *>(QStringLiteral("MoviesLibrary"))) {
-        if (auto *mg = movies->findChild<QListView *>(QStringLiteral("PosterGrid"))) {
-            out << "DEBUG movies viewport=" << mg->viewport()->width() << "x" << mg->viewport()->height()
+    check(window.currentStackIndex() == 1
+              && window.currentSectionIndex() == 0,
+          QStringLiteral("切换到电影媒体库（stack=1, section=0）"));
+    auto *library = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
+    check(library != nullptr && library->itemCount() > 0,
+          QStringLiteral("电影媒体库加载了 %1 个 item").arg(library ? library->itemCount() : -1));
+    if (library) {
+        if (auto *mg = library->findChild<QListView *>(QStringLiteral("PosterGrid"))) {
+            out << "DEBUG library viewport=" << mg->viewport()->width() << "x" << mg->viewport()->height()
                 << " grid=" << mg->gridSize().width() << "x" << mg->gridSize().height()
                 << " item1=" << mg->visualRect(mg->model()->index(1, 0)).x() << ","
                 << mg->visualRect(mg->model()->index(1, 0)).y() << "\n";
         }
     }
     window.navigateTo(ui::MainWindow::Page::Series);
-    check(window.currentStackIndex() == 2, QStringLiteral("侧边栏切换到剧集页（stack=2）"));
+    check(window.currentStackIndex() == 1
+              && window.currentSectionIndex() == 1,
+          QStringLiteral("切换到剧集媒体库（stack=1, section=1）"));
 
     // 详情页
     const QString firstId = window.libraryIds().first();
-    check(window.openDetail(firstId), QStringLiteral("打开详情页"));
-    check(window.currentStackIndex() == 4, QStringLiteral("详情页 stack=4"));
+    check(!firstId.isEmpty() && window.openDetail(firstId), QStringLiteral("打开详情页"));
+    check(window.currentStackIndex() == 3, QStringLiteral("详情页 stack=3"));
     auto *detail = window.findChild<ui::DetailView *>();
     check(detail != nullptr && detail->currentItem().id == firstId,
           QStringLiteral("详情页数据与选中 item 一致"));
@@ -271,7 +339,7 @@ int runSelfTest(QApplication &app)
 
     // 播放页与信号
     window.openPlayerDemo(firstId, 1, 2);
-    check(window.currentStackIndex() == 5, QStringLiteral("播放页 stack=5"));
+    check(window.currentStackIndex() == 4, QStringLiteral("播放页 stack=4"));
     auto *player = window.findChild<ui::PlayerPage *>();
     check(player != nullptr && player->isPlaying(), QStringLiteral("播放页处于播放状态（mock）"));
     if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton")))
@@ -307,7 +375,7 @@ int runSelfTest(QApplication &app)
 
     // 播放页返回
     player->findChild<QPushButton *>(QStringLiteral("PlayerBackButton"))->click();
-    check(window.currentStackIndex() == 4, QStringLiteral("播放页返回详情页（stack=4）"));
+    check(window.currentStackIndex() == 3, QStringLiteral("播放页返回详情页（stack=3）"));
 
     // 最小窗口尺寸下布局不崩
     window.resize(960, 600);
@@ -478,6 +546,64 @@ int runAuthTests(QApplication &app)
         check(loginStateSignals >= 1 && lastLoginState,
               QStringLiteral("登录成功发出 loginStateChanged(true)"));
 
+        // M2-B：真实数据链路。假服务器提供 Views / Items / Resume / 图片请求。
+        check(!window.isMockMode(), QStringLiteral("登录后自动切换到真实数据模式"));
+        check(waitFor([&window]() { return window.sectionNames().size() == 2; }),
+              QStringLiteral("真实 /Views 填充侧边栏媒体库"));
+        check(window.findChildren<QPushButton *>(QStringLiteral("SidebarLibraryButton")).size() == 2,
+              QStringLiteral("侧边栏生成 2 个动态媒体库按钮"));
+        check(waitFor([&window]() { return window.libraryIds().size() >= 2; }),
+              QStringLiteral("首页最近添加来自真实 /Items"));
+
+        window.navigateTo(ui::MainWindow::Page::Library);
+        auto *realLibrary = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
+        check(window.currentStackIndex() == 1, QStringLiteral("真实媒体库页 stack=1"));
+        const bool firstPageLoaded =
+            waitFor([realLibrary]() { return realLibrary && realLibrary->itemCount() >= 2; });
+        const int realFirstCount = realLibrary ? realLibrary->itemCount() : -1;
+        check(firstPageLoaded,
+              QStringLiteral("真实媒体库分页首屏加载 %1 项").arg(realFirstCount));
+
+        window.setSearchText(QStringLiteral("不存在"));
+        const bool searchRequested = waitFor([&server]() {
+            for (const QString &target : server.requestedTargets) {
+                if (target.contains(QStringLiteral("SearchTerm=")))
+                    return true;
+            }
+            return false;
+        });
+        check(searchRequested, QStringLiteral("搜索请求带 SearchTerm 参数（服务器端搜索）"));
+        check(waitFor([realLibrary]() { return realLibrary && realLibrary->itemCount() == 0; }),
+              QStringLiteral("真实 SearchTerm 返回空结果时显示空状态"));
+        window.setSearchText(QString());
+        check(waitFor([realLibrary]() { return realLibrary && realLibrary->itemCount() >= 2; }),
+              QStringLiteral("清空搜索后恢复真实媒体库"));
+
+        const bool detailOpened = window.openDetail(QStringLiteral("s1"));
+        auto *realDetail = window.findChild<ui::DetailView *>();
+        check(detailOpened && waitFor([realDetail]() {
+                  return realDetail && realDetail->currentItem().id == QStringLiteral("s1")
+                         && !realDetail->currentItem().seasons.isEmpty();
+              }),
+              QStringLiteral("真实详情拉取到剧集分季/分集"));
+        const int realEpisodeRows =
+            realDetail ? realDetail->findChildren<QWidget *>(QStringLiteral("EpisodeRow")).size() : 0;
+        check(realEpisodeRows >= 2,
+              QStringLiteral("真实详情渲染 %1 个 EpisodeRow").arg(realEpisodeRows));
+        check(waitFor([&server]() { return server.imageRequests.size() > 0; }),
+              QStringLiteral("海报/背景图通过带 Authorization 的图片请求加载"));
+        check(server.lastImageAuthorization.contains(QStringLiteral("Token=")),
+              QStringLiteral("图片请求使用 Authorization 头（token 不在 URL）"));
+
+        window.setMockMode(true);
+        check(window.isMockMode()
+                  && window.sectionNames()
+                         == QStringList({QStringLiteral("电影"), QStringLiteral("剧集")}),
+              QStringLiteral("设置页可切回 mock 数据源"));
+        window.setMockMode(false);
+        check(waitFor([&window]() { return !window.isMockMode() && window.sectionNames().size() == 2; }),
+              QStringLiteral("关闭 mock 后恢复真实媒体库"));
+
         auto *serverValue = window.findChild<QLabel *>(QStringLiteral("SettingsServerValue"));
         auto *userValue = window.findChild<QLabel *>(QStringLiteral("SettingsUserValue"));
         auto *versionValue = window.findChild<QLabel *>(QStringLiteral("SettingsVersionValue"));
@@ -627,6 +753,138 @@ int runLiveLogin(QApplication &app)
     return (testOk && loginOk && viewsOk && restoreOk) ? 0 : 1;
 }
 
+int runLiveData(QApplication &app)
+{
+    Q_UNUSED(app);
+    QTextStream out(stdout);
+    const QString url = qEnvironmentVariable("EMBY_TEST_URL");
+    const QString user = qEnvironmentVariable("EMBY_TEST_USER");
+    const QString password = qEnvironmentVariable("EMBY_TEST_PASSWORD");
+    if (url.isEmpty() || user.isEmpty()) {
+        out << "SKIP live data: set EMBY_TEST_URL / EMBY_TEST_USER / EMBY_TEST_PASSWORD\n";
+        out.flush();
+        return 0;
+    }
+
+    // 隔离 QSettings，避免覆盖真实用户 token。
+    QTemporaryDir settingsDir;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("emby-pc-live-test"));
+    QCoreApplication::setApplicationName(QStringLiteral("ui-live-data"));
+
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &name) {
+        out << (ok ? "PASS  " : "FAIL  ") << name << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    emby::EmbyClient client;
+    client.setRequestTimeout(15000);
+    ui::LoginDialog dialog(&client);
+    dialog.setInitialValues(url, user, QString());
+    if (auto *passwordEdit = dialog.findChild<QLineEdit *>(QStringLiteral("PasswordEdit")))
+        passwordEdit->setText(password);
+    int successCount = 0;
+    emby::ServerProfile profile;
+    QObject::connect(&dialog, &ui::LoginDialog::loginSucceeded,
+                     [&successCount, &profile](const emby::ServerProfile &p) {
+                         ++successCount;
+                         profile = p;
+                     });
+    if (auto *loginButton = dialog.findChild<QPushButton *>(QStringLiteral("LoginSubmitButton")))
+        loginButton->click();
+    check(waitFor([&successCount]() { return successCount == 1; }, 15000),
+          QStringLiteral("真实服务器登录成功"));
+
+    ui::QSettingsTokenStore store;
+    store.clear();
+    store.saveProfile(profile);
+
+    ui::MainWindow::Options options;
+    options.requireAuthentication = true;
+    options.tokenStore = &store;
+    ui::MainWindow window(options);
+    window.resize(1280, 760);
+    window.show();
+    check(waitFor([&window]() { return window.hasSession() && !window.isMockMode(); }, 15000),
+          QStringLiteral("MainWindow 自动恢复 token 并进入真实数据模式"));
+    check(waitFor([&window]() { return !window.sectionNames().isEmpty(); }, 15000),
+          QStringLiteral("侧边栏加载真实 Views：%1")
+              .arg(window.sectionNames().join(QStringLiteral(" / "))));
+
+    check(waitFor([&window]() { return window.libraryIds().size() > 0; }, 15000),
+          QStringLiteral("首页最近添加加载真实 Items（%1 项）").arg(window.libraryIds().size()));
+
+    window.navigateTo(ui::MainWindow::Page::Library);
+    auto *library = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
+    check(waitFor([library]() { return library && library->itemCount() > 0; }, 15000),
+          QStringLiteral("媒体库首屏加载 %1 项").arg(library ? library->itemCount() : -1));
+    if (library) {
+        const int initialCount = library->itemCount();
+        const int total = library->totalCount();
+        out << "INFO  首屏 " << initialCount << " / 总数 " << total << "（Limit=60）"
+            << " hasMore=" << library->hasMore() << "\n";
+        if (total > initialCount) {
+            auto *grid = library->findChild<QListView *>(QStringLiteral("PosterGrid"));
+            settle(app, 300);
+            if (grid) {
+                out << "DEBUG grid max=" << grid->verticalScrollBar()->maximum()
+                    << " viewport=" << grid->viewport()->height() << "\n";
+                grid->verticalScrollBar()->setValue(grid->verticalScrollBar()->maximum());
+            }
+            check(waitFor([library, initialCount]() {
+                      return library->itemCount() > initialCount;
+                  }, 12000),
+                  QStringLiteral("滚动到底部触发分页加载（%1 -> %2）")
+                      .arg(initialCount)
+                      .arg(library->itemCount()));
+        } else {
+            out << "INFO  该媒体库不足一页，跳过分页断言\n";
+        }
+
+        const QStringList ids = library->visibleItemIds();
+        if (!ids.isEmpty()) {
+            const QString firstId = ids.first();
+            window.openDetail(firstId);
+            auto *detail = window.findChild<ui::DetailView *>();
+            check(waitFor([detail, firstId]() {
+                      return detail && detail->currentItem().id == firstId
+                             && !detail->currentItem().title.isEmpty();
+                  }, 15000),
+                  QStringLiteral("真实详情加载：%1")
+                      .arg(detail ? detail->currentItem().title : QString()));
+        }
+    }
+
+    window.navigateTo(ui::MainWindow::Page::Series);
+    if (waitFor([&window]() { return window.currentSectionIndex() >= 0; }, 8000)) {
+        auto *series = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
+        if (waitFor([series]() { return series && series->itemCount() > 0; }, 15000)) {
+            const QStringList ids = series->visibleItemIds();
+            if (!ids.isEmpty()) {
+                window.openDetail(ids.first());
+                auto *detail = window.findChild<ui::DetailView *>();
+                const bool seasonsOk = waitFor([detail]() {
+                    return detail && !detail->currentItem().seasons.isEmpty()
+                           && !detail->currentItem().seasons.first().episodes.isEmpty();
+                }, 15000);
+                check(seasonsOk, QStringLiteral("剧集详情加载真实季/集（%1 季）")
+                                     .arg(detail ? detail->currentItem().seasons.size() : 0));
+            }
+        }
+    }
+
+    out << (failures == 0 ? "LIVE DATA ALL PASS"
+                          : QStringLiteral("LIVE DATA FAILURES: %1").arg(failures))
+        << "\n";
+    out.flush();
+    window.close();
+    return failures == 0 ? 0 : 1;
+}
+
 int runScreenshots(QApplication &app, const QString &directory)
 {
     Q_UNUSED(app);
@@ -730,6 +988,9 @@ int main(int argc, char *argv[])
 
     if (args.contains(QStringLiteral("--live-login")))
         return runLiveLogin(app);
+
+    if (args.contains(QStringLiteral("--live-data")))
+        return runLiveData(app);
 
     const int screenshotIndex = args.indexOf(QStringLiteral("--screenshot"));
     if (screenshotIndex >= 0) {

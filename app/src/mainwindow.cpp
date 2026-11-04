@@ -7,6 +7,7 @@
 #include "embytypes.h"
 
 #include "ui/detailview.h"
+#include "ui/homeview.h"
 #include "ui/libraryview.h"
 #include "ui/mainwindow.h"
 #include "ui/playerpage.h"
@@ -236,14 +237,26 @@ void PlayerController::connectUiPlaybackSignals()
                 &PlayerController::onDetailPlayRequested);
     }
 
-    const QStringList libraryNames = {QStringLiteral("HomeLibrary"),
-                                     QStringLiteral("MoviesLibrary"),
-                                     QStringLiteral("SeriesLibrary")};
-    for (const QString &name : libraryNames) {
-        if (auto *view = m_window->findChild<ui::LibraryView *>(name)) {
-            connect(view, &ui::LibraryView::playRequested, this,
-                    &PlayerController::onLibraryPlayRequested);
+    // HomeView（继续观看/最近添加）与主媒体库 LibraryView 都直接发 playRequested。
+    // HomeView 内部的 recentView 也会转发一份，这里跳过嵌套在 HomeView 里的实例，避免重复请求。
+    const QList<ui::LibraryView *> libraryViews = m_window->findChildren<ui::LibraryView *>();
+    for (ui::LibraryView *view : libraryViews) {
+        bool insideHomeView = false;
+        for (QWidget *parent = view->parentWidget(); parent; parent = parent->parentWidget()) {
+            if (qobject_cast<ui::HomeView *>(parent)) {
+                insideHomeView = true;
+                break;
+            }
         }
+        if (insideHomeView)
+            continue;
+        connect(view, &ui::LibraryView::playRequested, this,
+                &PlayerController::onLibraryPlayRequested);
+    }
+    const QList<ui::HomeView *> homeViews = m_window->findChildren<ui::HomeView *>();
+    for (ui::HomeView *view : homeViews) {
+        connect(view, &ui::HomeView::playRequested, this,
+                &PlayerController::onLibraryPlayRequested);
     }
 
     connect(m_window, &ui::MainWindow::loginStateChanged, this, [this](bool loggedIn) {
@@ -373,10 +386,16 @@ void PlayerController::onDetailPlayRequested(const QString &itemId, int season, 
         item.id = itemId;
     }
 
-    if (item.isSeries())
+    if (item.isSeries()) {
         loadEpisodeQueue(item.id, item.title, season, episode);
-    else
-        playEmbyItem(item.id, item.title, -1, -1, 0);
+    } else {
+        qint64 startTicks = 0;
+        if (item.progress > 0.0 && item.runtimeMinutes > 0) {
+            startTicks = static_cast<qint64>(item.progress
+                                             * item.runtimeMinutes * 60.0 * 10000000.0);
+        }
+        playEmbyItem(item.id, item.title, -1, -1, startTicks);
+    }
 }
 
 void PlayerController::onLibraryPlayRequested(const QString &itemId)

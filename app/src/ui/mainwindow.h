@@ -54,10 +54,10 @@ public:
     enum class Page {
         Home = 0,
         Library = 1,
-        Settings = 2,
-        // 兼容旧调用：电影/剧集都是同一个可复用媒体库页。
-        Movies = 1,
-        Series = 1,
+        // 兼容旧调用：电影/剧集都会打开同一个可复用媒体库页，但先按类型定位 section。
+        Movies = 2,
+        Series = 3,
+        Settings = 4,
     };
 
     explicit MainWindow(const Options &options = Options(), QWidget *parent = nullptr);
