@@ -298,6 +298,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                 if (!m_player->isReady())
                     return;
                 if (!m_player->setPropertyString("aid", trackId)) {
+                    ++m_audioSwitchSerial;
                     showStatus(tr("音轨 %1 切换失败").arg(trackId), 5000);
                     refreshTracks();
                     return;
