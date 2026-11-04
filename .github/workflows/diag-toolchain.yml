@@ -5,27 +5,17 @@ on:
 
 jobs:
   diag:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Dump toolchain info
         shell: pwsh
         run: |
-          Write-Host "=== cmake ==="
-          cmake --version
           Write-Host "=== OS ==="
-          [System.Environment]::OSVersion.VersionString
           (Get-CimInstance Win32_OperatingSystem).Caption
-          Write-Host "=== vswhere ==="
-          $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
-          $vswhere = Join-Path $pf86 "Microsoft Visual Studio\Installer\vswhere.exe"
-          Write-Host "vswhere path: $vswhere exists=$(Test-Path $vswhere)"
-          if (Test-Path $vswhere) {
-            & $vswhere -all -products * -format json
-          }
-          Write-Host "=== VS install dirs ==="
-          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          Write-Host "=== ninja ==="
-          (Get-Command ninja -ErrorAction SilentlyContinue).Source
+          Write-Host "=== cmake ==="
+          cmake --version | Select-Object -First 1
           Write-Host "=== cmake VS generators ==="
           (cmake --help) | Select-String "Visual Studio"
+          Write-Host "=== VS dirs ==="
+          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
