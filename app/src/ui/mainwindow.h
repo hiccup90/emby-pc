@@ -178,7 +178,6 @@ private:
     int m_detailGeneration = 0;
     bool m_libraryLoading = false;
     bool m_libraryHasMore = false;
-    bool m_realHomeLoaded = false;
 
     MediaItem m_currentItem;
     int m_currentSeason = -1;

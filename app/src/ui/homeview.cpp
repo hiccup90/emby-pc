@@ -141,7 +141,8 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setFixedHeight(174);
+    // 卡片内容高度约 188，加上横向滚动条 10，留 200 避免底部进度条被裁切。
+    scroll->setFixedHeight(200);
 
     m_resumeContent = new QWidget(scroll);
     m_resumeContent->setObjectName(QStringLiteral("ResumeContent"));

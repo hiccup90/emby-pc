@@ -27,8 +27,6 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include <QDebug>
-
 #include <algorithm>
 
 namespace ui {
@@ -223,8 +221,6 @@ void MainWindow::connectSignals()
     connect(m_libraryView, &LibraryView::playRequested, this,
             [this](const QString &itemId) { playItem(itemId, -1, -1); });
     connect(m_libraryView, &LibraryView::loadMoreRequested, this, [this]() {
-        qDebug("loadMoreRequested mock=%d loading=%d hasMore=%d start=%d", int(m_mockMode),
-               int(m_libraryLoading), int(m_libraryHasMore), m_libraryStart);
         if (m_mockMode || m_libraryLoading || !m_libraryHasMore)
             return;
         m_libraryLoading = true;
@@ -429,7 +425,6 @@ void MainWindow::loadMockHome()
     m_home->recentView()->setTotalCount(m_mockLibrary.size());
     m_home->recentView()->setHasMore(false);
     m_home->setLoading(false);
-    m_realHomeLoaded = false;
 }
 
 void MainWindow::loadMockSection(int sectionIndex)
@@ -461,6 +456,9 @@ void MainWindow::loadRealViews()
     if (!m_data || !hasSession())
         return;
     m_data->fetchViews([this](const QList<LibrarySection> &sections, const QString &error) {
+        // 退出登录/切回 mock 后，迟到的响应不能再填充真实媒体库。
+        if (!hasSession() || m_mockMode)
+            return;
         if (!error.isEmpty()) {
             statusBar()->showMessage(QStringLiteral("加载媒体库列表失败：%1").arg(error), 5000);
             emit dataLoaded(false, error);
@@ -506,7 +504,6 @@ void MainWindow::loadRealHome()
         m_home->setLoading(false);
         m_home->recentView()->setTotalCount(recent.size());
         m_home->recentView()->setHasMore(false);
-        m_realHomeLoaded = true;
         rememberItems(resume);
         rememberItems(recent);
         emit dataLoaded(true, QString());
@@ -566,13 +563,9 @@ void MainWindow::loadLibraryPage()
     const int sortMode = m_libraryView->sortMode();
     const QString searchTerm = m_search ? m_search->text().trimmed() : QString();
 
-    qDebug("loadLibraryPage start=%d sort=%d search=%s gen=%d", start, sortMode,
-           qPrintable(searchTerm), generation);
     m_data->fetchItems(section, start, 60, sortMode, searchTerm,
                        [this, generation, start](const QList<MediaItem> &items, int total,
                                                  bool hasMore, const QString &error) {
-                           qDebug("loadLibraryPage result start=%d count=%d total=%d hasMore=%d err=%s",
-                                  start, int(items.size()), total, int(hasMore), qPrintable(error));
                            if (generation != m_libraryGeneration)
                                return;
                            m_libraryLoading = false;
@@ -650,6 +643,7 @@ void MainWindow::setMockMode(bool enabled)
     m_cache->clear();
     m_libraryGeneration++;
     m_homeGeneration++;
+    m_detailGeneration++;
     m_libraryLoading = false;
     m_currentSection = -1;
     if (m_search)
@@ -674,8 +668,6 @@ bool MainWindow::openDetail(const QString &itemId)
     MediaItem known;
     const bool fromKnown = knownItem(itemId, &known);
     const bool fromList = !fromKnown && listedItem(itemId, &known);
-    qDebug("openDetail id=%s known=%d list=%d title=%s", qPrintable(itemId), int(fromKnown),
-           int(fromList), qPrintable(known.title));
     const bool hasKnown = fromKnown || fromList;
     if (hasKnown)
         showDetailFor(known);
@@ -969,7 +961,6 @@ void MainWindow::onLoggedIn(const emby::ServerProfile &profile, const emby::Serv
     m_mockMode = false;
     m_settings->setMockMode(false);
     m_currentSection = -1;
-    m_realHomeLoaded = false;
     ++m_homeGeneration;
     ++m_libraryGeneration;
     updateSessionUi();
@@ -999,9 +990,9 @@ void MainWindow::logout()
     m_knownItems.clear();
     m_sections.clear();
     m_currentSection = -1;
-    m_realHomeLoaded = false;
     ++m_homeGeneration;
     ++m_libraryGeneration;
+    ++m_detailGeneration;
     m_libraryLoading = false;
     m_settings->clearSession();
     m_home->setResumeItems({});

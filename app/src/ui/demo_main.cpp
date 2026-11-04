@@ -845,10 +845,10 @@ int runLiveData(QApplication &app)
             out << "INFO  该媒体库不足一页，跳过分页断言\n";
         }
 
-        const QStringList ids = library->visibleItemIds();
-        check(!ids.isEmpty(), QStringLiteral("媒体库返回可见 item"));
-        if (!ids.isEmpty()) {
-            window.openDetail(ids.first());
+        const QList<ui::MediaItem> visible = library->visibleItems();
+        check(!visible.isEmpty(), QStringLiteral("媒体库返回可见 item"));
+        if (!visible.isEmpty()) {
+            window.openDetail(visible.first().id);
             auto *detail = window.findChild<ui::DetailView *>();
             const bool detailOk = waitFor([detail]() {
                 return detail && !detail->currentItem().id.isEmpty()
@@ -867,9 +867,9 @@ int runLiveData(QApplication &app)
         seriesSection && waitFor([series]() { return series && series->itemCount() > 0; }, 15000);
     check(seriesLoaded, QStringLiteral("剧集媒体库加载"));
     if (seriesLoaded) {
-        const QStringList ids = series->visibleItemIds();
-        if (!ids.isEmpty()) {
-            window.openDetail(ids.first());
+        const QList<ui::MediaItem> visible = series->visibleItems();
+        if (!visible.isEmpty()) {
+            window.openDetail(visible.first().id);
             auto *detail = window.findChild<ui::DetailView *>();
             const bool seasonsOk = waitFor([detail]() {
                 return detail && !detail->currentItem().seasons.isEmpty()

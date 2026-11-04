@@ -1,21 +1,26 @@
-# app/src/ui — Qt Widgets UI 骨架（T4）与登录/会话（T6）
+# app/src/ui — Qt Widgets UI（T4）+ 登录/会话（T6）+ 真实媒体库（T7 / M2-B）
 
-Emby PC 客户端的表现层：**Qt 6 Widgets + 深色 QSS**。T4 完成主窗口/媒体库/详情/播放页骨架（mock 数据），
-T6 增加登录对话框、Token 持久化、启动自动恢复与设置页账户信息；媒体库仍为 mock（M2-B 再接真实数据）。
+Emby PC 客户端的表现层：**Qt 6 Widgets + 深色 QSS**。T4 完成主窗口/媒体库/详情/播放页骨架，
+T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）把 mock 数据替换为真实 Emby API：
+/Views 动态侧边栏、/Items 分页/排序/搜索、首页 Resume + 最近添加、真实海报异步加载、真实详情（季/集）。
+设置页保留“演示数据（Mock）”开关，未登录/离线时仍可回归 UI。
 
 ## 目录结构
 
 | 文件 | 职责 |
 |---|---|
-| `mainwindow.h/.cpp` | 主窗口壳：侧边栏 + 顶栏搜索 + QStackedWidget 页面栈（首页/电影/剧集/设置/详情/播放） |
-| `sidebar.h/.cpp` | 左侧导航（首页/电影/剧集/设置）+ 服务器状态卡片 |
-| `libraryview.h/.cpp` | 媒体库页：QListView(IconMode) + PosterDelegate 海报网格、搜索过滤、排序、空状态、首页 Hero banner |
+| `mainwindow.h/.cpp` | 主窗口壳：动态侧边栏 + 顶栏搜索 + 页面栈（首页/媒体库/设置/详情/播放），负责真实/mock 数据源切换 |
+| `sidebar.h/.cpp` | 左侧导航：首页 + 来自 /Views 的动态媒体库列表 + 设置 + 服务器状态卡片 |
+| `homeview.h/.cpp` | 首页：继续观看（Resume 横向卡片）+ 最近添加（复用 LibraryView 海报网格） |
+| `libraryview.h/.cpp` | 媒体库页：QListView(IconMode) + PosterDelegate 海报网格、服务端分页/排序/搜索、加载/空/错误状态 |
+| `librarydata.h/.cpp` | UI 数据层：Views / Items 分页 / Home(Resume+最近添加) / 详情(季集) 的 Emby 请求编排与 DTO 映射 |
 | `posterdelegate.h/.cpp` | 海报卡片绘制：圆角海报、评分角标、观看进度条、hover/选中态 |
 | `mediamodel.h/.cpp` | `MediaListModel`（QAbstractListModel）+ `MediaFilterProxyModel` 搜索过滤 |
-| `detailview.h/.cpp` | 详情页：背景/海报、标题元数据、简介、播放按钮、季/集列表（mock） |
+| `detailview.h/.cpp` | 详情页：背景/海报、标题元数据、简介、播放按钮、真实季/集列表 |
 | `playerpage.h/.cpp` | 播放页容器：VideoHost 占位 + 播放/暂停/上下集/字幕/音轨等信号 |
 | `thumbnailcache.h/.cpp` | 缩略图缓存接口：同步 get + 异步 request + LRU，默认生成离线占位海报 |
-| `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（mock 资源） |
+| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：QNetworkAccessManager + Authorization 头异步下载，失败回填占位图 |
+| `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（离线占位资源） |
 | `icons.h/.cpp` | 24x24 线性矢量图标集，不依赖系统主题 |
 | `mocklibrary.h/.cpp` | 200 部 mock 媒体库（电影/剧集、季/集、观看进度，确定性） |
 | `logindialog.h/.cpp` | 登录/连接对话框：测试连接、登录、HTTPS 自签开关、中文错误提示 |
@@ -66,6 +71,11 @@ cmake --build /tmp/emby-ui-build2 -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen /tmp/emby-ui-build2/emby-ui-demo --selftest
 QT_QPA_PLATFORM=offscreen /tmp/emby-ui-build2/emby-ui-demo --screenshot app/src/ui/preview
 
+# 真实服务器数据链路（登录 -> Views -> 首页 -> 分页 -> 详情 -> 季/集）
+QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
+  EMBY_TEST_USER='<user>' EMBY_TEST_PASSWORD='<pass>' \
+  /tmp/emby-ui-build2/emby-ui-demo --live-data
+
 # 有桌面环境时直接预览（demo 默认跳过登录）
 /tmp/emby-ui-build2/emby-ui-demo
 ```
@@ -109,7 +119,36 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
   /tmp/emby-ui-build2/emby-ui-demo --live-login
 ```
 
-`--selftest` 默认使用本地假 Emby 服务器（QTcpServer），不依赖真实网络；`--live-login` 才访问环境变量指定的真实服务器。
+`--selftest` 默认使用本地假 Emby 服务器（QTcpServer），不依赖真实网络；`--live-login` / `--live-data` 才访问环境变量指定的真实服务器。
+
+## 真实媒体库（T7 / M2-B）
+
+### 数据流
+
+1. **Views → 侧边栏**：登录/恢复会话成功后调用 `GET /Users/{userId}/Views`，
+   过滤 `CollectionFolder` / `UserView`，按 movies / tvshows / boxsets 排序后生成动态导航。
+2. **Items 分页**：`GET /Users/{userId}/Items?ParentId=...&StartIndex=&Limit=60&SortBy=&SearchTerm=`；
+   - 滚动条接近底部（<420px）自动请求下一页，`StartIndex` 递增；
+   - 排序（最近添加 / 名称 / 评分 / 年份）由服务器 `SortBy/SortOrder` 完成；
+   - 搜索走服务器 `SearchTerm`（不在已加载的 60 条里本地过滤）；
+   - Emby 4.9 对 `IncludeItemTypes=Series` 的 `TotalRecordCount` 会按“集数”计数，
+     数据层在单页不足 60 个剧集时自动补页，避免剧集库首屏只有 5 部。
+3. **首页**：`/Users/{userId}/Items/Resume` 横向“继续观看” + `/Items?SortBy=DateCreated` 最近添加 24 项。
+4. **海报**：`LibraryData` 用 `EmbyClient::imageUrl()` 生成不含 token 的 URL 作为缓存 key；
+   `EmbyThumbnailCache` 用 `QNetworkAccessManager` 异步下载，请求头带
+   `Authorization: MediaBrowser ...Token="..."`；失败时回填离线占位图，避免每次重绘重复请求。
+5. **详情**：`GET /Users/{userId}/Items/{id}`；剧集再并行拉 `IncludeItemTypes=Season` 与
+   `IncludeItemTypes=Episode`，按 `ParentIndexNumber` 分组。列表页已带 Fields，点开详情先用列表数据
+   立即渲染，再异步补齐季/集。
+6. **mock 开关**：设置页“界面 → 数据源 → 使用演示数据（本地 Mock）”。关闭时若无会话会拉起登录框；
+   登录成功后自动切到真实数据。登录/退出会清空图片缓存，避免串号。
+
+### 错误 / 空 / 加载状态
+
+- 首屏：`LibraryView::setInitialLoading(true)` 显示“正在加载 ……”；
+- 空结果：区分“媒体库没有内容”和“搜索无匹配”；
+- 请求失败：展示 `friendlyApiError()` 中文错误（连接拒绝、超时、证书、401/403、5xx）；
+- 分页失败：保留已加载内容，只在状态栏提示“加载更多失败”。
 
 ## 与播放器 / 数据层对接
 
@@ -140,39 +179,54 @@ playerPage->releaseVideoSurface();               // 停止播放/退出时恢复
 回填接口：`setEpisodeInfo(title, subtitle)`、`setPosition(posMs, durationMs)`、`setPlaying(bool)`、
 `setSubtitleTracks(QList<TrackInfo>)`、`setAudioTracks(...)`、`setVolume(int)`、`setFullscreen(bool)`。
 
-### 3. 媒体数据（mock → Emby API）
+### 3. 媒体数据（真实 Emby API）
 
-`LibraryView::setItems(QList<MediaItem>)` 接收 `ui::MediaItem`（见 `uitypes.h`，字段与 Emby DTO 对齐）。
-真实接入时由 `app/src/emby` 的映射层填充 `MediaItem` 后调用即可，海报走 `thumbnailcache`：
+`ui::LibraryData` 负责把 `emby::MediaItem` 映射成 `ui::MediaItem`（见 `uitypes.h`），
+`LibraryView::setItems()/appendItems()` 与 `HomeView::setRecentItems()` 只消费 UI DTO。
 
-- 现在：`ThumbnailCache::generate()` 用 `postergenerator` 生成离线占位图。
-- 接网络：继承 `ThumbnailCache` 重写 `generate()`（或用 `insert()` 回填 async 下载结果），
-  delegate 的同步 `get()` + `thumbnailReady` 重绘机制无需改动。
+- 真实图片：`EmbyThumbnailCache` 继承 `ThumbnailCache::loadAsync()`，按 URL key 异步下载；
+  delegate 的同步 `get()` + `thumbnailReady` 重绘机制不变。
+- mock 图片：非 http key 仍走 `postergenerator` 离线占位图。
+- 播放链路（T8）可直接使用 `LibraryData` 已请求的 Fields（Duration/MediaSources 等按需补充），
+  或调用 `MainWindow::embyClient()` 自行请求 `/Items/{id}/PlaybackInfo`。
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **53 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **71 项全部 PASS**，包括：
 
-- mock 媒体库 200 部；QListView 模型 200 行；海报网格 gridSize 生效；
-- 搜索“星际”过滤为 5 条，清空恢复 200 条；
-- 200 项从头滚到底：5 帧平均 **15~18 ms/帧**（offscreen 软件渲染，含整窗 grab，仅作回归基线）；
-- 页面栈切换（首页/电影/剧集/详情/播放）索引正确；
-- 播放页播放/暂停、上一集、下一集按钮各发出 1 次对应信号；
-- `attachVideoSurface()` 可替换占位、`releaseVideoSurface()` 可恢复；
-- 登录：假服务器测试连接/登录成功、401 密码错误、连接拒绝中文提示、token 不泄露到状态栏/URL；
-- TokenStore 保存/读取 ServerProfile、启动自动恢复、退出登录清除、过期 token 回登录页；
-- 设置页服务器/用户/版本显示、`embyClient()` 与 `loginStateChanged(bool)` 信号。
+- mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
+- QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
+- 播放页信号、`attachVideoSurface()/releaseVideoSurface()`；
+- 假 Emby 服务器（QTcpServer）上的真实链路：
+  - 登录/401/连接拒绝/TokenStore 持久化/启动自动恢复/过期 token 回登录页；
+  - /Views 生成 2 个动态媒体库按钮；
+  - 首页最近添加来自 /Items；
+  - 服务器端 `SearchTerm` 搜索 + 空状态；
+  - 真实详情季/集渲染 EpisodeRow；
+  - 海报图片请求带 Authorization 且 token 不在 URL；
+  - 设置页 mock 开关可来回切换数据源。
+- `embyClient()`、`loginStateChanged(bool)`、`MainWindow::visibleItems()` 等 T8 接口可用。
 
-真实 Emby 联调（容器可达、凭据由环境变量传入的服务器）通过：测试连接 → authenticate → fetch Views → 启动自动恢复 token 均成功（凭据仅通过环境变量传入，不写入代码/日志）。
+真实 Emby 联调（容器可达、凭据由环境变量传入）`--live-data` 全部 PASS：
+登录 → Views（Movie / 电视节目 / 合集）→ 首页最近添加 24 项 → Movie 库首屏 60/96
+→ 滚动分页 60→96 → 真实详情 → 剧集详情 1 季 28 集。
+凭据仅通过环境变量传入，不写入代码/日志。
 
 `app/` 根工程完整构建通过（`emby-pc` 可执行文件链接了 `emby` + `ui` 静态库）。
+
+### CI / 跨平台注意（Windows MSVC）
+
+- 所有 `qBound/std::min/std::max` 的实参类型一致；`StackPage` 与 `int` 混用处已显式
+  `static_cast<int>`，避免 MSVC 模板推导歧义（GCC 较宽松）。
+- 枚举值保持唯一（每个 `MainWindow::Page` 对应独立值，别名仅通过等价逻辑处理）。
+- 未使用参数用 `Q_UNUSED`；`QList` 与 `QVector` 在 Qt 6 已统一，代码未使用差异 API。
 
 ### 预览截图（1280x760 / 960x600）
 
 | 页面 | 截图 |
 |---|---|
-| 首页（Hero + 海报网格） | [01-home.png](preview/01-home.png) |
-| 电影库 | [02-movies.png](preview/02-movies.png) |
+| 首页（继续观看 + 最近添加） | [01-home.png](preview/01-home.png) |
+| 媒体库（真实/演示数据共用） | [02-movies.png](preview/02-movies.png) |
 | 详情页 | [03-detail.png](preview/03-detail.png) |
 | 详情页 · 剧集列表 | [04-detail-episodes.png](preview/04-detail-episodes.png) |
 | 播放页（VideoHost 占位 + 控制条） | [05-player.png](preview/05-player.png) |
@@ -185,10 +239,11 @@ playerPage->releaseVideoSurface();               // 停止播放/退出时恢复
 
 ## 已知限制 / 后续
 
-- 媒体库数据仍为本地 mock（M2-B 接真实 Views/Items）；未接真实播放器（播放页仅状态演示）。
-- 海报/背景图为程序生成的抽象图（离线占位），非真实海报。
+- 未接真实播放器（播放页仅状态演示）；播放链路在 T8 接 mpv/PlaybackInfo。
+- 真实海报已按 Authorization 异步下载；失败/离线时回退程序生成的抽象占位图。
 - 播放器控制条当前为 Qt 控件版（方案 B 的骨架）；最终采用 mpv OSC（方案 A）时，
   `PlayerPage` 的控制条可切换为隐藏/纯状态显示，视频区仍由 `attachVideoSurface` 挂载。
 - 主窗口暂用系统标题栏；无边框 DWM 方案（P5）后续在 WindowController 层实现。
-- 未实现真实图片异步下载线程池；`ThumbnailCache` 已留好接口与 LRU。
+- 图片请求未做并发上限/取消（LRU + 重复 key 合并已生效），后续可加队列。
 - TokenStore 当前为 QSettings 明文临时实现（Windows DPAPI 待补）。
+- 真实首页最近添加固定 24 项；“查看全部”尚未做独立页面（媒体库页可浏览全部）。

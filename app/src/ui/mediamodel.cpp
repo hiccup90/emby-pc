@@ -21,6 +21,8 @@ QVariant MediaListModel::data(const QModelIndex &index, int role) const
 
     const MediaItem &item = m_items.at(index.row());
     switch (role) {
+    case ItemIdRole:
+        return item.id;
     case Qt::DisplayRole:
     case TitleRole:
         return item.title;

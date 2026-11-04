@@ -21,15 +21,6 @@ QStringList listFields()
     };
 }
 
-QStringList detailFields()
-{
-    QStringList fields = listFields();
-    fields << QStringLiteral("Container") << QStringLiteral("Path")
-           << QStringLiteral("MediaSources") << QStringLiteral("MediaStreams")
-           << QStringLiteral("ProviderIds");
-    return fields;
-}
-
 QStringList itemTypesForCollection(const QString &collectionType)
 {
     if (collectionType == QLatin1String("movies"))
@@ -59,11 +50,6 @@ int runtimeMinutesFromTicks(qint64 ticks)
     if (ticks <= 0)
         return 0;
     return qMax(1, int(ticks / 600000000LL));
-}
-
-QString friendlyOrEmpty(const emby::ApiError &error)
-{
-    return error.isError() ? friendlyApiError(error) : QString();
 }
 
 } // namespace
@@ -199,7 +185,9 @@ void LibraryData::fetchItems(const LibrarySection &section, int startIndex, int 
 
     const int pageSize = qBound(1, limit, 200);
 
-    auto makeQuery = [&](int start) {
+    // 注意：step 可能在 fetchItems() 返回后才执行，必须按值捕获所有局部变量，
+    // 否则 section/searchTerm/sortMode 会变成悬空引用（MSVC Debug 下更易暴露）。
+    auto makeQuery = [section, sortMode, searchTerm, pageSize](int start) {
         emby::ItemQuery query;
         query.parentId = section.id;
         query.recursive = true;
@@ -247,7 +235,10 @@ void LibraryData::fetchItems(const LibrarySection &section, int startIndex, int 
     state->next = qMax(0, startIndex);
     state->initial = state->next;
 
-    auto finish = [state, pageSize](bool failed, const QString &message) {
+    auto step = QSharedPointer<std::function<void()>>::create();
+    auto finish = [state, step, pageSize](bool failed, const QString &message) {
+        // 断开 step 的自引用，避免异步递归持有的 shared_ptr 循环泄漏。
+        *step = std::function<void()>();
         if (!state->handler)
             return;
         if (failed && state->items.isEmpty() && state->initial == 0) {
@@ -263,7 +254,6 @@ void LibraryData::fetchItems(const LibrarySection &section, int startIndex, int 
         callback(state->items, total, hasMore, QString());
     };
 
-    auto step = QSharedPointer<std::function<void()>>::create();
     *step = [this, makeQuery, state, step, pageSize, finish]() {
         const int requestStart = state->next;
         m_client->fetchItems(
