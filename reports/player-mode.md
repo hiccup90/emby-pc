@@ -225,5 +225,6 @@ T17 的键盘转发只挂在 Qt 主窗口。实机点一下视频后，Windows �
   exit=0
   ```
   覆盖 SPACE/LEFT/ESC/ENTER/f/5/,/Shift+f/修饰键空/F11 空。
+- Windows CI：run `41872144136`（commit `0c8cfcb`）全绿，MSVC 2022 x64 的 Build (Release) 步骤通过（`WM_KEYDOWN` 子类化 + VK 映射编译无误）；artifact `emby-pc-win64` id `13346200280`（72,214,946 bytes）。
 - Windows 实机待验证：点视频后按空格暂停、方向键 seek、F/F11 全屏、Esc 退全屏；`EMBY_PC_DEBUG_INPUT=1` 时 app.log 应出现 `VideoHost: native key down/up` 与 `forward key to mpv (native)`。
 
