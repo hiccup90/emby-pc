@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 
 ## CI
 
-- 工作流：`.github/workflows/windows-build.yml`（windows-latest）
+- 工作流：`.github/workflows/windows-build.yml`（windows-2022 + VS 2022 + Qt 6.8 msvc2022_64）
 - 触发：push 到 `main`，或 Actions 页面 **Run workflow**（workflow_dispatch）
 - 产物：artifact **emby-pc-win64**（`dist/emby-pc-win64.zip`，保留 30 天）
 

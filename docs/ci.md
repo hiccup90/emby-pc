@@ -7,7 +7,9 @@
 
 ## 1. 这个工作流做什么
 
-在 **windows-latest** 上构建 Windows x64 Release 包，产物是一个可直接解压运行的 zip。
+在 **windows-2022** 上构建 Windows x64 Release 包，产物是一个可直接解压运行的 zip。
+
+> 为什么不是 windows-latest：2026-11 起 `windows-latest` 指向 Windows Server 2025 + VS 2026 镜像，不再自带 VS 2022，CMake 的 `Visual Studio 17 2022` 生成器不可用；Qt 6.8 的 `win64_msvc2022_64` 与 VS 2022 匹配，因此固定 `windows-2022`。
 
 | 步骤 | 内容 |
 |---|---|

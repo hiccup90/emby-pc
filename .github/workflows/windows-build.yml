@@ -12,7 +12,10 @@ env:
 jobs:
   windows:
     name: Windows x64 Release
-    runs-on: windows-latest
+    # 说明：2026-11 起 windows-latest 已指向 Windows Server 2025 + Visual Studio 2026，
+    # 该镜像不再自带 VS 2022（CMake 的 "Visual Studio 17 2022" 生成器不存在）。
+    # Qt 6.8 的 win64_msvc2022_64 二进制与 VS 2022 匹配，因此这里固定 windows-2022。
+    runs-on: windows-2022
     timeout-minutes: 60
 
     steps:
