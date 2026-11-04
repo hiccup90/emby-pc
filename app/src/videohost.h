@@ -27,6 +27,7 @@ public:
     void notifyMouseButton(int button, const QPoint &position, bool doubleClick);
     void notifyMouseRelease(int button);
     void notifyMouseWheel(int button, const QPoint &position);
+    void notifyKeyPressed(int virtualKey, int modifiers, bool down);
     void notifyChildDestroyed(quintptr child);
 
 signals:
@@ -34,6 +35,8 @@ signals:
     void mouseButtonPressed(int button, const QPoint &position, bool doubleClick);
     void mouseButtonReleased(int button);
     void mouseWheel(int button, const QPoint &position);
+    // 焦点在 mpv 子 HWND 时 Qt 主窗口收不到键盘，子类化回调转发到这里。
+    void keyPressed(int virtualKey, int modifiers, bool down);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -46,4 +49,5 @@ private:
     QTimer *m_syncTimer = nullptr;
     quintptr m_mpvChildHandle = 0;
     int m_mouseEventCount = 0;
+    int m_keyEventCount = 0;
 };

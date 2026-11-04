@@ -189,3 +189,41 @@ initial true playerHidden true fsHidden true exitFsHidden true restored true fsN
 | `app/src/mpvplayer.cpp` | input.conf 中键探针；`app-mouse-probe` 日志 |
 | `app/CMakeLists.txt` | WIN32 链接 `comctl32`（SetWindowSubclass） |
 | `reports/player-mode.md` | 本报告 |
+
+## 10. T19 键盘焦点补丁（追加，2026-11-04）
+
+### 10.1 问题
+
+T17 的键盘转发只挂在 Qt 主窗口。实机点一下视频后，Windows 焦点会转移到 mpv 子 HWND；`--wid` 模式下 mpv 不处理自身输入，于是 `WM_KEYDOWN` 不进 Qt，空格/方向键/F/Esc 失效。
+
+### 10.2 修复
+
+- `VideoHost` 的 `SetWindowSubclass` 回调新增：
+  - `WM_KEYDOWN/WM_SYSKEYDOWN`：首次按下转发（忽略 Windows 自动重复，按住产生的重复交给 mpv `keydown` 的自动重复）；
+  - `WM_KEYUP/WM_SYSKEYUP`：转发 `keyup`；
+  - `WM_CHAR`：debug 日志（字母/数字/空格已由 VK 路径转发，不重复发 `keypress`，避免空格双触发）；
+  - `WM_SETFOCUS/WM_KILLFOCUS`：记录子窗口焦点变化（`EMBY_PC_DEBUG_INPUT=1` 时写 app.log）。
+- VK→mpv 键名映射（`PlayerController::mpvKeyNameFromVirtualKey`，已作为 public static 供自测）：
+  - `VK_SPACE→SPACE`、方向键、`VK_RETURN→ENTER`、`VK_ESCAPE→ESC`、Backspace/Delete/Insert/Home/End/PgUp/PgDn/Tab、`VK_F1-F10`；
+  - A-Z→a-z、0-9、常用 `VK_OEM_*`（分号、等号、逗号、减号、句点、斜杠、反引号、方括号、反斜杠、单引号）；
+  - Shift 前缀；Ctrl/Alt 留给 Qt。
+- 焦点在子窗口时：
+  - 普通键 → mpv `keydown`/`keyup`；
+  - `VK_F11` → 直接 `PlayerPage::fullscreenRequested`（Qt 的 F11 快捷键收不到）；
+  - `VK_ESCAPE` → mpv input.conf `ESC script-message app-exit-fullscreen`；Controller 收到后全屏则退全屏，否则退出 player mode（与 Qt Esc 行为一致）。
+- 去重：`isDuplicateKeyForward(name, source)` 只抑制“不同来源”在 60ms 内的同名键；同一来源的自动重复放行，避免 Qt 长按方向键重复失效，也避免空格双触发。
+- Qt 主窗口路径保持不变：焦点在 Qt 时继续 `keypress`；两条路径互斥（Windows 键盘只发给焦点窗口），去重兜底。
+
+### 10.3 自测
+
+- Linux Debug 构建通过；`-Wall -Wextra` 无新增 warning。
+- offscreen 现有回归（菜单栏/全屏/播放模式/音轨过滤）全部通过。
+- 新增 VK 映射单测（临时测试，未入库）：
+  ```
+  keyMapOk true
+  initial true playerHidden true fsHidden true exitFsHidden true restored true fsNonPlayerHidden true fsNonPlayerRestored true
+  exit=0
+  ```
+  覆盖 SPACE/LEFT/ESC/ENTER/f/5/,/Shift+f/修饰键空/F11 空。
+- Windows 实机待验证：点视频后按空格暂停、方向键 seek、F/F11 全屏、Esc 退全屏；`EMBY_PC_DEBUG_INPUT=1` 时 app.log 应出现 `VideoHost: native key down/up` 与 `forward key to mpv (native)`。
+

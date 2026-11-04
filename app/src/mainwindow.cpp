@@ -147,6 +147,61 @@ QString mpvKeyNameFromEvent(const QKeyEvent *event)
 
 } // namespace
 
+QString PlayerController::mpvKeyNameFromVirtualKey(int virtualKey, int modifiers)
+{
+    // VideoHost 的 modifiers 位：1=Shift，2=Ctrl，4=Alt。Ctrl/Alt 留给 Qt。
+    if (modifiers & (2 | 4))
+        return {};
+
+    QString base;
+    switch (virtualKey) {
+    case 0x20: base = QStringLiteral("SPACE"); break;
+    case 0x25: base = QStringLiteral("LEFT"); break;
+    case 0x27: base = QStringLiteral("RIGHT"); break;
+    case 0x26: base = QStringLiteral("UP"); break;
+    case 0x28: base = QStringLiteral("DOWN"); break;
+    case 0x0D: base = QStringLiteral("ENTER"); break;
+    case 0x1B: base = QStringLiteral("ESC"); break;
+    case 0x08: base = QStringLiteral("BACKSPACE"); break;
+    case 0x2E: base = QStringLiteral("DELETE"); break;
+    case 0x2D: base = QStringLiteral("INSERT"); break;
+    case 0x24: base = QStringLiteral("HOME"); break;
+    case 0x23: base = QStringLiteral("END"); break;
+    case 0x21: base = QStringLiteral("PGUP"); break;
+    case 0x22: base = QStringLiteral("PGDN"); break;
+    case 0x09: base = QStringLiteral("TAB"); break;
+    // 常用 OEM 键（US 布局）；Shift 形态由下面的 Shift+ 前缀表达。
+    case 0xBA: base = QStringLiteral(";"); break;
+    case 0xBB: base = QStringLiteral("="); break;
+    case 0xBC: base = QStringLiteral(","); break;
+    case 0xBD: base = QStringLiteral("-"); break;
+    case 0xBE: base = QStringLiteral("."); break;
+    case 0xBF: base = QStringLiteral("/"); break;
+    case 0xC0: base = QStringLiteral("`"); break;
+    case 0xDB: base = QStringLiteral("["); break;
+    case 0xDC: base = QStringLiteral("\\"); break;
+    case 0xDD: base = QStringLiteral("]"); break;
+    case 0xDE: base = QStringLiteral("'"); break;
+    default:
+        break;
+    }
+
+    if (base.isEmpty()) {
+        if (virtualKey >= 'A' && virtualKey <= 'Z')
+            base = QString(QChar('a' + virtualKey - 'A'));
+        else if (virtualKey >= '0' && virtualKey <= '9')
+            base = QString(QChar('0' + virtualKey - '0'));
+        else if (virtualKey >= 0x70 && virtualKey <= 0x79)
+            base = QStringLiteral("F%1").arg(virtualKey - 0x70 + 1);
+    }
+    if (base.isEmpty())
+        return {};
+
+    if (modifiers & 1)
+        return QStringLiteral("Shift+") + base;
+    return base;
+}
+
 PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playerPage,
                                    QObject *parent)
     : QObject(parent)
@@ -188,6 +243,21 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                                        QString::number(position.x()),
                                        QString::number(position.y()),
                                        QString::number(button)});
+            });
+    // 点击视频后 Windows 焦点会进 mpv 子 HWND，Qt 主窗口收不到键盘；子类化回调
+    // 转发 WM_KEYDOWN/UP，映射成 mpv keydown/keyup。
+    connect(m_videoHost, &VideoHost::keyPressed, this,
+            [this](int virtualKey, int modifiers, bool down) {
+                // 焦点在 mpv 子窗口时 Qt 的 F11 快捷键收不到，直接走 UI 全屏。
+                if (virtualKey == 0x7A) { // VK_F11
+                    if (down && m_playerPage)
+                        QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested",
+                                                  Qt::DirectConnection);
+                    return;
+                }
+                const QString keyName = mpvKeyNameFromVirtualKey(virtualKey, modifiers);
+                if (!keyName.isEmpty())
+                    forwardNativeKeyToMpv(keyName, down);
             });
     preparePlayerOverlays();
 
@@ -245,8 +315,14 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
     });
     connect(m_player, &MpvPlayer::exitFullscreenRequested, this, [this]() {
-        if (m_playerPage && m_window->isFullScreen())
+        if (m_playerPage && m_window->isFullScreen()) {
             QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
+        } else if (m_window->isPlayerMode()) {
+            // 焦点在 mpv 子窗口时 Qt 的 Esc 快捷键收不到；由 mpv 的 ESC
+            // 绑定回到这里，行为与 UI 一致：没全屏才退出播放页。
+            m_window->setPlayerMode(false);
+            updatePlayerWindowChrome();
+        }
     });
     // 全屏按钮/mpv F 走 PlayerPage 信号；Qt F11 走 WindowStateChange。
     // 延迟到 toggleFullscreen 完成后再同步菜单栏，避免读到旧状态。
@@ -408,11 +484,8 @@ bool PlayerController::eventFilter(QObject *watched, QEvent *event)
         && !QApplication::activeModalWidget()) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
         const QString keyName = mpvKeyNameFromEvent(keyEvent);
-        if (!keyName.isEmpty()) {
-            m_player->command({QStringLiteral("keypress"), keyName});
-            if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
-                qInfo() << "forward key to mpv" << keyName;
-        }
+        if (!keyName.isEmpty())
+            forwardKeyPressToMpv(keyName);
     }
 
     if (watched == m_window && event->type() == QEvent::WindowStateChange)
@@ -982,6 +1055,46 @@ void PlayerController::updatePlayerWindowChrome()
     menu->setVisible(shouldBeVisible);
     qInfo() << "player mode: menu bar" << (shouldBeVisible ? "shown" : "hidden")
             << "fullscreen" << m_window->isFullScreen();
+}
+
+bool PlayerController::isDuplicateKeyForward(const QString &name, int source)
+{
+    if (name.isEmpty())
+        return true;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // 只抑制“另一个来源”在极短时间内的同名按键；同一来源的自动重复要放行。
+    if (name == m_lastForwardedKeyName && source != m_lastForwardedKeySource
+        && now - m_lastForwardedKeyMs < 60) {
+        return true;
+    }
+    m_lastForwardedKeyName = name;
+    m_lastForwardedKeyMs = now;
+    m_lastForwardedKeySource = source;
+    return false;
+}
+
+void PlayerController::forwardKeyPressToMpv(const QString &name)
+{
+    if (!m_player || !m_player->isReady() || isDuplicateKeyForward(name, 0))
+        return;
+    m_player->command({QStringLiteral("keypress"), name});
+    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
+        qInfo() << "forward key to mpv (qt)" << name;
+}
+
+void PlayerController::forwardNativeKeyToMpv(const QString &name, bool down)
+{
+    if (!m_player || !m_player->isReady())
+        return;
+    if (down) {
+        if (isDuplicateKeyForward(name, 1))
+            return;
+        m_player->command({QStringLiteral("keydown"), name});
+    } else {
+        m_player->command({QStringLiteral("keyup"), name});
+    }
+    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
+        qInfo() << "forward key to mpv (native)" << (down ? "down" : "up") << name;
 }
 
 void PlayerController::preparePlayerOverlays()
