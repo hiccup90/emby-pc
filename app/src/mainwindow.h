@@ -68,6 +68,7 @@ private:
     void showStatus(const QString &message, int timeoutMs = 3000);
     void ensurePlayerControlsVisible();
     void preparePlayerOverlays();
+    void updatePlayerWindowChrome();
     void logMpvState(const QString &reason);
     void exportDiagnostics();
     QString diagnosticSummary();

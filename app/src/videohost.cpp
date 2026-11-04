@@ -10,7 +10,6 @@
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #include <commctrl.h>
-#include <windowsx.h>
 
 namespace {
 
@@ -94,7 +93,8 @@ LRESULT CALLBACK mpvMouseSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LP
     if (!host)
         return ::DefSubclassProc(hwnd, message, wParam, lParam);
 
-    const QPoint position(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+    const QPoint position(static_cast<short>(LOWORD(lParam)),
+                          static_cast<short>(HIWORD(lParam)));
     switch (message) {
     case WM_MOUSEMOVE:
         host->notifyMouseMove(position);
@@ -122,9 +122,10 @@ LRESULT CALLBACK mpvMouseSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LP
         break;
     case WM_MOUSEWHEEL: {
         // WM_MOUSEWHEEL 的 lParam 是屏幕坐标，转成视频子窗口客户区坐标。
-        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        POINT point{static_cast<short>(LOWORD(lParam)),
+                    static_cast<short>(HIWORD(lParam))};
         ::ScreenToClient(hwnd, &point);
-        const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        const int delta = static_cast<short>(HIWORD(wParam));
         const int button = delta > 0 ? 3 : 4; // mpv: 3=WHEEL_UP, 4=WHEEL_DOWN
         const int steps = qMax(1, qAbs(delta) / WHEEL_DELTA);
         for (int i = 0; i < steps; ++i)

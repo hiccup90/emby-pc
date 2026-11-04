@@ -6,7 +6,7 @@
 
 ## 1. 结论
 
-- **播放接管整个窗口**：本地文件与 Emby 播放都会在 `PlayerController::showPlayerPage()` 调用 `m_window->setPlayerMode(true)`；返回/离开播放页时由 `backRequested` 与 stack `currentChanged` 调 `setPlayerMode(false)`，恢复 sidebar/topbar/statusbar 与进入前页面。
+- **播放接管整个窗口**：本地文件与 Emby 播放都会在 `PlayerController::showPlayerPage()` 调用 `m_window->setPlayerMode(true)`；返回/离开播放页时由 `backRequested` 与 stack `currentChanged` 调 `setPlayerMode(false)`，恢复 sidebar/topbar/statusbar/menu bar 与进入前页面。player mode 下菜单栏也隐藏（`updatePlayerWindowChrome()`），否则视频上方会留 24px 菜单栏。
 - **VideoHost 铺满**：T16 的 PlayerPage 已把 `VideoArea` 作为唯一布局项；T17 只在进入 player mode 后确认 `PlayerPage == 主窗口客户区`，并把 VideoHost 挂到 `videoSurfaceContainer()`。offscreen 实测 `page 752x680 == central 752x680`。
 - **全屏/返回**：不再由 PlayerController 直接 `showFullScreen()`；mpv 内的 F/Esc 转成 `PlayerPage::fullscreenRequested`，复用 `ui::MainWindow::toggleFullscreen()`，保证 `m_fullscreen`/chrome/stack 同步。全屏时点返回按钮会先退出全屏（事件过滤器拦截），不会直接退出播放。
 - **音轨过滤**：`audioTracksFromTrackList()` 过滤 `type != audio` 以及 `codec` 为空/ `none` 的轨道；实机 aid=1（codec 空）不再出现在菜单。切换 aid 后 900ms 核对实际 aid，mpv 回退时提示“音轨不可用，已回退到 …”。
@@ -27,6 +27,7 @@ ensurePlayerControlsVisible();
 ```
 
 - T16/T18 的 `setPlayerMode(true)` 负责：隐藏 sidebar/topbar/statusbar、stack 切到 `StackPlayer`、`PlayerPage::setPlayerModeActive(true)`（启动顶层 overlay + 自动隐藏）。
+- `updatePlayerWindowChrome()` 在 player mode / fullscreen 时隐藏 QMenuBar，退出时恢复；连接 `playerModeChanged`，并在 `QEvent::WindowStateChange` 时同步，保证 F11/全屏按钮路径也覆盖。
 - `ensurePlayerControlsVisible()` 只调用 `m_playerPage->setControlsVisible(true)`；**不再**直接 `PlayerControlBar->show()/raise()`（T18 浮层是独立顶层窗口，显隐由 PlayerPage 统一管理）。
 
 ### 2.2 退出
@@ -129,7 +130,7 @@ cd /root/github/emby-pc/app
 临时测试（链接 app 源码，未入库）覆盖：
 
 - 假 `track-list`：audio id=1 codec 空、id=2 aac、id=3 sub、id=4 audio codec none；期望 1 条可用音轨（id=2），过滤 2 条。
-- `setPlayerMode(true)`：sidebar/topbar/statusbar 全部隐藏，PlayerPage 尺寸 == centralWidget 尺寸，top/bottom overlay `isWindow()==true`。
+- `setPlayerMode(true)`：sidebar/topbar/statusbar 全部隐藏，**menu bar 也隐藏**，PlayerPage 尺寸 == centralWidget 尺寸，top/bottom overlay `isWindow()==true`。
 - `fullscreenRequested`：进入全屏后仍为 player mode。
 - 合成 QMouseEvent 点返回按钮：全屏退出、player mode 保留。
 - `setPlayerMode(false)`：sidebar/topbar/statusbar 恢复。
@@ -140,9 +141,21 @@ cd /root/github/emby-pc/app
 player overlays: top true bottom true backButton true
 audio true mode true fill true overlayTopLevel true fullscreenOn true backExitedFullscreen true restore true
 test_exit=0
+
+# 菜单栏专项
+player menu false height 0 page QSize(752, 704) central QSize(752, 704)
+player mode: menu bar shown fullscreen false
+after menu true
+initial true playerHidden true fsHidden true exitFsHidden true restored true fsNonPlayerHidden true fsNonPlayerRestored true
 ```
 
-### 6.3 实机日志基线（用户此前提供）
+### 6.3 Windows CI
+
+- run `41862539535`（commit `db9fd51`，含 T17 输入转发/`SetWindowSubclass`/`comctl32`）**全绿**：Qt 6.8 MSVC 2022 x64 配置、Release 构建、Emby API 测试、windeployqt 打包、artifact 上传全部成功；artifact `emby-pc-win64` id `13341056549`（72,211,126 bytes）。
+- 该 run 不含本文后续小修（`MBTN_MID` 探针名、音轨 serial、player mode 隐藏 QMenuBar）；最新 run `41864472217` 仍在 GitHub Actions 队列（`degraded_performance`），队列恢复后会覆盖最终代码。
+- 结论：`SetWindowSubclass` + `comctl32` 的 Windows 编译/打包风险已排除；剩余验证是实机鼠标/键盘转发与 OSC 行为。
+
+### 6.4 实机日志基线（用户此前提供）
 
 - Windows 11 24H2、DPR 2、mpv v0.41.0-1434-g46787be25、gpu-api=d3d11、hwdec=d3d11va、`options/osc=no`、`input-vo-keyboard=yes`、`input-cursor=yes`。
 - 该日志中 PlayerPage 960x557、PlayerControlBar 960x90，说明 T16 前浮层仍是页面内控件；T18 后改为顶层窗口，T17 已按顶层窗口接线。
@@ -160,7 +173,7 @@ test_exit=0
 2. 播放本地文件或 Emby 条目：
    - 主窗口应只剩视频（sidebar/topbar/statusbar 消失），PlayerPage 铺满客户区；
    - 移动鼠标，T18 浮层应出现并在 2.5s 后自动隐藏；
-   - 中键点击视频，检查 app.log 是否有 `mpv mouse probe: MBTN_MIDDLE ...`；
+   - 中键点击视频，检查 app.log 是否有 `mpv mouse probe: MBTN_MID ...`；
    - 按 F（或 F11/浮层全屏按钮）进全屏，按 Esc 应只退出全屏、不结束播放；
    - 全屏时点浮层“返回”应只退出全屏；再点一次才退出播放/恢复主界面。
 3. 选一条 codec 为空的音轨片源：音轨菜单不应出现该坏轨道；若 mpv 回退，应看到“音轨 X 不可用，mpv 已回退到 Y”。

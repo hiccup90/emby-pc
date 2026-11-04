@@ -248,6 +248,11 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         if (m_playerPage && m_window->isFullScreen())
             QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
     });
+    // 全屏按钮/mpv F 走 PlayerPage 信号；Qt F11 走 WindowStateChange。
+    // 延迟到 toggleFullscreen 完成后再同步菜单栏，避免读到旧状态。
+    connect(m_playerPage, &ui::PlayerPage::fullscreenRequested, this, [this]() {
+        QTimer::singleShot(0, this, &PlayerController::updatePlayerWindowChrome);
+    });
 
     // PlayerPage 的控制信号 -> MpvPlayer。
     // 注意：ui::MainWindow 内部也连接了这些信号（用于 mock 状态演示），
@@ -328,6 +333,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             clearEmbySession();
         if (m_window->isPlayerMode())
             m_window->setPlayerMode(false);
+        updatePlayerWindowChrome();
     });
 
     // 离开播放页（返回按钮/Esc/切页）时停止 mpv 并上报 Stopped。
@@ -345,6 +351,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                 clearEmbySession();
             if (m_window->isPlayerMode())
                 m_window->setPlayerMode(false);
+            updatePlayerWindowChrome();
         });
     }
 
@@ -360,6 +367,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // 放宽最小尺寸并启用右下角 resize grip（最大化/拖边框仍由系统窗口管理）。
     const QSize uiMinimum = m_window->minimumSize();
     m_window->installEventFilter(this);
+    connect(m_window, &ui::MainWindow::playerModeChanged, this,
+            [this](bool) { updatePlayerWindowChrome(); });
     if (QCoreApplication *app = QCoreApplication::instance())
         app->installEventFilter(this);
     m_window->setMinimumSize(QSize(720, 480));
@@ -405,6 +414,9 @@ bool PlayerController::eventFilter(QObject *watched, QEvent *event)
                 qInfo() << "forward key to mpv" << keyName;
         }
     }
+
+    if (watched == m_window && event->type() == QEvent::WindowStateChange)
+        updatePlayerWindowChrome();
 
     if (watched == m_window && event->type() == QEvent::Resize) {
         auto *resizeEvent = static_cast<QResizeEvent *>(event);
@@ -800,6 +812,7 @@ void PlayerController::showPlayerPage()
     // PlayerPage 铺满客户区），退出由 backRequested/stack currentChanged 恢复。
     if (!m_window->isPlayerMode())
         m_window->setPlayerMode(true);
+    updatePlayerWindowChrome();
 
     ensurePlayerControlsVisible();
     QStackedWidget *stack = qobject_cast<QStackedWidget *>(m_playerPage->parentWidget());
@@ -952,6 +965,23 @@ void PlayerController::ensurePlayerControlsVisible()
     // T18：PlayerTopBar/PlayerControlBar 是独立顶层半透明窗口，显隐与自动隐藏
     // 由 PlayerPage 统一管理，这里只请求显示，不要再直接 show()/raise()。
     m_playerPage->setControlsVisible(true);
+}
+
+void PlayerController::updatePlayerWindowChrome()
+{
+    if (!m_window)
+        return;
+    QMenuBar *menu = m_window->menuBar();
+    if (!menu)
+        return;
+    // 播放/全屏时把菜单栏也隐藏，视频才真正铺满客户区；退出时恢复。
+    const bool immersive = m_window->isPlayerMode() || m_window->isFullScreen();
+    const bool shouldBeVisible = !immersive;
+    if (menu->isVisible() == shouldBeVisible)
+        return;
+    menu->setVisible(shouldBeVisible);
+    qInfo() << "player mode: menu bar" << (shouldBeVisible ? "shown" : "hidden")
+            << "fullscreen" << m_window->isFullScreen();
 }
 
 void PlayerController::preparePlayerOverlays()
