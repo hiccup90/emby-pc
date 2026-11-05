@@ -1,4 +1,4 @@
-# 海报缺失排查报告（T20 / T23）
+# 海报缺失排查报告（T20 / T23 / T25）
 
 - 日期：2026-11-05
 - 服务器：Emby 4.9.1.90（真实媒体库，凭据仅通过环境变量传入）
@@ -59,11 +59,30 @@ in-flight 标记，delegate 每次重绘都会再次请求同一 URL，QNAM 队�
   快照并写入 `posterStatsSummary`。
 - 失败 TTL（默认 60s）重试保留，并统一经过 in-flight/队列去重，避免重试造成重复风暴。
 
+## T25 请求挂起修复
+
+实机证据（run 41957153193 包）：`poster cache: requests=12 success=6 failed=0 retries=0 in_flight=6 queued=32 max=6`。
+6 个请求成功后 6 个槽位永久 in-flight、32 个队列卡住，说明图片请求会挂起且没有传输超时；
+元数据 QNAM 正常，问题集中在图片 QNAM/HTTP 连接复用。
+
+修复：
+
+- 复用 `EmbyClient::networkManager()` 的 QNAM 发图片请求（元数据正常的那一个）；无则回退自有 QNAM。
+- 每请求 `setTransferTimeout(15000)`，超时按失败处理并释放槽位；失败最多重试 2 次（初始 + 2 次）。
+- 图片 URL 追加 `api_key` 查询参数（qEmby/Jellyfin 兼容），Authorization 头保留；元数据 URL 仍不含 token，
+  日志与诊断中的 URL/错误串对 token 做脱敏。
+- `EMBY_PC_IMAGE_HTTP2=0/1` 开关（默认 0=关闭 HTTP/2）用于对比。
+- 本地磁盘缓存：`QStandardPaths::CacheLocation/images`，key=itemId/imageType/tag/尺寸，
+  先读盘、成功写盘，默认 1GB LRU；`EMBY_PC_IMAGE_DISK_CACHE=0` 可关闭。
+- 逐请求 start/finish/timeout 日志（前 20 条 + 失败全部），诊断追加 qnam/http2/timeout/平均耗时/磁盘命中统计。
+
 ## 复现/验证（全部假服务器 + offscreen，不访问真实服务器）
 
 - 假服务器自测：首次图片 500、TTL 后第二次 200，确认失败不写 LRU、占位图临时显示、重试成功后缓存恢复。
 - 回退链自测：有 Primary、只有 Thumb、BoxSet 只有 Thumb、完全无图、Episode Series Primary 五类均覆盖。
 - 请求风暴自测：同一 URL 连续 request 100 次 → 只发起 1 次网络请求；12 张延迟响应图片 →
   6 个在途 + 6 个 FIFO 排队，服务器峰值并发 6，队列完成后每张只请求 1 次。
+- 请求挂起自测：假服务器 hold 500ms，图片传输超时 100ms → 失败释放槽位；最多重试 2 次后不再请求；
+  本地磁盘缓存写盘后，新 cache 命中磁盘不发起网络请求；图片 URL 带 api_key、Authorization 保留。
 - 实机只需正常打开一次媒体库观察 app.log 的 `poster stats`；不要循环播放/反复刷新触发上游风控。
   若仍有缺失，查看 `poster load failed` 的 itemId/HTTP 状态并导出诊断信息附上 poster stats。

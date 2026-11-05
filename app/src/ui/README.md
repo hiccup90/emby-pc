@@ -19,7 +19,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `detailview.h/.cpp` | 详情页：背景/海报、标题元数据、简介、播放按钮、真实季/集列表 |
 | `playerpage.h/.cpp` | 播放页容器：视频区铺满整页，顶层半透明浮层控制条（自动隐藏/鼠标轮询） |
 | `thumbnailcache.h/.cpp` | 缩略图缓存接口：同步 get + 异步 request + LRU，默认生成离线占位海报 |
-| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：Authorization 异步下载；in-flight 去重 + 并发上限 6/FIFO；失败 TTL 重试 |
+| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：EmbyClient QNAM + api_key/Authorization、15s 超时、in-flight 去重/并发 6/FIFO、1GB 磁盘 LRU |
 | `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（离线占位资源） |
 | `icons.h/.cpp` | 24x24 线性矢量图标集，不依赖系统主题 |
 | `mocklibrary.h/.cpp` | 200 部 mock 媒体库（电影/剧集、季/集、观看进度，确定性） |
@@ -220,6 +220,15 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   `posterStatsSummary()` 暴露 requests/success/failures/retries 与来源统计。
 - **请求风暴修复（T23）**：按 cacheKey(key,size) 做 in-flight 去重；并发上限默认 6（可调），
   超出进入 FIFO 队列；requests 只统计真正发起的网络请求，统计追加 in_flight/queued/max。
+- **请求挂起修复（T25）**：
+  - 图片请求复用 `EmbyClient::networkManager()` 的 QNAM（元数据正常的那一个），无则回退自有 QNAM；
+  - 每请求 `setTransferTimeout(15000)`，超时按失败释放槽位；失败最多重试 2 次（共 3 次网络尝试）；
+  - 图片 URL 追加 `api_key`（qEmby/Jellyfin 兼容），同时保留 Authorization 头；
+  - `EMBY_PC_IMAGE_HTTP2=1` 可开启 HTTP/2 对比（默认关闭）；
+  - 本地磁盘缓存：`QStandardPaths::CacheLocation/images`，key=itemId/type/tag/尺寸 hash，
+    先读盘、成功写盘，默认 1GB LRU；`EMBY_PC_IMAGE_DISK_CACHE=0` 可关闭；
+  - 逐请求 start/finish/timeout 日志（前 20 条 + 失败全部，url/error 中的 token 已脱敏）；
+  - 诊断追加 qnam_reused/http2/timeouts/avg_ms/disk_hits/disk_misses/disk_writes/disk_bytes。
 - **海报回退链（T20）**：Primary（自身）→ Series/Parent Primary → Thumb（自身）→ Backdrop（自身/父级）；
   BoxSet 缺 Primary 时用自身 Thumb；Episode/Season 缺自身图时用 Series/Parent Primary。
 - mock 图片：非 http key 仍走 `postergenerator` 离线占位图。
@@ -231,7 +240,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **110 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **123 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
@@ -250,6 +259,8 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   - T20：首次图片 500 不写永久 LRU、TTL 后第二次 200 恢复；Primary/Thumb/BoxSet Thumb/无图/
     Episode Series Primary 五类回退链断言；
   - T23：同一 URL request 100 次仅发 1 次网络请求；12 张延迟图片并发上限 6 + FIFO 队列完成；
+  - T25：复用 QNAM/默认关 HTTP/2/开关生效；500ms 延迟 + 100ms 传输超时释放槽位并重试上限 2 次；
+    磁盘缓存写盘/新 cache 命中不联网；图片 URL 带 api_key、元数据 URL 不含 token；
   - 设置页 mock 开关可来回切换数据源。
 - `embyClient()`、`loginStateChanged(bool)`、`MainWindow::visibleItems()` 等 T8 接口可用。
 

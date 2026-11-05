@@ -33,6 +33,7 @@
 #include <QLayout>
 #include <QListView>
 #include <QPainter>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStatusBar>
@@ -93,6 +94,7 @@ public:
     QStringList requestedTargets;
     QStringList imageRequests;
     QString lastImageAuthorization;
+    QString lastImageApiKey;
     QHash<QString, int> imageAttempts;
     int activeImageRequests = 0;
     int maxActiveImageRequests = 0;
@@ -214,6 +216,9 @@ private:
                        && path.contains(QLatin1String("/Images/"))) {
                 imageRequests.append(target);
                 lastImageAuthorization = authorization;
+                lastImageApiKey =
+                    QUrlQuery(QUrl(QStringLiteral("http://localhost") + target))
+                        .queryItemValue(QStringLiteral("api_key"));
                 const int attempt = ++imageAttempts[path];
                 if (path.contains(QLatin1String("m-none"))) {
                     status = 404;
@@ -227,20 +232,23 @@ private:
                 } else {
                     contentType = "image/png";
                     responseBody = tinyPng();
-                    if (path.contains(QLatin1String("slow"))) {
-                        // 延迟响应，让自测能观察并发上限/FIFO 队列。
+                    if (path.contains(QLatin1String("slow"))
+                        || path.contains(QLatin1String("hold"))) {
+                        // 延迟响应，让自测能观察并发上限/FIFO 队列与传输超时。
+                        const int delayMs =
+                            path.contains(QLatin1String("hold")) ? 500 : 60;
                         ++activeImageRequests;
                         maxActiveImageRequests = qMax(maxActiveImageRequests, activeImageRequests);
-                        QTcpSocket *writes = socket;
+                        QPointer<QTcpSocket> writes = socket;
                         const int finalStatus = status;
                         const QByteArray finalReason = reason;
                         const QByteArray finalContentType = contentType;
                         const QByteArray finalBody = responseBody;
-                        QTimer::singleShot(60, this, [this, writes, finalStatus, finalReason,
-                                                     finalContentType, finalBody]() {
+                        QTimer::singleShot(delayMs, this, [this, writes, finalStatus, finalReason,
+                                                          finalContentType, finalBody]() {
                             --activeImageRequests;
                             if (writes && writes->isValid())
-                                writeResponse(writes, finalStatus, finalReason,
+                                writeResponse(writes.data(), finalStatus, finalReason,
                                               finalContentType, finalBody);
                         });
                         return;
@@ -573,6 +581,10 @@ int runAuthTests(QApplication &app)
             ++failures;
     };
 
+    // 自测默认关闭本地图片缓存，避免上一次 selftest 的磁盘文件影响网络请求计数；
+    // 单独的磁盘缓存测试会显式开启并使用临时目录。
+    qputenv("EMBY_PC_IMAGE_DISK_CACHE", QByteArrayLiteral("0"));
+
     // 隔离 QSettings，避免写入真实用户配置。
     QTemporaryDir tempDir;
     check(tempDir.isValid(), QStringLiteral("创建临时 QSettings 目录"));
@@ -740,6 +752,79 @@ int runAuthTests(QApplication &app)
         slowOnce = slowOnce && server.imageAttempts.value(slowPath) == 1;
     check(slowOnce, QStringLiteral("排队图片每张只请求 1 次"));
 
+    // T25：复用 EmbyClient QNAM + 默认关闭 HTTP/2；env 可开启对比。
+    check(queueCache.qnamReused() && !queueCache.http2Enabled(),
+          QStringLiteral("图片复用 EmbyClient QNAM，默认关闭 HTTP/2"));
+    qputenv("EMBY_PC_IMAGE_HTTP2", QByteArrayLiteral("1"));
+    {
+        ui::EmbyThumbnailCache h2Cache;
+        h2Cache.setClient(&cacheClient);
+        check(h2Cache.http2Enabled(), QStringLiteral("EMBY_PC_IMAGE_HTTP2=1 开启 HTTP/2"));
+    }
+    qunsetenv("EMBY_PC_IMAGE_HTTP2");
+
+    // T25：服务器 500ms 才返回，传输超时 100ms → 失败释放槽位，最多重试 2 次。
+    ui::EmbyThumbnailCache timeoutCache;
+    timeoutCache.setClient(&cacheClient);
+    timeoutCache.setTransferTimeout(100);
+    timeoutCache.setRetryTtl(30);
+    const QUrl holdUrl = cacheClient.imageUrl(QStringLiteral("hold"),
+                                              QStringLiteral("Primary"),
+                                              QStringLiteral("hold-tag"), 0, 300);
+    timeoutCache.request(holdUrl.toString(), QSize(64, 64));
+    check(waitFor([&timeoutCache]() { return timeoutCache.stats().failures >= 3; }, 6000),
+          QStringLiteral("图片传输超时按失败处理，槽位释放"));
+    check(timeoutCache.stats().requests == 3
+              && timeoutCache.stats().retries == 2
+              && timeoutCache.stats().timeoutCount >= 1
+              && timeoutCache.stats().exhaustedCount == 1
+              && timeoutCache.failureCount() == 1
+              && timeoutCache.inFlightCount() == 0
+              && timeoutCache.queuedCount() == 0,
+          QStringLiteral("超时后重试上限 2 次，之后不再发请求（stats: %1）")
+              .arg(timeoutCache.stats().summary()));
+    settle(app, 300);
+    check(timeoutCache.stats().requests == 3,
+          QStringLiteral("重试耗尽后保持 requests=3，不再打服务器"));
+
+    // T25：本地磁盘缓存先读盘、成功写盘；第二次启动/新 cache 不再发网络请求。
+    QTemporaryDir diskDir;
+    check(diskDir.isValid(), QStringLiteral("创建图片磁盘缓存临时目录"));
+    const QSize diskSize(64, 64);
+    const QUrl diskUrl = cacheClient.imageUrl(QStringLiteral("disk-cache-item"),
+                                              QStringLiteral("Primary"),
+                                              QStringLiteral("disk-tag"), 0, 300);
+    const QString diskPath = QUrl(diskUrl).path();
+
+    ui::EmbyThumbnailCache diskCache;
+    diskCache.setClient(&cacheClient);
+    diskCache.setDiskCacheEnabled(true);
+    diskCache.setDiskCacheDirectory(diskDir.path());
+    diskCache.setDiskCacheMaxBytes(4 * 1024 * 1024);
+    diskCache.request(diskUrl.toString(), diskSize);
+    check(waitFor([&diskCache]() { return diskCache.stats().successes >= 1; }, 4000),
+          QStringLiteral("磁盘缓存首次请求成功"));
+    check(diskCache.stats().diskWrites >= 1
+              && diskCache.stats().diskBytes > 0
+              && server.imageAttempts.value(diskPath) == 1,
+          QStringLiteral("图片成功写入本地磁盘缓存（%1 bytes）")
+              .arg(diskCache.stats().diskBytes));
+
+    ui::EmbyThumbnailCache diskCache2;
+    diskCache2.setClient(&cacheClient);
+    diskCache2.setDiskCacheEnabled(true);
+    diskCache2.setDiskCacheDirectory(diskDir.path());
+    diskCache2.request(diskUrl.toString(), diskSize);
+    check(waitFor([&diskCache2]() { return diskCache2.stats().diskHits >= 1; }, 4000),
+          QStringLiteral("新 cache 优先读本地磁盘缓存"));
+    check(diskCache2.stats().requests == 0
+              && diskCache2.stats().diskHits >= 1
+              && server.imageAttempts.value(diskPath) == 1,
+          QStringLiteral("磁盘命中不发网络请求（stats: %1）")
+              .arg(diskCache2.stats().summary()));
+    check(!diskCache2.get(diskUrl.toString(), diskSize).isNull(),
+          QStringLiteral("磁盘缓存可同步读出海报"));
+
     // 401
     ui::LoginDialog badLogin(&client);
     badLogin.setInitialValues(server.baseUrl(), QStringLiteral("alice"), QString());
@@ -880,6 +965,8 @@ int runAuthTests(QApplication &app)
               QStringLiteral("海报/背景图通过带 Authorization 的图片请求加载"));
         check(server.lastImageAuthorization.contains(QStringLiteral("Token=")),
               QStringLiteral("图片请求使用 Authorization 头（token 不在 URL）"));
+        check(!server.lastImageApiKey.isEmpty(),
+              QStringLiteral("图片请求同时带 api_key 查询参数（兼容 qEmby/Jellyfin）"));
 
         window.setMockMode(true);
         check(window.isMockMode()
@@ -933,14 +1020,20 @@ int runAuthTests(QApplication &app)
             loginDialog->reject();
     }
 
-    // token 不拼进任何请求 URL
+    // T25：图片请求按 qEmby/Jellyfin 兼容方式把 api_key 放图片 URL；元数据 URL 仍不得带 token。
     const QString token = profile.accessToken;
-    bool tokenInUrl = false;
+    bool tokenInMetadataUrl = false;
+    bool tokenInImageUrl = false;
     for (const QString &target : server.requestedTargets) {
-        if (target.contains(token))
-            tokenInUrl = true;
+        if (!target.contains(token))
+            continue;
+        if (target.contains(QStringLiteral("/Images/")))
+            tokenInImageUrl = true;
+        else
+            tokenInMetadataUrl = true;
     }
-    check(!tokenInUrl, QStringLiteral("token 未拼进任何请求 URL"));
+    check(!tokenInMetadataUrl, QStringLiteral("元数据请求 URL 不含 token"));
+    check(tokenInImageUrl, QStringLiteral("图片请求使用 api_key 查询参数（token 只在图片 URL）"));
 
     QCoreApplication::setOrganizationName(oldOrganization);
     QCoreApplication::setApplicationName(oldApplication);

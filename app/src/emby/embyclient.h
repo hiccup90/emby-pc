@@ -84,6 +84,10 @@ public:
     bool isConfigured() const { return m_profile.isValid(); }
     bool isAuthenticated() const { return m_profile.isAuthenticated(); }
 
+    /// Shared QNAM used for metadata and (T25) poster image downloads. The
+    /// client owns it; do not delete or re-parent it.
+    QNetworkAccessManager *networkManager() const { return m_network; }
+
     /// Per-request transfer timeout in milliseconds (0 disables the timeout).
     void setRequestTimeout(int milliseconds) { m_requestTimeoutMs = milliseconds; }
     int requestTimeout() const { return m_requestTimeoutMs; }
