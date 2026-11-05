@@ -7,7 +7,7 @@
 
 ## 1. 这个工作流做什么
 
-在 **windows-2022** 上构建 Windows x64 Release 包，产物是一个可直接解压运行的 zip。
+在 **windows-2022** 上构建 Windows x64 Release 包，产物是**免安装 zip** 和 **Inno Setup 安装包（exe）** 两种 artifact。
 
 > 为什么不是 windows-latest：2026-11 起 `windows-latest` 指向 Windows Server 2025 + VS 2026 镜像，不再自带 VS 2022，CMake 的 `Visual Studio 17 2022` 生成器不可用；Qt 6.8 的 `win64_msvc2022_64` 与 VS 2022 匹配，因此固定 `windows-2022`。
 
@@ -20,7 +20,8 @@
 | Build | `cmake --build build --config Release --parallel` |
 | Emby tests | 单独构建 `app/src/emby`（`EMBY_BUILD_TESTS=ON`）并跑 `ctest` |
 | Package | `app/scripts/package-windows.ps1 -SkipBuild`：windeployqt + 复制 libmpv-2.dll + 打 zip |
-| Upload | 上传 artifact **emby-pc-win64**（`dist/emby-pc-win64.zip`，保留 **30 天**） |
+| Installer | `choco install innosetup` 后校验 exe VERSIONINFO，用 `installer/emby-pc.iss` 编译 `dist/emby-pc-<version>-setup.exe` |
+| Upload | 上传 artifact **emby-pc-win64**（免安装 zip）+ **emby-pc-installer**（安装包），均保留 **30 天** |
 
 触发条件：`push` 到 `main`，或在 Actions 页面点 **Run workflow**（`workflow_dispatch`）。
 
@@ -35,8 +36,10 @@
 
 1. 打开 <https://github.com/hiccup90/emby-pc/actions>，进入 **windows-build**。
 2. 选择最近一次绿色（成功）的 run。
-3. 页面底部 **Artifacts** 区域点击 **emby-pc-win64** 下载。
-4. 解压后目录里应有：`emby-pc.exe`、`libmpv-2.dll`、`platforms\qwindows.dll`、`WINDOWS-ACCEPTANCE.md`、`README-运行.txt`。
+3. 页面底部 **Artifacts** 区域选择下载：
+   - **emby-pc-installer**：`emby-pc-<version>-setup.exe`，双击安装（推荐普通用户；步骤见 [docs/packaging.md](packaging.md)）。
+   - **emby-pc-win64**：免安装 zip，解压即用（验收/便携）。
+4. （免安装版）解压后目录里应有：`emby-pc.exe`、`libmpv-2.dll`、`platforms\qwindows.dll`、`WINDOWS-ACCEPTANCE.md`、`README-运行.txt`。
 
 ### 方式 B：gh CLI
 
@@ -46,9 +49,11 @@ gh run list --repo hiccup90/emby-pc --workflow windows-build
 
 # 下载指定 run 的 artifact 到 dist/
 gh run download <run-id> --repo hiccup90/emby-pc -n emby-pc-win64 -D dist
+gh run download <run-id> --repo hiccup90/emby-pc -n emby-pc-installer -D dist
 
 # 或者直接下载最近一次成功的 artifact
 gh run download --repo hiccup90/emby-pc -n emby-pc-win64 -D dist
+gh run download --repo hiccup90/emby-pc -n emby-pc-installer -D dist
 ```
 
 > artifact 保留 30 天；过期后重新触发一次 workflow 即可。
@@ -73,7 +78,7 @@ gh run rerun <run-id> --repo hiccup90/emby-pc
 
 | 位置 | 说明 |
 |---|---|
-| `app/CMakeLists.txt` 的 `project(emby-pc ... VERSION x.y.z)` | 若存在，`package-windows.ps1` 会自动读取用于 zip 命名；当前文件未写 VERSION，脚本回退 0.1.0 |
+| `app/CMakeLists.txt` 的 `project(emby-pc VERSION x.y.z ...)` | **当前 0.1.0**；驱动 zip 命名、exe VERSIONINFO、安装包文件名（CI 自动读取） |
 | `app/src/main.cpp` 的 `app.setApplicationVersion("0.1.0")` | 应用内显示/日志版本 |
 | `app/scripts/package-windows.ps1 -Version x.y.z` | 可选，覆盖上面自动读取的版本（只影响 zip 文件名） |
 
@@ -196,6 +201,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | 2026-11-05 | 1756163 | <https://github.com/hiccup90/emby-pc/actions/runs/41972577073> | emby-pc-win64 / emby-pc-win64.zip（72,245,921 字节，artifact id 13390243094） | **T26+T27**：DWM 无边框窗口（dwmapi/user32/shell32）+ 自绘 TitleBar/窗口状态记忆；全步骤通过（4m19s），DWM API 编译链接通过，供用户实机验收 |
 | 2026-11-05 | 442012c | <https://github.com/hiccup90/emby-pc/actions/runs/41975729698> | emby-pc-win64 / emby-pc-win64.zip（72,262,430 字节，artifact id 13391213270） | **T28+T29+T30**：设置页四分区（T28）、设置实时生效/关闭 Stopped 上报/进度 10s/硬件信息回填（T29）、最小尺寸 800x480（T30）；全步骤通过（4m32s），供用户实机验收 |
 | 2026-11-05 | bf3580c | <https://github.com/hiccup90/emby-pc/actions/runs/41978904742> | emby-pc-win64 / emby-pc-win64.zip（72,266,074 字节，artifact id 13393331425） | **T31+T32**：播放模式 5px 视频边距/黑边/overlay 内缩（T31）、全屏按钮与上下集按钮/队列同步修复（T32）；全步骤通过（4m29s），供用户实机验收 |
+| 2026-11-05 | 6d65e06 | <https://github.com/hiccup90/emby-pc/actions/runs/41981162658> | emby-pc-win64（72,270,708 B，id 13394461333）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,846,383 B，id 13394321833） | **T33/M4-1**：VERSIONINFO/图标（rc.exe 编译通过）、Inno Setup 安装包（48.3MB，<150MB）、VERSIONINFO 校验通过；全步骤通过（5m41s），供用户安装验收 |
 
 包内容（各次一致，54 个条目，解压约 171MB）：
 emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
