@@ -163,3 +163,35 @@ leave   page=800x480 video=(0,0 800x480)
 3. 全屏（F11/控制条按钮）：黑边为 0，画面铺满；退出全屏恢复 5px。
 4. 底部控制条不遮挡底边；顶栏不遮挡上边。
 5. 仅四周多 5px 黑边为方案 A 的预期代价；若实机仍无法命中，再考虑子 HWND `HTTRANSPARENT` 方案 B。
+
+## 9. T35 播放模式边缘缩放：Qt startSystemResize fallback
+
+> 任务：task-35 · 负责人：build-verifier · 日期：2026-11-05
+> 范围：app/src/ui/playerpage.h/.cpp（及本报告）。T31 的原生 WindowFrame 路径保留。
+
+### 9.1 实现
+
+- `PlayerPage::edgeResizeEdgesAt(QPoint)`：仅在播放模式、非全屏、5px 边缘/四角返回 `Qt::Edges`。
+- `mouseMoveEvent`：根据边缘设置 `SizeHor/SizeVer/SizeFDiag/SizeBDiag` 光标；离开清除。
+- `mousePressEvent`：左键在边缘时调用 `window()->windowHandle()->startSystemResize(edges)`，把缩放交给系统；日志 `PlayerPage::edgeResize: edges ... startSystemResize <bool>`。
+- 同时给 `m_surfaceStack`/VideoHost 安装事件过滤器，若子控件覆盖边缘也能兜底命中；全屏/非播放模式禁用。
+- WindowFrame 的原生 WM_NCHITTEST 路径不变，媒体页继续使用；播放模式两条路径互不干扰。
+
+### 9.2 自测（offscreen）
+
+```text
+PASS left edge
+PASS right edge
+PASS top edge
+PASS bottom edge
+PASS top-left corner
+PASS center no resize
+PASS left edge cursor
+PASS fullscreen disables edge
+PASS exit fullscreen restores edge
+PASS leave player disables edge
+failures 0
+```
+
+- Linux app Debug 构建通过；`-Wall -Wextra` 无新增 warning。
+- 实机日志将出现 `PlayerPage::edgeResize`；若 `startSystemResize` 返回 false，可据此判断 Qt/WindowFrame 状态。

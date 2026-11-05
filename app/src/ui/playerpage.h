@@ -6,7 +6,9 @@
 #include <QPoint>
 #include <QWidget>
 
+class QEvent;
 class QLabel;
+class QMouseEvent;
 class QPaintEvent;
 class QPushButton;
 class QResizeEvent;
@@ -71,6 +73,9 @@ public:
     // 测试/无鼠标环境注入光标位置（全局坐标）。
     void setOverlayCursorPositionForTest(const QPoint &globalPos, bool hasPosition = true);
 
+    // T35：播放模式边缘 5px 的 Qt 层缩放命中。返回空表示不在边缘/全屏。
+    Qt::Edges edgeResizeEdgesAt(const QPoint &position) const;
+
     // true：浮层是独立顶层窗口（默认）；false：EMBY_PC_PLAYER_OVERLAY=0 的页面内兜底。
     bool usesTopLevelOverlay() const { return m_topLevelOverlay; }
     bool overlaysVisible() const { return m_overlaysVisible; }
@@ -91,6 +96,9 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
@@ -101,6 +109,7 @@ private:
     void createOverlayWindows();
     void ensureHostWindow();
     void applyVideoMargins();
+    bool tryStartEdgeResize(const QPoint &globalPosition);
     void syncOverlayGeometry();
     void updateDockedOverlayGeometry();
     void showOverlays();

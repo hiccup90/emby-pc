@@ -23,6 +23,7 @@
 #include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWindow>
 
 namespace ui {
 namespace {
@@ -117,6 +118,7 @@ PlayerPage::PlayerPage(QWidget *parent)
 {
     setObjectName(QStringLiteral("PlayerPage"));
     setAttribute(Qt::WA_StyledBackground, true);
+    setMouseTracking(true); // T35：边缘 5px 需要 mouseMove 更新缩放光标
 
     // EMBY_PC_PLAYER_OVERLAY=0 时退回页面内浮层（排障/无合成器环境）。
     const QString overlayEnv = qEnvironmentVariable("EMBY_PC_PLAYER_OVERLAY");
@@ -190,6 +192,7 @@ void PlayerPage::buildUi()
     // 视频区域
     m_surfaceStack = new QStackedWidget(this);
     m_surfaceStack->setObjectName(QStringLiteral("VideoArea"));
+    m_surfaceStack->installEventFilter(this); // T35：VideoArea 边缘双击/按压兜底
     m_placeholder = new VideoHostPlaceholder(m_surfaceStack);
     m_surfaceStack->addWidget(m_placeholder);
     root->addWidget(m_surfaceStack, 1);
@@ -325,6 +328,73 @@ void PlayerPage::buildUi()
     setEpisodeNavigationEnabled(false, false);
 }
 
+Qt::Edges PlayerPage::edgeResizeEdgesAt(const QPoint &position) const
+{
+    // 只在实际播放器模式且非全屏时启用；全屏没有 5px 边距。
+    if (!m_playerModeActive || m_fullscreen)
+        return {};
+    if (!rect().contains(position))
+        return {};
+    const int margin = kPlayerResizeMargin;
+    Qt::Edges edges;
+    if (position.x() < margin)
+        edges |= Qt::LeftEdge;
+    if (position.x() >= width() - margin)
+        edges |= Qt::RightEdge;
+    if (position.y() < margin)
+        edges |= Qt::TopEdge;
+    if (position.y() >= height() - margin)
+        edges |= Qt::BottomEdge;
+    return edges;
+}
+
+bool PlayerPage::tryStartEdgeResize(const QPoint &globalPosition)
+{
+    const Qt::Edges edges = edgeResizeEdgesAt(mapFromGlobal(globalPosition));
+    if (!edges)
+        return false;
+    QWindow *handle = window() ? window()->windowHandle() : nullptr;
+    const bool started = handle && handle->startSystemResize(edges);
+    qInfo() << "PlayerPage::edgeResize: edges" << static_cast<int>(edges)
+            << "global" << globalPosition << "startSystemResize" << started;
+    return true;
+}
+
+void PlayerPage::mouseMoveEvent(QMouseEvent *event)
+{
+    const Qt::Edges edges = edgeResizeEdgesAt(event->position().toPoint());
+    if (!edges) {
+        unsetCursor();
+    } else if ((edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::TopEdge))
+               || (edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::BottomEdge))) {
+        setCursor(Qt::SizeFDiagCursor);
+    } else if ((edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::TopEdge))
+               || (edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::BottomEdge))) {
+        setCursor(Qt::SizeBDiagCursor);
+    } else if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge)) {
+        setCursor(Qt::SizeHorCursor);
+    } else {
+        setCursor(Qt::SizeVerCursor);
+    }
+    QWidget::mouseMoveEvent(event);
+}
+
+void PlayerPage::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton
+        && tryStartEdgeResize(event->globalPosition().toPoint())) {
+        event->accept();
+        return;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void PlayerPage::leaveEvent(QEvent *event)
+{
+    unsetCursor();
+    QWidget::leaveEvent(event);
+}
+
 void PlayerPage::paintEvent(QPaintEvent *event)
 {
     QWidget::paintEvent(event);
@@ -368,6 +438,17 @@ void PlayerPage::hideEvent(QHideEvent *event)
 
 bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_surface || watched == m_surfaceStack) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() == Qt::LeftButton
+                && tryStartEdgeResize(mouseEvent->globalPosition().toPoint())) {
+                mouseEvent->accept();
+                return true;
+            }
+        }
+    }
+
     if (watched == m_hostWindow) {
         switch (event->type()) {
         case QEvent::Move:
@@ -647,6 +728,7 @@ void PlayerPage::attachVideoSurface(QWidget *surface)
     if (m_surface == surface)
         return;
     if (m_surface) {
+        m_surface->removeEventFilter(this);
         m_surfaceStack->removeWidget(m_surface);
         m_surface->hide();
         m_surface->setParent(nullptr);
@@ -657,6 +739,7 @@ void PlayerPage::attachVideoSurface(QWidget *surface)
         return;
     }
     m_surface = surface;
+    m_surface->installEventFilter(this); // T35：子控件覆盖时也能命中边缘
     m_surfaceStack->addWidget(surface);
     m_surfaceStack->setCurrentWidget(surface);
     surface->show();
