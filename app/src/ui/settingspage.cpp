@@ -115,10 +115,7 @@ void SettingsPage::buildUi()
 
     auto *title = new QLabel(QStringLiteral("设置"), content);
     title->setObjectName(QStringLiteral("PageTitle"));
-    auto *subtitle = new QLabel(QStringLiteral("账户、播放、存储与关于"), content);
-    subtitle->setObjectName(QStringLiteral("PageSubtitle"));
     layout->addWidget(title);
-    layout->addWidget(subtitle);
 
     // 1) 服务器与账号
     auto *account = makeGroup(QStringLiteral("服务器与账号"), content);
@@ -212,8 +209,6 @@ void SettingsPage::buildUi()
     mockRowLayout->setContentsMargins(0, 6, 0, 6);
     auto *mockName = new QLabel(QStringLiteral("数据源"), mockRow);
     mockName->setObjectName(QStringLiteral("SettingName"));
-    auto *mockHint = new QLabel(QStringLiteral("使用演示数据（本地 Mock）"), mockRow);
-    mockHint->setObjectName(QStringLiteral("SettingHint"));
     m_mockCheck = new QCheckBox(mockRow);
     m_mockCheck->setObjectName(QStringLiteral("SettingsMockModeCheck"));
     m_mockCheck->setCursor(Qt::PointingHandCursor);
@@ -221,8 +216,6 @@ void SettingsPage::buildUi()
         QStringLiteral("勾选后界面显示本地演示数据；取消勾选使用已登录 Emby 服务器的真实媒体库。"));
     mockRowLayout->addWidget(mockName);
     mockRowLayout->addStretch(1);
-    mockRowLayout->addWidget(mockHint);
-    mockRowLayout->addSpacing(8);
     mockRowLayout->addWidget(m_mockCheck);
     uiLayout->addWidget(mockRow);
     m_dataSourceValue = addValueRow(uiLayout, QStringLiteral("数据来源"),
@@ -234,13 +227,6 @@ void SettingsPage::buildUi()
     m_libraryGroup = makeGroup(QStringLiteral("媒体库"), content);
     m_libraryGroup->setObjectName(QStringLiteral("SettingsLibraryGroup"));
     auto *libraryLayout = qobject_cast<QVBoxLayout *>(m_libraryGroup->layout());
-    auto *libraryHint = new QLabel(
-        QStringLiteral("选择媒体库在侧边栏/首页显示；上移/下移调整首页中媒体库行的顺序。"
-                       "侧边栏隐藏的库不会出现在首页。"),
-        m_libraryGroup);
-    libraryHint->setObjectName(QStringLiteral("SettingsLibraryHint"));
-    libraryHint->setWordWrap(true);
-    libraryLayout->addWidget(libraryHint);
     m_libraryRowsLayout = new QVBoxLayout();
     m_libraryRowsLayout->setContentsMargins(0, 6, 0, 0);
     m_libraryRowsLayout->setSpacing(6);
@@ -455,7 +441,7 @@ void SettingsPage::clearSession()
     m_connectionValue->setProperty("state", QStringLiteral("disconnected"));
     m_connectionValue->style()->unpolish(m_connectionValue);
     m_connectionValue->style()->polish(m_connectionValue);
-    m_accountHint->setText(QStringLiteral("未登录：点击“登录…”连接 Emby 服务器。"));
+    m_accountHint->setText(QStringLiteral("未登录"));
     m_loginButton->setText(QStringLiteral("登录…"));
     m_logoutButton->setEnabled(false);
 }

@@ -83,7 +83,7 @@ void LoginDialog::buildUi()
     m_statusLabel->setMinimumHeight(42);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     root->addWidget(m_statusLabel);
-    setStatus(QStringLiteral("提示：可以先点“测试连接”确认服务器可用，再登录。"), QStringLiteral("info"));
+    setStatus(QString(), QStringLiteral("info"));
 
     auto *buttons = new QHBoxLayout();
     buttons->setSpacing(10);

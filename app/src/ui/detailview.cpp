@@ -430,11 +430,8 @@ void DetailView::updateHero()
                         .arg(formatRuntime(m_item.runtimeMinutes))
                         .arg(m_item.communityRating, 0, 'f', 1));
     QString tagline = m_item.tagline;
-    if (tagline.isEmpty()) {
-        tagline = m_item.isSeries()
-                      ? QStringLiteral("全 %1 季 · 演示数据").arg(m_item.seasons.size())
-                      : QStringLiteral("演示数据 · 单部影片");
-    }
+    if (tagline.isEmpty() && m_item.isSeries())
+        tagline = QStringLiteral("全 %1 季").arg(m_item.seasons.size());
     m_tagline->setText(tagline);
     m_tagline->setVisible(!m_tagline->text().isEmpty());
 

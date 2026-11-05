@@ -161,7 +161,7 @@ void Sidebar::buildUi()
     auto *dot = new QLabel(server);
     dot->setObjectName(QStringLiteral("StatusDot"));
     dot->setFixedSize(7, 7);
-    m_serverStatus = new QLabel(QStringLiteral("演示数据 · 本地 Mock"), server);
+    m_serverStatus = new QLabel(QStringLiteral("未连接"), server);
     m_serverStatus->setObjectName(QStringLiteral("ServerStatus"));
     statusRow->addWidget(dot);
     statusRow->addWidget(m_serverStatus);
@@ -173,7 +173,7 @@ void Sidebar::buildUi()
     root->addWidget(server);
     root->addSpacing(10);
 
-    m_version = new QLabel(QStringLiteral("v0.2.0 · mock"), this);
+    m_version = new QLabel(QStringLiteral("v0.1.0"), this);
     m_version->setObjectName(QStringLiteral("SidebarVersion"));
     m_version->setAlignment(Qt::AlignHCenter);
     root->addWidget(m_version);
@@ -234,14 +234,10 @@ void Sidebar::setCurrentIndex(int index)
 void Sidebar::setServerInfo(const QString &serverName, const QString &userName, bool mock)
 {
     if (m_serverName) {
-        m_serverName->setText(serverName.isEmpty()
-                                  ? (mock ? QStringLiteral("本地演示数据")
-                                          : QStringLiteral("Emby 服务器"))
-                                  : serverName);
+        m_serverName->setText(serverName.isEmpty() ? QStringLiteral("Emby PC") : serverName);
     }
     if (m_serverStatus) {
-        m_serverStatus->setText(mock ? QStringLiteral("演示数据 · 本地 Mock")
-                                     : QStringLiteral("已连接 · 真实媒体库"));
+        m_serverStatus->setText(mock ? QStringLiteral("未连接") : QStringLiteral("已连接"));
     }
     if (m_avatar) {
         const QString initial = userName.isEmpty() ? QStringLiteral("E")
@@ -249,8 +245,7 @@ void Sidebar::setServerInfo(const QString &serverName, const QString &userName, 
         m_avatar->setText(initial);
     }
     if (m_version)
-        m_version->setText(mock ? QStringLiteral("v0.2.0 · mock")
-                                : QStringLiteral("v0.2.0 · live"));
+        m_version->setText(QStringLiteral("v0.1.0"));
 }
 
 } // namespace ui

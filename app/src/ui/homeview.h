@@ -5,6 +5,7 @@
 
 #include <QWidget>
 
+class QGridLayout;
 class QHBoxLayout;
 class QLabel;
 class QScrollArea;
@@ -35,11 +36,15 @@ public:
     QStringList sectionTitles() const;
     QList<MediaItem> visibleHomeItems() const;
     QStringList visibleHomeItemIds() const;
+    QList<MediaItem> sectionItems(HomeSection::Kind kind,
+                                  const QString &libraryId = QString()) const;
     void setLoading(bool loading, const QString &message = QString());
     void setError(const QString &message);
 
 protected:
     void showEvent(QShowEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 public:
 
@@ -53,6 +58,8 @@ public:
 signals:
     void itemActivated(const QString &itemId);
     void playRequested(const QString &itemId);
+    // T40：最近添加/媒体库标题点击，跳转整页。
+    void sectionActivated(int kind, const QString &libraryId);
     void loadMoreRequested();
     void sortChanged(int mode);
 
@@ -63,6 +70,9 @@ private:
         QScrollArea *scroll = nullptr;
         QWidget *content = nullptr;
         QHBoxLayout *layout = nullptr;
+        QWidget *preview = nullptr;
+        QGridLayout *grid = nullptr;
+        QLabel *titleLabel = nullptr;
         QList<QWidget *> cards;
         HomeSection section;
         bool cardsBuilt = false;
@@ -77,6 +87,8 @@ private:
     void showLegacyPage();
     void buildVisibleSections();
     void scheduleSectionBuild();
+    void layoutPreviewRow(SectionRow &row);
+    void relayoutPreviewRows();
     void refreshThumbnails();
     void refreshThumbnailsNow();
 
@@ -99,6 +111,7 @@ private:
     int m_builtSectionCount = 0;
     int m_thumbnailMisses = 0;
     QTimer *m_lazyBuildTimer = nullptr;
+    QTimer *m_previewLayoutTimer = nullptr;
     QTimer *m_thumbnailRefreshTimer = nullptr;
     bool m_usingSections = false;
     bool m_loading = false;

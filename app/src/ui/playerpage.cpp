@@ -87,21 +87,6 @@ public:
         iconLabel->setPixmap(iconPixmap(Icon::Play, QColor(0x47, 0x55, 0x69), 44));
         layout->addWidget(iconLabel);
 
-        auto *title = new QLabel(QStringLiteral("VideoHost 占位"), this);
-        title->setObjectName(QStringLiteral("VideoHostTitle"));
-        title->setAlignment(Qt::AlignCenter);
-        layout->addWidget(title);
-
-        auto *desc = new QLabel(
-            QStringLiteral("实际播放窗口由主窗口 / 播放器模块调用 attachVideoSurface() 挂载"), this);
-        desc->setObjectName(QStringLiteral("VideoHostDesc"));
-        desc->setAlignment(Qt::AlignCenter);
-        layout->addWidget(desc, 0, Qt::AlignHCenter);
-
-        auto *hint = new QLabel(QStringLiteral("Windows 下为 libmpv --wid 的原生子 HWND"), this);
-        hint->setObjectName(QStringLiteral("VideoHostHint"));
-        hint->setAlignment(Qt::AlignCenter);
-        layout->addWidget(hint, 0, Qt::AlignHCenter);
         layout->addStretch(1);
     }
 
@@ -182,12 +167,6 @@ void PlayerPage::buildUi()
     titles->addWidget(m_subtitleLabel);
     topLayout->addLayout(titles);
     topLayout->addStretch(1);
-
-    auto *modeBadge = new QLabel(QStringLiteral("演示模式"), m_topBar);
-    modeBadge->setObjectName(QStringLiteral("PlayerModeBadge"));
-    modeBadge->setFixedHeight(24);
-    modeBadge->setAlignment(Qt::AlignCenter);
-    topLayout->addWidget(modeBadge, 0, Qt::AlignVCenter);
 
     // 视频区域
     m_surfaceStack = new QStackedWidget(this);

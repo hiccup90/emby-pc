@@ -150,6 +150,13 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
 - 设置页新增「媒体库」分区：`SettingsSidebarVisibleCheck` / `SettingsHomeVisibleCheck` + 上移下移；写入 `sidebar/hiddenLibraries`、`home/hiddenLibraries`、`home/sectionOrder`，立即刷新侧边栏和首页。
 - mock 模式仍保留旧 resume/recent 两段以兼容旧测试/截图；真实登录后走 T37 多 section。
 
+## 首页交互与界面精简（T40）
+
+- 仅「继续观看」保留横向滑动；「最近添加」/各媒体库行改为固定 6–8 张预览网格（按窗口宽度自适应，不横向滚动），点击标题跳整页（最近添加页/对应媒体库）。
+- 移除 QMenuBar：打开文件 Ctrl+O、打开文件夹 Ctrl+Shift+O、退出 Ctrl+Q 由 QAction 快捷键提供；日志目录/诊断/关于在设置页。
+- 移除演示模式徽标、VideoHost 占位说明、数据源演示文案、Resume 长空状态等；只保留「未连接」「暂无内容」等必要短状态。
+- 截图已更新到 `preview/`；T39 性能优化：section 懒加载、滚动增量、120ms 缩略图刷新防抖、splitter 宽度保存防抖。
+
 ## 真实媒体库（T7 / M2-B）
 
 ### 数据流
@@ -276,7 +283,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **165 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **173 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；

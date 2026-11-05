@@ -10,6 +10,7 @@
 #include <QMouseEvent>
 #include <QProgressBar>
 #include <QElapsedTimer>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QShowEvent>
@@ -85,7 +86,9 @@ public:
         const QString key = !m_item.backdropKey.isEmpty() ? m_item.backdropKey : m_item.posterKey;
         if (key.isEmpty())
             return;
-        const QSize pixelSize = m_thumbnail->size();
+        const qreal dpr = devicePixelRatioF();
+        const QSize pixelSize(qRound(m_thumbnail->width() * dpr),
+                              qRound(m_thumbnail->height() * dpr));
         QPixmap pixmap = m_cache->get(key, pixelSize);
         if (pixmap.isNull()) {
             m_cache->request(key, pixelSize);
@@ -118,15 +121,16 @@ private:
 class HomeSectionCard : public QWidget
 {
 public:
-    HomeSectionCard(const MediaItem &item, ThumbnailCache *cache, QWidget *parent = nullptr)
+    HomeSectionCard(const MediaItem &item, ThumbnailCache *cache, int *misses = nullptr,
+                    int cardWidth = 236, QWidget *parent = nullptr)
         : QWidget(parent)
         , m_cache(cache)
         , m_item(item)
+        , m_misses(misses)
     {
         setObjectName(QStringLiteral("HomeSectionCard"));
         setAttribute(Qt::WA_StyledBackground, true);
         setCursor(Qt::PointingHandCursor);
-        setFixedWidth(236);
 
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(8, 8, 8, 8);
@@ -134,7 +138,8 @@ public:
 
         m_thumbnail = new QLabel(this);
         m_thumbnail->setObjectName(QStringLiteral("HomeSectionThumbnail"));
-        m_thumbnail->setFixedSize(220, 124);
+        setFixedWidth(cardWidth);
+        m_thumbnail->setFixedSize(cardWidth - 16, qRound((cardWidth - 16) * 9.0 / 16.0));
         m_thumbnail->setScaledContents(true);
         m_thumbnail->setAlignment(Qt::AlignCenter);
         layout->addWidget(m_thumbnail);
@@ -179,9 +184,15 @@ public:
         const QString key = !m_item.backdropKey.isEmpty() ? m_item.backdropKey : m_item.posterKey;
         if (key.isEmpty())
             return;
-        const QSize pixelSize = m_thumbnail->size();
+        const qreal dpr = devicePixelRatioF();
+        const QSize pixelSize(qRound(m_thumbnail->width() * dpr),
+                              qRound(m_thumbnail->height() * dpr));
         const QPixmap pixmap = m_cache->get(key, pixelSize);
         if (pixmap.isNull()) {
+            if (m_misses && !m_missCounted) {
+                ++(*m_misses);
+                m_missCounted = true;
+            }
             m_cache->request(key, pixelSize);
             return;
         }
@@ -202,6 +213,8 @@ protected:
 private:
     ThumbnailCache *m_cache = nullptr;
     MediaItem m_item;
+    int *m_misses = nullptr;
+    bool m_missCounted = false;
     QLabel *m_thumbnail = nullptr;
     QLabel *m_title = nullptr;
     QLabel *m_meta = nullptr;
@@ -263,7 +276,7 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     scroll->setWidget(m_resumeContent);
     resumeSectionLayout->addWidget(scroll);
 
-    m_resumeEmpty = new QLabel(QStringLiteral("暂无继续观看（可能已看完，或该账号没有未看完条目）"), resumeSection);
+    m_resumeEmpty = new QLabel(QStringLiteral("暂无内容"), resumeSection);
     m_resumeEmpty->setObjectName(QStringLiteral("EmptyState"));
     m_resumeEmpty->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_resumeEmpty->setFixedHeight(40);
@@ -308,6 +321,10 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     m_thumbnailRefreshTimer->setSingleShot(true);
     m_thumbnailRefreshTimer->setInterval(120);
     connect(m_thumbnailRefreshTimer, &QTimer::timeout, this, &HomeView::refreshThumbnailsNow);
+    m_previewLayoutTimer = new QTimer(this);
+    m_previewLayoutTimer->setSingleShot(true);
+    m_previewLayoutTimer->setInterval(120);
+    connect(m_previewLayoutTimer, &QTimer::timeout, this, &HomeView::relayoutPreviewRows);
     connect(m_sectionsScroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this](int) { scheduleSectionBuild(); });
     connect(m_cache, &ThumbnailCache::thumbnailReady, this,
@@ -398,7 +415,7 @@ void HomeView::rebuildResume()
         return;
     }
     if (m_resumeItems.isEmpty()) {
-        m_resumeEmpty->setText(QStringLiteral("暂无继续观看（可能已看完，或该账号没有未看完条目）"));
+        m_resumeEmpty->setText(QStringLiteral("暂无内容"));
         m_resumeEmpty->setProperty("state", QStringLiteral("empty"));
         m_resumeEmpty->show();
         qInfo() << "HomeView::rebuildResume: empty state visible";
@@ -447,6 +464,26 @@ void HomeView::resizeResumeContent()
         m_resumeContent->adjustSize();
     qInfo() << "HomeView::resizeResumeContent: hint" << contentHint
             << "content" << m_resumeContent->size();
+}
+
+void HomeView::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (m_usingSections && m_previewLayoutTimer)
+        m_previewLayoutTimer->start();
+}
+
+bool HomeView::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonRelease && m_usingSections) {
+        for (SectionRow &row : m_sectionRows) {
+            if (row.titleLabel != watched || row.section.kind == HomeSection::Kind::Resume)
+                continue;
+            emit sectionActivated(static_cast<int>(row.section.kind), row.section.libraryId);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void HomeView::showEvent(QShowEvent *event)
@@ -500,6 +537,8 @@ void HomeView::showLegacyPage()
 
 void HomeView::setHomeSections(const QList<HomeSection> &sections)
 {
+    QElapsedTimer buildTimer;
+    buildTimer.start();
     m_usingSections = true;
     if (m_viewStack && m_sectionsScroll)
         m_viewStack->setCurrentWidget(m_sectionsScroll);
@@ -515,6 +554,8 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
         auto *rowLayout = new QVBoxLayout(row.row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(6);
+        // 占位高度稳定滚动位置：未懒构建时也不会让下方行跳动。
+        row.row->setMinimumHeight(230);
 
         QString title = section.title;
         if (title.isEmpty()) {
@@ -529,27 +570,43 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
         auto *titleLabel = new QLabel(title, row.row);
         titleLabel->setObjectName(QStringLiteral("HomeSectionTitle"));
         titleLabel->setProperty("sectionKind", static_cast<int>(section.kind));
+        row.titleLabel = titleLabel;
         rowLayout->addWidget(titleLabel);
 
-        row.scroll = new QScrollArea(row.row);
-        row.scroll->setObjectName(QStringLiteral("HomeSectionScroll"));
-        row.scroll->setWidgetResizable(false);
-        row.scroll->setFrameShape(QFrame::NoFrame);
-        row.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        row.scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        row.scroll->setFixedHeight(200);
-        row.content = new QWidget(row.scroll);
-        row.content->setObjectName(QStringLiteral("HomeSectionContent"));
-        row.layout = new QHBoxLayout(row.content);
-        row.layout->setContentsMargins(0, 0, 0, 0);
-        row.layout->setSpacing(14);
-        row.layout->addStretch(1);
-        row.scroll->setWidget(row.content);
-        rowLayout->addWidget(row.scroll);
+        if (section.kind != HomeSection::Kind::Resume) {
+            // T40：最近添加/媒体库标题可点击跳整页；行内固定 6–8 张预览，不横向滚动。
+            titleLabel->setCursor(Qt::PointingHandCursor);
+            titleLabel->installEventFilter(this);
+            row.preview = new QWidget(row.row);
+            row.preview->setObjectName(QStringLiteral("HomeSectionPreview"));
+            row.grid = new QGridLayout(row.preview);
+            row.grid->setContentsMargins(0, 0, 0, 0);
+            row.grid->setHorizontalSpacing(14);
+            row.grid->setVerticalSpacing(10);
+            row.grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+            rowLayout->addWidget(row.preview);
+            row.preview->setVisible(false);
+        } else {
+            row.scroll = new QScrollArea(row.row);
+            row.scroll->setObjectName(QStringLiteral("HomeSectionScroll"));
+            row.scroll->setWidgetResizable(false);
+            row.scroll->setFrameShape(QFrame::NoFrame);
+            row.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            row.scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            row.scroll->setFixedHeight(200);
+            row.content = new QWidget(row.scroll);
+            row.content->setObjectName(QStringLiteral("HomeSectionContent"));
+            row.layout = new QHBoxLayout(row.content);
+            row.layout->setContentsMargins(0, 0, 0, 0);
+            row.layout->setSpacing(14);
+            row.layout->addStretch(1);
+            row.scroll->setWidget(row.content);
+            rowLayout->addWidget(row.scroll);
+            row.scroll->setVisible(false); // 懒构建：进入视口附近才创建卡片
+        }
 
         const bool visible = !section.items.isEmpty() && section.error.isEmpty();
         row.row->setVisible(visible);
-        row.scroll->setVisible(false); // 懒构建：进入视口附近才创建卡片
         if (visible) {
             m_sectionsLayout->insertWidget(m_sectionsLayout->count() - 1, row.row);
             m_sectionRows.append(row);
@@ -563,13 +620,57 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
     scheduleSectionBuild();
     QTimer::singleShot(0, this, &HomeView::buildVisibleSections);
     qInfo() << "HomeView::setHomeSections: sections" << sections.size()
-            << "visibleRows" << visibleSectionCount() << "lazyPending" << true;
+            << "visibleRows" << visibleSectionCount() << "lazyPending" << true
+            << "elapsedMs" << buildTimer.elapsed();
 }
 
 void HomeView::scheduleSectionBuild()
 {
     if (m_lazyBuildTimer && m_usingSections)
         m_lazyBuildTimer->start();
+}
+
+void HomeView::layoutPreviewRow(SectionRow &row)
+{
+    if (!row.grid || !row.preview)
+        return;
+    const int available = qMax(320, m_sectionsScroll->viewport()->width() - 60);
+    int columns = qBound(6, qMax(1, available / 190), 8);
+    columns = qMin(columns, qMax(1, row.section.items.size()));
+    const int spacing = 14;
+    const int cardWidth = qMax(120, (available - (columns - 1) * spacing) / columns);
+
+    for (int i = 0; i < row.cards.size(); ++i) {
+        auto *card = static_cast<HomeSectionCard *>(row.cards.at(i));
+        row.grid->removeWidget(card);
+        if (i >= columns) {
+            card->hide();
+            continue;
+        }
+        card->show();
+        card->setFixedWidth(cardWidth);
+        if (auto *thumb = card->findChild<QLabel *>(QStringLiteral("HomeSectionThumbnail")))
+            thumb->setFixedSize(cardWidth - 16, qRound((cardWidth - 16) * 9.0 / 16.0));
+        row.grid->addWidget(card, 0, i);
+    }
+    for (int i = row.cards.size(); i < columns; ++i) {
+        auto *card = new HomeSectionCard(row.section.items.at(i), m_cache,
+                                         &m_thumbnailMisses, cardWidth, row.preview);
+        const MediaItem item = row.section.items.at(i);
+        card->onClick = [this, item]() { emit itemActivated(item.id); };
+        row.grid->addWidget(card, 0, i);
+        row.cards.append(card);
+    }
+}
+
+void HomeView::relayoutPreviewRows()
+{
+    if (!m_usingSections)
+        return;
+    for (SectionRow &row : m_sectionRows) {
+        if (row.cardsBuilt && row.grid)
+            layoutPreviewRow(row);
+    }
 }
 
 void HomeView::buildVisibleSections()
@@ -579,28 +680,31 @@ void HomeView::buildVisibleSections()
     QElapsedTimer timer;
     timer.start();
     int builtNow = 0;
-    const int viewportBottom = m_sectionsScroll->viewport()->height() + 320;
+    // 首屏只建造视口内（稍微收紧，避免一次把所有行都构造）；滚动时再增量。
+    const int viewportBottom = qMax(1, m_sectionsScroll->viewport()->height() - 120);
     for (SectionRow &row : m_sectionRows) {
-        if (row.cardsBuilt || !row.row || !row.layout)
+        if (row.cardsBuilt || !row.row || (!row.layout && !row.grid))
             continue;
         const QPoint rowTop = row.row->mapTo(m_sectionsScroll->viewport(), QPoint(0, 0));
         // 首屏至少 2 个 section，其余按视口 + 320px 预取。
         if (m_builtSectionCount >= 2 && rowTop.y() > viewportBottom)
             continue;
-        int cardIndex = 0;
-        for (const MediaItem &item : row.section.items) {
-            auto *card = new HomeSectionCard(item, m_cache, row.content);
-            const bool playOnClick = row.section.kind == HomeSection::Kind::Resume;
-            card->onClick = [this, item, playOnClick]() {
-                if (playOnClick)
-                    emit playRequested(item.id);
-                else
-                    emit itemActivated(item.id);
-            };
-            row.layout->insertWidget(cardIndex++, card);
-            row.cards.append(card);
+        if (row.grid) {
+            layoutPreviewRow(row);
+            if (row.preview)
+                row.preview->setVisible(true);
+        } else {
+            int cardIndex = 0;
+            for (const MediaItem &item : row.section.items) {
+                auto *card = new HomeSectionCard(item, m_cache, &m_thumbnailMisses, 236,
+                                                  row.content);
+                card->onClick = [this, item]() { emit playRequested(item.id); };
+                row.layout->insertWidget(cardIndex++, card);
+                row.cards.append(card);
+            }
+            if (row.scroll)
+                row.scroll->setVisible(true);
         }
-        row.scroll->setVisible(true);
         row.cardsBuilt = true;
         ++m_builtSectionCount;
         ++builtNow;
@@ -642,6 +746,19 @@ QList<MediaItem> HomeView::visibleHomeItems() const
         items.append(row.section.items);
     }
     return items;
+}
+
+QList<MediaItem> HomeView::sectionItems(HomeSection::Kind kind,
+                                          const QString &libraryId) const
+{
+    for (const SectionRow &row : m_sectionRows) {
+        if (row.section.kind != kind)
+            continue;
+        if (kind == HomeSection::Kind::Library && row.section.libraryId != libraryId)
+            continue;
+        return row.section.items;
+    }
+    return {};
 }
 
 QStringList HomeView::visibleHomeItemIds() const

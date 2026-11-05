@@ -31,7 +31,6 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
-#include <QMenuBar>
 #include <QMetaObject>
 #include <QMessageBox>
 #include <QPointer>
@@ -600,40 +599,27 @@ void PlayerController::connectUiPlaybackSignals()
 
 void PlayerController::installMenus()
 {
-    QMenu *fileMenu = m_window->menuBar()->addMenu(tr("文件(&F)"));
-
-    QAction *openFileAction = fileMenu->addAction(tr("打开文件…"));
+    // T40：不再创建 QMenuBar；保留文件动作的快捷键和诊断导出 QAction，
+    // 供设置页按钮触发。Ctrl+O / Ctrl+Shift+O / Ctrl+Q 仍然可用。
+    auto *openFileAction = new QAction(tr("打开文件…"), m_window);
     openFileAction->setShortcut(QKeySequence::Open);
+    m_window->addAction(openFileAction);
     connect(openFileAction, &QAction::triggered, this, &PlayerController::openFile);
 
-    QAction *openFolderAction = fileMenu->addAction(tr("打开文件夹（作为播放列表）…"));
+    auto *openFolderAction = new QAction(tr("打开文件夹（作为播放列表）…"), m_window);
     openFolderAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    m_window->addAction(openFolderAction);
     connect(openFolderAction, &QAction::triggered, this, &PlayerController::openFolder);
 
-    fileMenu->addSeparator();
-    QAction *quitAction = fileMenu->addAction(tr("退出"));
+    auto *quitAction = new QAction(tr("退出"), m_window);
     quitAction->setShortcut(QKeySequence::Quit);
+    m_window->addAction(quitAction);
     connect(quitAction, &QAction::triggered, m_window, &QWidget::close);
 
-    // main.cpp 里的“帮助”菜单在本函数之后才创建；延迟到事件循环首轮再挂
-    // “导出诊断信息”，这样不需要改 main.cpp 也能保证菜单只出现一次。
-    QTimer::singleShot(0, this, [this]() {
-        QMenu *helpMenu = nullptr;
-        const QList<QAction *> actions = m_window->menuBar()->actions();
-        for (QAction *action : actions) {
-            if (action->menu() && action->text().contains(tr("帮助"))) {
-                helpMenu = action->menu();
-                break;
-            }
-        }
-        if (!helpMenu)
-            helpMenu = m_window->menuBar()->addMenu(tr("帮助(&H)"));
-        if (helpMenu->findChild<QAction *>(QStringLiteral("ExportDiagnosticsAction")))
-            return;
-        QAction *exportAction = helpMenu->addAction(tr("导出诊断信息…"));
-        exportAction->setObjectName(QStringLiteral("ExportDiagnosticsAction"));
-        connect(exportAction, &QAction::triggered, this, &PlayerController::exportDiagnostics);
-    });
+    auto *exportAction = new QAction(tr("导出诊断信息…"), m_window);
+    exportAction->setObjectName(QStringLiteral("ExportDiagnosticsAction"));
+    m_window->addAction(exportAction);
+    connect(exportAction, &QAction::triggered, this, &PlayerController::exportDiagnostics);
 }
 
 void PlayerController::openFile()
@@ -1281,19 +1267,7 @@ void PlayerController::ensurePlayerControlsVisible()
 
 void PlayerController::updatePlayerWindowChrome()
 {
-    if (!m_window)
-        return;
-    QMenuBar *menu = m_window->menuBar();
-    if (!menu)
-        return;
-    // 播放/全屏时把菜单栏也隐藏，视频才真正铺满客户区；退出时恢复。
-    const bool immersive = m_window->isPlayerMode() || m_window->isFullScreen();
-    const bool shouldBeVisible = !immersive;
-    if (menu->isVisible() == shouldBeVisible)
-        return;
-    menu->setVisible(shouldBeVisible);
-    qInfo() << "player mode: menu bar" << (shouldBeVisible ? "shown" : "hidden")
-            << "fullscreen" << m_window->isFullScreen();
+    // T40：应用不再创建 QMenuBar；播放/全屏只由 TitleBar/内容 chrome 控制。
 }
 
 void PlayerController::scheduleHomeRefresh(int delayMs)

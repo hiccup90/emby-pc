@@ -105,10 +105,7 @@ MainWindow::MainWindow(const Options &options, QWidget *parent)
     updateSessionUi();
 
     statusBar()->setSizeGripEnabled(false);
-    statusBar()->showMessage(m_mockMode
-                                 ? QStringLiteral("演示数据：本地 mock，共 %1 部影片/剧集")
-                                       .arg(m_mockLibrary.size())
-                                 : QStringLiteral("正在连接媒体库…"));
+    statusBar()->clearMessage();
 
     if (m_options.requireAuthentication)
         QTimer::singleShot(0, this, &MainWindow::restoreSession);
@@ -162,8 +159,9 @@ void MainWindow::buildUi()
 
     topLayout->addStretch(1);
 
-    m_sessionStatus = new QLabel(QStringLiteral("演示数据 · 本地 Mock"), m_topBar);
+    m_sessionStatus = new QLabel(m_topBar);
     m_sessionStatus->setObjectName(QStringLiteral("TopStatus"));
+    m_sessionStatus->setVisible(false);
     topLayout->addWidget(m_sessionStatus);
 
     m_avatar = new QPushButton(mockUserInitial(), m_topBar);
@@ -203,8 +201,12 @@ void MainWindow::buildUi()
     m_splitter->setStretchFactor(1, 1);
     rootLayout->addWidget(m_splitter, 1);
     setCentralWidget(root);
+    m_sidebarSaveTimer = new QTimer(this);
+    m_sidebarSaveTimer->setSingleShot(true);
+    m_sidebarSaveTimer->setInterval(220);
+    connect(m_sidebarSaveTimer, &QTimer::timeout, this, &MainWindow::saveSidebarWidth);
     connect(m_splitter, &QSplitter::splitterMoved, this,
-            [this](int, int) { saveSidebarWidth(); });
+            [this](int, int) { m_sidebarSaveTimer->start(); });
     setupTitleBar();
     restoreSidebarWidth();
 }
@@ -348,6 +350,8 @@ void MainWindow::restoreSidebarWidth()
 
 void MainWindow::saveSidebarWidth()
 {
+    if (m_sidebarSaveTimer)
+        m_sidebarSaveTimer->stop();
     if (!m_sidebar)
         return;
     QSettings settings;
@@ -438,6 +442,21 @@ void MainWindow::connectSignals()
     });
     connect(m_home, &HomeView::playRequested, this,
             [this](const QString &itemId) { playItem(itemId, -1, -1); });
+    connect(m_home, &HomeView::sectionActivated, this,
+            [this](int kind, const QString &libraryId) {
+                if (kind == static_cast<int>(HomeSection::Kind::Recent)) {
+                    showRecentPage();
+                    return;
+                }
+                if (kind != static_cast<int>(HomeSection::Kind::Library))
+                    return;
+                for (int i = 0; i < m_sections.size(); ++i) {
+                    if (m_sections.at(i).id == libraryId) {
+                        selectSection(i);
+                        return;
+                    }
+                }
+            });
     connect(m_home, &HomeView::sortChanged, this, [this](int mode) {
         if (m_mockMode) {
             m_home->recentView()->setSortMode(mode);
@@ -644,8 +663,8 @@ void MainWindow::applyMockMode()
     refreshServerCard();
     m_settings->setMockMode(m_mockMode);
     updateSessionUi();
-    statusBar()->showMessage(m_mockMode ? QStringLiteral("已切换到演示数据（本地 Mock）")
-                                        : QStringLiteral("已切换到真实 Emby 媒体库"),
+    statusBar()->showMessage(m_mockMode ? QStringLiteral("已切换数据源")
+                                        : QStringLiteral("已连接 Emby 媒体库"),
                              2200);
 }
 
@@ -710,6 +729,38 @@ void MainWindow::loadMockHome()
     m_home->setRecentItems(m_mockLibrary);
     m_home->recentView()->setTotalCount(m_mockLibrary.size());
     m_home->recentView()->setHasMore(false);
+
+    // T40：mock 也走多 section（继续观看横向，其余固定预览），保证演示/截图一致。
+    QList<HomeSection> sections;
+    HomeSection resumeSection;
+    resumeSection.kind = HomeSection::Kind::Resume;
+    resumeSection.title = QStringLiteral("继续观看");
+    resumeSection.items = resume;
+    sections.append(resumeSection);
+    HomeSection recentSection;
+    recentSection.kind = HomeSection::Kind::Recent;
+    recentSection.title = QStringLiteral("最近添加");
+    recentSection.items = m_mockLibrary.mid(0, 18);
+    recentSection.totalCount = m_mockLibrary.size();
+    sections.append(recentSection);
+    for (const LibrarySection &library : m_sections) {
+        HomeSection section;
+        section.kind = HomeSection::Kind::Library;
+        section.libraryId = library.id;
+        section.title = library.name;
+        for (const MediaItem &item : m_mockLibrary) {
+            if (library.collectionType == QLatin1String("movies") && item.isSeries())
+                continue;
+            if (library.collectionType == QLatin1String("tvshows") && !item.isSeries())
+                continue;
+            section.items.append(item);
+            if (section.items.size() >= 18)
+                break;
+        }
+        section.totalCount = section.items.size();
+        sections.append(section);
+    }
+    m_home->setHomeSections(sections);
     m_home->setLoading(false);
 }
 
@@ -801,9 +852,7 @@ void MainWindow::loadRealHome()
             for (const HomeSection &section : sections)
                 self->rememberItems(section.items);
             emit self->dataLoaded(true, QString());
-            self->statusBar()->showMessage(QStringLiteral("已连接真实媒体库 · %1 个首页分区")
-                                               .arg(sections.size()),
-                                           3000);
+            self->statusBar()->showMessage(QStringLiteral("已连接媒体库"), 3000);
         });
 }
 
@@ -822,6 +871,28 @@ void MainWindow::selectSection(int sectionIndex)
         return;
     }
     reloadLibrary();
+}
+
+void MainWindow::showRecentPage()
+{
+    if (!m_home)
+        return;
+    const QList<MediaItem> items = m_home->sectionItems(HomeSection::Kind::Recent);
+    if (items.isEmpty())
+        return;
+    m_stack->setCurrentIndex(StackLibrary);
+    m_lastContentIndex = StackLibrary;
+    m_currentSection = -1;
+    if (m_sidebar)
+        m_sidebar->setCurrentIndex(0);
+    m_libraryView->setLocalFilteringEnabled(true);
+    m_libraryView->setLocalSortingEnabled(true);
+    m_libraryView->setTitle(QStringLiteral("最近添加"));
+    m_libraryView->setFilterText(m_search ? m_search->text() : QString());
+    m_libraryView->setItems(items);
+    m_libraryView->setHasMore(false);
+    m_libraryView->setTotalCount(items.size());
+    statusBar()->showMessage(QStringLiteral("最近添加 · %1 项").arg(items.size()), 2500);
 }
 
 void MainWindow::reloadLibrary()
@@ -1417,14 +1488,12 @@ void MainWindow::updateSessionUi()
             m_avatar->setToolTip(QStringLiteral("当前用户：%1").arg(m_sessionProfile.userName));
         }
     } else if (hasSession() && m_mockMode) {
-        m_sessionStatus->setText(QStringLiteral("演示数据 · 已登录 %1").arg(m_sessionProfile.userName));
-        m_sessionStatus->setToolTip(QStringLiteral("设置页可切回真实媒体库"));
+        m_sessionStatus->setText(QString());
+        m_sessionStatus->setToolTip(QString());
         if (m_avatar)
             m_avatar->setText(m_sessionProfile.userName.left(1).toUpper());
     } else {
-        m_sessionStatus->setText(m_mockMode
-                                     ? QStringLiteral("演示数据 · 本地 Mock")
-                                     : QStringLiteral("未登录 · 等待登录"));
+        m_sessionStatus->setText(QString());
         m_sessionStatus->setToolTip(QString());
         if (m_avatar) {
             m_avatar->setText(mockUserInitial());

@@ -13,8 +13,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMainWindow>
-#include <QMenu>
-#include <QMenuBar>
 #include <QMessageBox>
 #include <QMutex>
 #include <QMutexLocker>
@@ -155,40 +153,6 @@ void shutdownFileLogging()
 // 菜单
 // ---------------------------------------------------------------------------
 
-void openLogDirectory(QWidget *parent)
-{
-    const QString dir = logDirectory();
-    if (!QDir().mkpath(dir) || !QDesktopServices::openUrl(QUrl::fromLocalFile(dir))) {
-        QMessageBox::warning(parent, QObject::tr("打开日志目录"),
-                             QObject::tr("无法打开日志目录：%1")
-                                 .arg(QDir::toNativeSeparators(dir)));
-    }
-}
-
-void installHelpMenu(QMainWindow *window)
-{
-    QMenu *helpMenu = window->menuBar()->addMenu(QObject::tr("帮助(&H)"));
-
-    QAction *openLogsAction = helpMenu->addAction(QObject::tr("打开日志目录"));
-    openLogsAction->setObjectName(QStringLiteral("OpenLogDirectoryAction"));
-    QObject::connect(openLogsAction, &QAction::triggered, window,
-                     [window]() { openLogDirectory(window); });
-
-    helpMenu->addSeparator();
-    QAction *aboutAction = helpMenu->addAction(QObject::tr("关于 Emby PC"));
-    QObject::connect(aboutAction, &QAction::triggered, window, [window]() {
-        QMessageBox::about(
-            window, QObject::tr("关于 Emby PC"),
-            QStringLiteral("<b>Emby PC</b> %1<br>Qt %2<br>构建时间：%3 %4<br><br>"
-                           "日志目录：<br>%5")
-                .arg(QCoreApplication::applicationVersion())
-                .arg(QString::fromLatin1(qVersion()))
-                .arg(QString::fromLatin1(__DATE__))
-                .arg(QString::fromLatin1(__TIME__))
-                .arg(QDir::toNativeSeparators(logDirectory())));
-    });
-}
-
 } // namespace
 
 int main(int argc, char *argv[])
@@ -228,9 +192,6 @@ int main(int argc, char *argv[])
     // 播放层：VideoHost + MpvPlayer（--wid 嵌入），接到 PlayerPage 的控制信号。
     PlayerController controller(&window, playerPage);
     controller.installMenus();
-
-    // 帮助菜单：打开日志目录（app.log / mpv.log 所在目录）。
-    installHelpMenu(&window);
 
     window.show();
 

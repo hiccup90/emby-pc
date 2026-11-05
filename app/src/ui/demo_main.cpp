@@ -48,6 +48,7 @@
 #include <QScrollArea>
 #include <QStatusBar>
 #include <QScrollBar>
+#include <QMenuBar>
 #include <QSettings>
 #include <QSpinBox>
 #include <QSplitter>
@@ -358,12 +359,9 @@ int runSelfTest(QApplication &app)
               && windowFrame->maximizeButtonRect() == titleBar->maximizeButtonRect(),
           QStringLiteral("WindowFrame 使用 TitleBar host 与最大化按钮矩形"));
 
-    QMenuBar *menuBar = window.menuBar();
-    menuBar->addMenu(QStringLiteral("文件"));
-    settle(app, 80);
-    check(titleBar && menuBar && menuBar->isVisible()
-              && menuBar->geometry().top() >= titleBar->height(),
-          QStringLiteral("TitleBar 位于 QMenuBar 之上"));
+    check(window.findChild<QMenuBar *>() == nullptr && titleBar
+              && titleBar->geometry().top() == 0,
+          QStringLiteral("T40：主窗口无 QMenuBar，TitleBar 置顶"));
 
     int titleDoubleClicks = 0;
     QObject::connect(titleBar, &ui::TitleBar::maximizeToggleRequested,
@@ -407,6 +405,30 @@ int runSelfTest(QApplication &app)
     window.setSearchText(QString());
     settle(app, 50);
     check(home && home->itemCount() == 200, QStringLiteral("清空搜索后恢复 200 条"));
+
+    // T40：首页「最近添加」标题点击跳转整页。
+    auto *homeView = window.findChild<ui::HomeView *>(QStringLiteral("HomePage"));
+    QLabel *recentTitle = nullptr;
+    if (homeView) {
+        for (QLabel *label : homeView->findChildren<QLabel *>(QStringLiteral("HomeSectionTitle"))) {
+            if (label->property("sectionKind").toInt()
+                == static_cast<int>(ui::HomeSection::Kind::Recent)) {
+                recentTitle = label;
+                break;
+            }
+        }
+    }
+    if (recentTitle) {
+        QMouseEvent click(QEvent::MouseButtonRelease, QPointF(8, 8),
+                          recentTitle->mapToGlobal(QPoint(8, 8)), Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(recentTitle, &click);
+        settle(app, 100);
+    }
+    check(recentTitle && window.currentStackIndex() == 1,
+          QStringLiteral("最近添加标题点击跳转列表页"));
+    window.navigateTo(ui::MainWindow::Page::Home);
+    settle(app, 80);
 
     // 滚动 200 项到底部，测量绘制耗时
     if (grid) {
@@ -553,15 +575,12 @@ int runSelfTest(QApplication &app)
     player->setOverlayCursorPositionForTest(QPoint(), false);
 
     check(titleBar && titleBar->isHidden(), QStringLiteral("播放器模式隐藏 TitleBar"));
-    check(menuBar && menuBar->isHidden(), QStringLiteral("播放器模式隐藏 QMenuBar"));
     window.setPlayerMode(false);
     check(!window.isPlayerMode() && playerSidebar && !playerSidebar->isHidden()
               && playerTopBar && !playerTopBar->isHidden()
-              && !window.statusBar()->isHidden()
-              && titleBar && titleBar->isVisible()
-              && menuBar && menuBar->isVisible()
+              && !window.statusBar()->isHidden() && titleBar && titleBar->isVisible()
               && !player->controlsVisible(),
-          QStringLiteral("退出播放器模式恢复 chrome/TitleBar/QMenuBar 并隐藏顶层浮层"));
+          QStringLiteral("退出播放器模式恢复 chrome/TitleBar 并隐藏顶层浮层"));
     window.setPlayerMode(true);
     player->setOverlayAutoHide(false);
     if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton")))
@@ -646,6 +665,10 @@ int runSelfTest(QApplication &app)
     check(videoPlaceholder && videoPlaceholder->minimumWidth() <= 320
               && videoPlaceholder->minimumHeight() <= 180,
           QStringLiteral("视频区 placeholder 保持 320x180 下限"));
+    check(window.findChild<QLabel *>(QStringLiteral("PlayerModeBadge")) == nullptr
+              && window.findChild<QLabel *>(QStringLiteral("VideoHostTitle")) == nullptr
+              && window.findChild<QLabel *>(QStringLiteral("VideoHostDesc")) == nullptr,
+          QStringLiteral("T40：无演示徽标/VideoHost 说明文字"));
 
     // EMBY_PC_PLAYER_OVERLAY=0 兜底：浮层回到页面内。
     qputenv("EMBY_PC_PLAYER_OVERLAY", QByteArrayLiteral("0"));
@@ -925,6 +948,78 @@ int runLibraryLayoutTests(QApplication &app)
     const int homeRowCount = home.findChildren<QWidget *>(QStringLiteral("HomeSectionRow")).size();
     check(homeRowCount == 3,
           QStringLiteral("HomeView 生成 3 个 HomeSectionRow（实际 %1）").arg(homeRowCount));
+
+    // T39：5 section × 18 张卡片的懒加载/构建耗时（offscreen）。
+    QList<ui::HomeSection> manySections;
+    for (int s = 0; s < 5; ++s) {
+        ui::HomeSection section;
+        section.kind = ui::HomeSection::Kind::Library;
+        section.libraryId = QStringLiteral("lib-%1").arg(s);
+        section.title = QStringLiteral("库 %1").arg(s);
+        for (int i = 0; i < 18; ++i) {
+            ui::MediaItem item;
+            item.id = QStringLiteral("perf-%1-%2").arg(s).arg(i);
+            item.title = item.id;
+            section.items.append(item);
+        }
+        manySections.append(section);
+    }
+    QElapsedTimer lazyTimer;
+    lazyTimer.start();
+    home.setHomeSections(manySections);
+    settle(app, 160);
+    const int lazyElapsed = int(lazyTimer.elapsed());
+    const int builtSections = home.builtSectionCount();
+    const int totalSections = home.sectionCount();
+    check(builtSections > 0 && builtSections < totalSections,
+          QStringLiteral("懒加载只构建首屏 section（built=%1/%2）")
+              .arg(builtSections).arg(totalSections));
+    check(lazyElapsed < 1500,
+          QStringLiteral("5×18 section 首屏构建 %1ms < 1500ms").arg(lazyElapsed));
+    home.resize(760, 480);
+    settle(app, 100);
+    check(home.builtSectionCount() == builtSections,
+          QStringLiteral("窗口缩放不重建已构建 section"));
+    auto *sectionsScroll = home.findChild<QScrollArea *>(QStringLiteral("HomeSectionsScroll"));
+    if (sectionsScroll) {
+        sectionsScroll->verticalScrollBar()->setValue(
+            sectionsScroll->verticalScrollBar()->maximum());
+        settle(app, 180);
+    }
+    check(sectionsScroll && home.builtSectionCount() > builtSections
+              && home.builtSectionCount() <= totalSections,
+          QStringLiteral("滚动后增量构建剩余 section（built=%1/%2）")
+              .arg(home.builtSectionCount()).arg(totalSections));
+
+    // T40：非继续观看行只做固定预览网格，不横向滚动；标题点击发 sectionActivated。
+    const auto previewRows = home.findChildren<QWidget *>(QStringLiteral("HomeSectionPreview"));
+    int previewCardCount = 0;
+    if (!previewRows.isEmpty())
+        previewCardCount = previewRows.first()->findChildren<QWidget *>(
+            QStringLiteral("HomeSectionCard")).size();
+    check(!previewRows.isEmpty() && previewCardCount >= 6 && previewCardCount <= 8,
+          QStringLiteral("最近添加/媒体库行固定 6–8 张预览（实际 %1）").arg(previewCardCount));
+    check(home.findChildren<QScrollArea *>(QStringLiteral("HomeSectionScroll")).isEmpty(),
+          QStringLiteral("非继续观看 section 无横向滚动条"));
+    int activatedKind = -1;
+    QString activatedLibraryId;
+    QObject::connect(&home, &ui::HomeView::sectionActivated,
+                     [&activatedKind, &activatedLibraryId](int kind, const QString &id) {
+                         activatedKind = kind;
+                         activatedLibraryId = id;
+                     });
+    const auto sectionTitles = home.findChildren<QLabel *>(QStringLiteral("HomeSectionTitle"));
+    if (!sectionTitles.isEmpty()) {
+        QLabel *title = sectionTitles.first();
+        QMouseEvent click(QEvent::MouseButtonRelease, QPointF(8, 8),
+                          title->mapToGlobal(QPoint(8, 8)), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QApplication::sendEvent(title, &click);
+        settle(app, 40);
+    }
+    check(activatedKind == static_cast<int>(ui::HomeSection::Kind::Library)
+              && activatedLibraryId == QStringLiteral("lib-0"),
+          QStringLiteral("点击 section 标题发出跳转信号"));
     home.close();
 
     // 2) 设置页媒体库显示/排序写 QSettings。

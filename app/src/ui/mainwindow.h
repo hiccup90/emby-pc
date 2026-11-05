@@ -150,6 +150,7 @@ private:
     void refreshServerCard();
     void loadMockHome();
     void loadMockSection(int sectionIndex);
+    void showRecentPage();
     void loadRealViews();
     void loadRealHome();
     void selectSection(int sectionIndex);
@@ -190,6 +191,7 @@ private:
 
     Sidebar *m_sidebar = nullptr;
     QSplitter *m_splitter = nullptr;
+    QTimer *m_sidebarSaveTimer = nullptr;
     QWidget *m_topBar = nullptr;
     QLabel *m_sessionStatus = nullptr;
     QPushButton *m_avatar = nullptr;

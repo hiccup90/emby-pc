@@ -51,3 +51,40 @@
 - mock 首页仍保留旧 resume/recent 两段（兼容旧截图/测试）；真实登录后按 T37 HomeSection 渲染多行。
 - 视频区 5px 黑边由 T31 处理；播放模式 splitter handle 隐藏，退出恢复。
 - 媒体库排序只调整首页库行；resume/recent 顺序由 T37 `home/sectionOrder` 决定。
+
+## 6. T39 性能优化（实机卡顿）
+
+- **首页 section 懒加载**：`setHomeSections()` 先只建标题行，首屏只构建视口附近 section（5×18 测试：built=3/5，其余滚动时增量创建）；未构建行保留 230px 占位高度，滚动位置稳定。
+- **滚动增量**：`HomeSectionsScroll` verticalScrollBar valueChanged → 80ms 单次 QTimer 防抖 → `buildVisibleSections()`，只构建进入视口 + 预取范围的 section。
+- **缩略图 DPR**：HomeSectionCard/ResumeCard 使用 `devicePixelRatioF()` 计算物理像素尺寸请求缓存；缩略图 ready 信号合并为 120ms 防抖刷新，避免每张图触发整页遍历。
+- **构建计时**：日志新增 `HomeView::setHomeSections ... elapsedMs`、`HomeView::buildVisibleSections ... elapsedMs/builtTotal/thumbnailMisses`；5 section×18 项 offscreen 首屏 182ms（目标 <1500ms，无 GPU 环境）。
+- **splitter 拖动**：splitterMoved 不再每次写 QSettings，改 220ms 防抖保存；拖动只触发 QSplitter 尺寸变化，不调用 HomeView/侧边栏重建。
+- **QSS/特效**：检查无 QGraphicsDropShadowEffect、无频繁 setStyleSheet；主题只在启动设置一次。
+- **自测**：`emby-ui-demo --selftest` 173 项 ALL PASS；T39 新增懒加载 built< total、首屏构建 <1500ms、窗口缩放不重建、滚动后增量构建到 5/5。
+
+## 7. T40 首页交互与界面精简
+
+### 7.1 首页行交互
+
+- 仅 `resume` 行保留横向 `QScrollArea`；`recent`/`library` 行改为 `HomeSectionPreview` + `QGridLayout`，不横向滚动。
+- 预览数量按窗口宽度自适应：6–8 张（`qBound(6, viewportWidth/190, 8)`），超出不显示「更多」；窗口 resize 时只增删/重排已有预览卡片，不重建 section。
+- 非 resume 标题使用 `HomeSectionTitle`，可点击；HomeView 发出 `sectionActivated(int kind, QString libraryId)`。
+- MainWindow：Recent 标题 → `showRecentPage()`（LibraryView 本地显示最近添加条目）；Library 标题 → 按 viewId 查找并进入对应媒体库页。
+
+### 7.2 QMenuBar / 快捷键
+
+- UI 层不再创建/显示菜单栏；app `PlayerController` 不再调用 `menuBar()`，只把 QAction 挂到主窗口：Ctrl+O 打开文件、Ctrl+Shift+O 打开文件夹、Ctrl+Q 退出、`ExportDiagnosticsAction` 供设置页诊断导出。
+- 帮助菜单的打开日志目录/关于已由设置页按钮承担；`main.cpp` 的 `installHelpMenu()` 删除。
+- `ui::MainWindow` offscreen 断言 `findChild<QMenuBar*>() == nullptr`。
+
+### 7.3 说明性文字/演示徽标
+
+- 删除 PlayerPage `演示模式` 徽标；VideoHost 占位只保留播放图标，不再显示「VideoHost 占位/attachVideoSurface/--wid」说明。
+- MainWindow 顶部数据源状态、侧边栏「演示数据 · 本地 Mock」、详情「演示数据」标签、设置页 Mock 说明、Resume 空状态长文案均已移除/缩短为「未连接」「暂无内容」等必要状态。
+- 主题、卡片、进度条样式保持不变；截图更新到 `app/src/ui/preview/`。
+
+### 7.4 自测
+
+- `emby-ui-demo --selftest`：**173 项 ALL PASS**。
+- T40 新增覆盖：无 QMenuBar、最近添加标题点击跳转（stack=1）、非继续观看行 6–8 预览且无横向滚动、点击标题发出 sectionActivated、无演示徽标/VideoHost 说明文字。
+- T39 性能测试仍保留：懒加载 built< total、5×18 首屏 182ms、resize 不重建、滚动增量到 5/5。
