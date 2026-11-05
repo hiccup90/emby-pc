@@ -176,5 +176,5 @@ exit=0
 ```
 
 - LibraryData::fetchHome 的 recent/finish 日志已验证：真实探针一次返回 recent=24、resume=2，home finish 正常触发；用户数据 12 条时同一路径。
-- 构建：Linux Debug 通过；待 Windows CI 重新编译。
+- 构建：Linux Debug 通过；Windows CI run `41957153193`（commit `bbdc809`，含 T23+T24）全绿；MSVC 2022 x64 Build (Release) 通过；artifact `emby-pc-win64` id `13384052192`（72,230,490 bytes）。
 - 实机验证：首页继续观看应出现 12 张横向卡片（首屏至少 3 张），鼠标横向滚动可看其余；若仍空白，导出 diagnostics 会包含 HomeView: resumeCount=... cards=... content=... emptyVisible=...，可直接判断是数据为空还是布局尺寸异常。
