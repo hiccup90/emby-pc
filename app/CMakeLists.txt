@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(emby-pc LANGUAGES CXX)
+project(emby-pc VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -77,4 +77,20 @@ if(WIN32)
     else()
         message(WARNING "libs/libmpv/libmpv-2.dll not found - put libmpv there before running.")
     endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# T33/M4-1：Windows VERSIONINFO + 应用图标。
+# version.rc 是模板：configure_file 用 project(VERSION) 与图标绝对路径生成到构建
+# 目录，仅 WIN32 编译；Linux 构建不受影响。
+# ---------------------------------------------------------------------------
+if(WIN32)
+    enable_language(RC)
+    set(APP_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/win/app.ico")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/win/version.rc"
+        "${CMAKE_CURRENT_BINARY_DIR}/win/version.rc"
+        @ONLY)
+    target_sources(emby-pc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/win/version.rc")
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/win/version.rc" PROPERTIES LANGUAGE RC)
 endif()

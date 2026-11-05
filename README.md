@@ -8,11 +8,13 @@
 
 ## 快速开始（Windows）
 
-### 方式 1：下载 CI 构建产物（推荐给验收）
+### 方式 1：下载 CI 构建产物（推荐）
 
 1. 打开仓库 **Actions → windows-build**，选择最近一次成功的 run。
-2. 下载 artifact **emby-pc-win64**（zip，保留 30 天）。
-3. 解压到不含中文/空格的目录，双击 `emby-pc.exe`。
+2. 下载 artifact（二选一，均保留 30 天）：
+   - **emby-pc-installer**：安装包 `emby-pc-<version>-setup.exe`，双击安装（推荐；桌面/开始菜单快捷方式、可从「应用」卸载），见 [docs/packaging.md](docs/packaging.md)。
+   - **emby-pc-win64**：免安装 zip，解压到不含中文/空格的目录，双击 `emby-pc.exe`（验收/便携）。
+3. 首次启动前确认已安装 VC++ 运行库（安装包已内置；免安装版由 windeployqt 附带）。
 
 ### 方式 2：本地构建
 
@@ -26,6 +28,9 @@ powershell -ExecutionPolicy Bypass -File app\scripts\fetch-libmpv.ps1 `
 
 # 2) 构建 Release 并打包（产物 dist\emby-pc-<version>-win64.zip）
 powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPrefix C:\Qt\6.8.3\msvc2022_64
+
+# 3) 构建安装包（需 Inno Setup 6，详见 docs\packaging.md）
+#    iscc /DMyAppVersion=0.1.0 "/DSourceDir=dist\emby-pc-0.1.0-win64" installer\emby-pc.iss
 ```
 
 > 网络受限时，可先手工下载 mpv-dev 的 .7z，再把本地路径传给 `fetch-libmpv.ps1` 的 `-Url`。
@@ -66,7 +71,9 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 │   │   ├── build-linux.sh       # Linux 编译验证
 │   │   ├── fetch-libmpv.ps1     # 下载/校验/安装 libmpv
 │   │   └── package-windows.ps1  # Windows Release 打包（windeployqt + zip）
+│   ├── resources/win/       # T33：version.rc + app.ico + make-icon.py
 │   └── libs/libmpv/         # mpv 头文件（DLL 由脚本获取，不入库）
+├── installer/               # Inno Setup 安装包脚本（emby-pc.iss）
 ├── docs/
 │   ├── requirements.md      # 需求规格 / 验收标准
 │   ├── windows-acceptance.md# Windows 实机验收清单
@@ -85,13 +92,14 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | [docs/windows-acceptance.md](docs/windows-acceptance.md) | Windows 实机分步验收（含 S1~S5 素材矩阵） |
 | [docs/libmpv-source.md](docs/libmpv-source.md) | libmpv 来源、SHA-256、GPL/LGPL 许可说明 |
 | [docs/ci.md](docs/ci.md) | Actions 构建、下载 artifact、改版本、排错 |
+| [docs/packaging.md](docs/packaging.md) | 安装包构建、版本号/图标修改、安装/升级/卸载验证 |
 | [reports/](reports/) | GPU/窗口/架构/集成/联调分析报告 |
 
 ## CI
 
 - 工作流：`.github/workflows/windows-build.yml`（windows-2022 + VS 2022 + Qt 6.8 msvc2022_64）
 - 触发：push 到 `main`，或 Actions 页面 **Run workflow**（workflow_dispatch）
-- 产物：artifact **emby-pc-win64**（`dist/emby-pc-win64.zip`，保留 30 天）
+- 产物：artifact **emby-pc-win64**（免安装 zip）+ **emby-pc-installer**（Inno Setup 安装包），均保留 30 天
 
 ## 安全约定
 

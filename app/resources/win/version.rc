@@ -1,0 +1,37 @@
+// Windows VERSIONINFO / icon resource for Emby PC (T33/M4-1).
+//
+// NOTE: this file is a *template*; CMake's configure_file() substitutes the
+// @...@ placeholders with project(VERSION) and the absolute icon path, then
+// compiles the generated copy only on WIN32. Keep placeholders untouched.
+#include <winver.h>
+
+IDI_ICON1 ICON "@APP_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Emby PC Project"
+            VALUE "FileDescription", "Emby PC"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "InternalName", "emby-pc"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Emby PC Project"
+            VALUE "OriginalFilename", "emby-pc.exe"
+            VALUE "ProductName", "Emby PC"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
