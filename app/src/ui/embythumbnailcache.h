@@ -3,7 +3,9 @@
 #include "thumbnailcache.h"
 
 #include <QHash>
+#include <QList>
 #include <QPixmap>
+#include <QSet>
 #include <QString>
 
 class QNetworkAccessManager;
@@ -21,6 +23,9 @@ struct PosterCacheStats
     int successes = 0;     // 成功解码并写入 LRU 的次数
     int failures = 0;      // 失败次数（含重试失败）
     int retries = 0;       // 失败后的重试次数
+    int inFlight = 0;      // 当前在途网络请求（快照）
+    int queued = 0;        // 当前 FIFO 队列长度（快照）
+    int maxConcurrent = 6; // 并发上限
     int lastHttpStatus = 0;
     QString lastError;
 
@@ -44,6 +49,12 @@ public:
 
     void setRetryTtl(int milliseconds);
     int retryTtl() const { return m_retryTtlMs; }
+
+    // 网络并发上限（默认 6）；超出进入 FIFO 队列。
+    void setMaxConcurrent(int count);
+    int maxConcurrent() const { return m_maxConcurrent; }
+    int inFlightCount() const { return m_inFlight.size(); }
+    int queuedCount() const { return m_queue.size(); }
     int failureCount() const { return m_failures.size(); }
     PosterCacheStats stats() const;
     void resetStats();
@@ -66,14 +77,27 @@ private:
         QPixmap placeholder;
     };
 
+    struct LoadTask
+    {
+        QString key;
+        QSize size;
+    };
+
     static QString itemIdFromUrl(const QString &url);
+    void enqueue(const QString &key, const QSize &size);
+    void pumpQueue();
+    void startNetwork(const QString &key, const QSize &size, const QString &id);
     void scheduleRetry(const QString &key, const QSize &size, const QString &id);
 
     emby::EmbyClient *m_client = nullptr;
     QNetworkAccessManager *m_network = nullptr;
     QHash<QString, Failure> m_failures;
+    QList<LoadTask> m_queue;      // FIFO
+    QSet<QString> m_queued;       // queue 去重
+    QSet<QString> m_inFlight;     // 已发起网络请求
     PosterCacheStats m_stats;
     int m_retryTtlMs = 60000;
+    int m_maxConcurrent = 6;
     quint64 m_generation = 0;
 };
 

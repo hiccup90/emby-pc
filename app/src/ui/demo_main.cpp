@@ -94,6 +94,8 @@ public:
     QStringList imageRequests;
     QString lastImageAuthorization;
     QHash<QString, int> imageAttempts;
+    int activeImageRequests = 0;
+    int maxActiveImageRequests = 0;
 
 protected:
     void incomingConnection(qintptr socketDescriptor) override
@@ -161,6 +163,18 @@ private:
         return data;
     }
 
+    static void writeResponse(QTcpSocket *socket, int status, const QByteArray &reason,
+                              const QByteArray &contentType, const QByteArray &responseBody)
+    {
+        QByteArray response = "HTTP/1.1 " + QByteArray::number(status) + " " + reason + "\r\n";
+        response += "Content-Type: " + contentType + "\r\n";
+        response += "Content-Length: " + QByteArray::number(responseBody.size()) + "\r\n";
+        response += "Connection: close\r\n\r\n";
+        response += responseBody;
+        socket->write(response);
+        socket->flush();
+    }
+
     void respond(QTcpSocket *socket, const QString &method, const QString &target,
                  const QMap<QString, QString> &headers, const QByteArray &body)
     {
@@ -213,6 +227,24 @@ private:
                 } else {
                     contentType = "image/png";
                     responseBody = tinyPng();
+                    if (path.contains(QLatin1String("slow"))) {
+                        // 延迟响应，让自测能观察并发上限/FIFO 队列。
+                        ++activeImageRequests;
+                        maxActiveImageRequests = qMax(maxActiveImageRequests, activeImageRequests);
+                        QTcpSocket *writes = socket;
+                        const int finalStatus = status;
+                        const QByteArray finalReason = reason;
+                        const QByteArray finalContentType = contentType;
+                        const QByteArray finalBody = responseBody;
+                        QTimer::singleShot(60, this, [this, writes, finalStatus, finalReason,
+                                                     finalContentType, finalBody]() {
+                            --activeImageRequests;
+                            if (writes && writes->isValid())
+                                writeResponse(writes, finalStatus, finalReason,
+                                              finalContentType, finalBody);
+                        });
+                        return;
+                    }
                 }
             } else if (method == QLatin1String("GET")
                        && path == QLatin1String("/Users/u1/Items/Resume")) {
@@ -256,13 +288,7 @@ private:
             }
         }
 
-        QByteArray response = "HTTP/1.1 " + QByteArray::number(status) + " " + reason + "\r\n";
-        response += "Content-Type: " + contentType + "\r\n";
-        response += "Content-Length: " + QByteArray::number(responseBody.size()) + "\r\n";
-        response += "Connection: close\r\n\r\n";
-        response += responseBody;
-        socket->write(response);
-        socket->flush();
+        writeResponse(socket, status, reason, contentType, responseBody);
     }
 };
 
@@ -668,6 +694,51 @@ int runAuthTests(QApplication &app)
               && cache.stats().retries >= 1 && cacheReadySignals >= 1,
           QStringLiteral("重试成功写入缓存并清理失败记录（stats: %1）")
               .arg(cache.stats().summary()));
+
+    // T23：同一 URL 被 paint 重复 request 100 次，只应发一次网络请求。
+    ui::EmbyThumbnailCache dedupCache;
+    dedupCache.setClient(&cacheClient);
+    const QUrl dedupUrl = cacheClient.imageUrl(QStringLiteral("dedup"),
+                                               QStringLiteral("Primary"),
+                                               QStringLiteral("dedup-tag"), 0, 300);
+    const QSize dedupSize(64, 64);
+    for (int i = 0; i < 100; ++i)
+        dedupCache.request(dedupUrl.toString(), dedupSize);
+    check(waitFor([&dedupCache]() { return dedupCache.stats().successes >= 1; }, 4000),
+          QStringLiteral("重复 request 100 次后图片仍能加载"));
+    check(server.imageAttempts.value(QUrl(dedupUrl).path()) == 1
+              && dedupCache.stats().requests == 1
+              && dedupCache.inFlightCount() == 0 && dedupCache.queuedCount() == 0,
+          QStringLiteral("in-flight 去重：同一 URL 只发起 1 次请求（stats: %1）")
+              .arg(dedupCache.stats().summary()));
+
+    // T23：并发上限 + FIFO 队列；假服务器延迟 60ms 响应，统计峰值并发。
+    ui::EmbyThumbnailCache queueCache;
+    queueCache.setClient(&cacheClient);
+    queueCache.setMaxConcurrent(6);
+    const QSize queueSize(64, 64);
+    QStringList slowPaths;
+    for (int i = 0; i < 12; ++i) {
+        const QUrl slowUrl = cacheClient.imageUrl(QStringLiteral("slow%1").arg(i),
+                                                  QStringLiteral("Primary"),
+                                                  QStringLiteral("slow-tag"), 0, 300);
+        slowPaths.append(QUrl(slowUrl).path());
+        queueCache.request(slowUrl.toString(), queueSize);
+    }
+    check(queueCache.inFlightCount() == 6 && queueCache.queuedCount() == 6,
+          QStringLiteral("并发上限 6：12 张图 6 个在途 + 6 个排队（stats: %1）")
+              .arg(queueCache.stats().summary()));
+    const bool queueDrained =
+        waitFor([&queueCache]() { return queueCache.stats().successes >= 12; }, 8000);
+    check(queueDrained && server.maxActiveImageRequests <= 6
+              && queueCache.stats().requests == 12
+              && queueCache.inFlightCount() == 0 && queueCache.queuedCount() == 0,
+          QStringLiteral("FIFO 队列完成后续跑，服务器峰值并发 %1 <= 6")
+              .arg(server.maxActiveImageRequests));
+    bool slowOnce = true;
+    for (const QString &slowPath : slowPaths)
+        slowOnce = slowOnce && server.imageAttempts.value(slowPath) == 1;
+    check(slowOnce, QStringLiteral("排队图片每张只请求 1 次"));
 
     // 401
     ui::LoginDialog badLogin(&client);
