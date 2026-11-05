@@ -48,9 +48,6 @@ public:
     static QList<ui::TrackInfo> audioTracksFromTrackList(const QString &json,
                                                          int *filteredCount = nullptr);
 
-    // T19 自测：Windows VK + modifiers(1=Shift,2=Ctrl,4=Alt) -> mpv 键名；空表示不转发。
-    static QString mpvKeyNameFromVirtualKey(int virtualKey, int modifiers);
-
 public slots:
     void openFile();
     void openFolder();
@@ -72,9 +69,9 @@ private:
     void ensurePlayerControlsVisible();
     void preparePlayerOverlays();
     void updatePlayerWindowChrome();
+    void scheduleHomeRefresh(int delayMs = 0);
     bool isDuplicateKeyForward(const QString &name, int source);
     void forwardKeyPressToMpv(const QString &name);
-    void forwardNativeKeyToMpv(const QString &name, bool down);
     void logMpvState(const QString &reason);
     void exportDiagnostics();
     QString diagnosticSummary();
@@ -129,6 +126,7 @@ private:
     QString m_lastForwardedKeyName;
     qint64 m_lastForwardedKeyMs = 0;
     int m_lastForwardedKeySource = -1;
+    double m_lastKnownPositionSeconds = 0.0;
     double m_pendingSeekSeconds = 0.0;
     qint64 m_lastWindowResizeLogMs = 0;
 

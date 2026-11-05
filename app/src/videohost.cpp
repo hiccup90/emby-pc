@@ -1,19 +1,18 @@
 #include "videohost.h"
 
 #include <QDebug>
+#include <QMouseEvent>
 #include <QPalette>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QStringList>
 #include <QTimer>
+#include <QWheelEvent>
 
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
-#include <commctrl.h>
 
 namespace {
-
-constexpr UINT_PTR kMpvMouseSubclassId = 1;
 
 struct ResizeChildrenContext
 {
@@ -21,9 +20,6 @@ struct ResizeChildrenContext
     HWND host = nullptr;
     bool debug = false;
 };
-
-LRESULT CALLBACK mpvMouseSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
-                                      UINT_PTR idSubclass, DWORD_PTR refData);
 
 BOOL CALLBACK resizeChildWindow(HWND child, LPARAM param)
 {
@@ -85,103 +81,6 @@ BOOL CALLBACK collectChildWindow(HWND child, LPARAM param)
     return TRUE;
 }
 
-int nativeKeyModifiers()
-{
-    // 子类化回调可能运行在 mpv 的窗口线程，GetKeyState 是线程局部队列状态；
-    // 用 GetAsyncKeyState 取全局按键状态更可靠。
-    int modifiers = 0;
-    if (::GetAsyncKeyState(VK_SHIFT) & 0x8000)
-        modifiers |= 1; // Shift
-    if (::GetAsyncKeyState(VK_CONTROL) & 0x8000)
-        modifiers |= 2; // Ctrl
-    if (::GetAsyncKeyState(VK_MENU) & 0x8000)
-        modifiers |= 4; // Alt
-    return modifiers;
-}
-
-LRESULT CALLBACK mpvMouseSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
-                                      UINT_PTR idSubclass, DWORD_PTR refData)
-{
-    Q_UNUSED(idSubclass);
-    auto *host = reinterpret_cast<VideoHost *>(refData);
-    if (!host)
-        return ::DefSubclassProc(hwnd, message, wParam, lParam);
-
-    const QPoint position(static_cast<short>(LOWORD(lParam)),
-                          static_cast<short>(HIWORD(lParam)));
-    switch (message) {
-    case WM_MOUSEMOVE:
-        host->notifyMouseMove(position);
-        break;
-    case WM_LBUTTONDOWN:
-        host->notifyMouseButton(0, position, false);
-        break;
-    case WM_LBUTTONDBLCLK:
-        host->notifyMouseButton(0, position, true);
-        break;
-    case WM_RBUTTONDOWN:
-        host->notifyMouseButton(2, position, false);
-        break;
-    case WM_MBUTTONDOWN:
-        host->notifyMouseButton(1, position, false);
-        break;
-    case WM_LBUTTONUP:
-        host->notifyMouseRelease(0);
-        break;
-    case WM_RBUTTONUP:
-        host->notifyMouseRelease(2);
-        break;
-    case WM_MBUTTONUP:
-        host->notifyMouseRelease(1);
-        break;
-    case WM_MOUSEWHEEL: {
-        // WM_MOUSEWHEEL 的 lParam 是屏幕坐标，转成视频子窗口客户区坐标。
-        POINT point{static_cast<short>(LOWORD(lParam)),
-                    static_cast<short>(HIWORD(lParam))};
-        ::ScreenToClient(hwnd, &point);
-        const int delta = static_cast<short>(HIWORD(wParam));
-        const int button = delta > 0 ? 3 : 4; // mpv: 3=WHEEL_UP, 4=WHEEL_DOWN
-        const int steps = qMax(1, qAbs(delta) / WHEEL_DELTA);
-        for (int i = 0; i < steps; ++i)
-            host->notifyMouseWheel(button, QPoint(point.x, point.y));
-        break;
-    }
-    case WM_KEYDOWN:
-    case WM_SYSKEYDOWN:
-        // 只转发首次按下；按住产生的重复由 mpv 的 keydown 自动重复处理。
-        if ((lParam & 0x40000000) == 0)
-            host->notifyKeyPressed(static_cast<int>(wParam), nativeKeyModifiers(), true);
-        break;
-    case WM_KEYUP:
-    case WM_SYSKEYUP:
-        host->notifyKeyPressed(static_cast<int>(wParam), nativeKeyModifiers(), false);
-        break;
-    case WM_CHAR:
-        // WM_CHAR 主要用于诊断/输入法排查；字母/数字/空格已由 WM_KEYDOWN 的 VK
-        // 路径转发，这里不重复发 keypress，避免空格双触发。
-        if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT")) {
-            qInfo() << "VideoHost: WM_CHAR" << QString(QChar(static_cast<ushort>(wParam)))
-                    << "mods" << nativeKeyModifiers();
-        }
-        break;
-    case WM_SETFOCUS:
-        if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
-            qInfo() << "VideoHost: mpv child got keyboard focus";
-        break;
-    case WM_KILLFOCUS:
-        if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
-            qInfo() << "VideoHost: mpv child lost keyboard focus";
-        break;
-    case WM_NCDESTROY:
-        ::RemoveWindowSubclass(hwnd, mpvMouseSubclassProc, kMpvMouseSubclassId);
-        host->notifyChildDestroyed(reinterpret_cast<quintptr>(hwnd));
-        break;
-    default:
-        break;
-    }
-    return ::DefSubclassProc(hwnd, message, wParam, lParam);
-}
-
 } // namespace
 #endif
 
@@ -192,6 +91,9 @@ VideoHost::VideoHost(QWidget *parent)
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAutoFillBackground(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // T22：mpv 子窗口被设为 WS_EX_TRANSPARENT，鼠标事件会落到本控件。
+    // 必须开启 mouseTracking，暂停时鼠标移动才能继续唤醒/驱动控制条。
+    setMouseTracking(true);
 
     QPalette pal = palette();
     pal.setColor(QPalette::Window, Qt::black);
@@ -205,13 +107,7 @@ VideoHost::VideoHost(QWidget *parent)
 
 VideoHost::~VideoHost()
 {
-#ifdef Q_OS_WIN
-    if (m_mpvChildHandle) {
-        ::RemoveWindowSubclass(reinterpret_cast<HWND>(m_mpvChildHandle),
-                               mpvMouseSubclassProc, kMpvMouseSubclassId);
-        m_mpvChildHandle = 0;
-    }
-#endif
+    m_passthroughChild = 0;
 }
 
 quintptr VideoHost::nativeWindow()
@@ -242,6 +138,142 @@ void VideoHost::showEvent(QShowEvent *event)
     syncMpvChildGeometry();
 }
 
+QPoint VideoHost::toMpvPosition(const QPointF &position) const
+{
+    // mpv 的 mouse 命令使用视频窗口物理像素；Qt 坐标是逻辑像素，需乘 DPR。
+    const qreal scale = devicePixelRatioF();
+    return QPoint(qRound(position.x() * scale), qRound(position.y() * scale));
+}
+
+void VideoHost::mouseMoveEvent(QMouseEvent *event)
+{
+    ++m_mouseEventCount;
+    const QPoint position = toMpvPosition(event->position());
+    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT")
+        || (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0
+            && (m_mouseEventCount == 1 || m_mouseEventCount % 20 == 0))) {
+        qInfo() << "VideoHost: mouse move forwarded" << position
+                << "count" << m_mouseEventCount;
+    }
+    emit mouseMoved(position);
+    event->accept();
+}
+
+void VideoHost::mousePressEvent(QMouseEvent *event)
+{
+    ++m_mouseEventCount;
+    // 点击视频后把焦点还给 Qt 主窗口，键盘继续走 Qt 的 eventFilter/快捷键。
+    if (QWidget *top = window()) {
+        top->activateWindow();
+        top->setFocus(Qt::MouseFocusReason);
+    }
+
+    int button = -1;
+    switch (event->button()) {
+    case Qt::LeftButton:
+        button = 0;
+        break;
+    case Qt::MiddleButton:
+        button = 1;
+        break;
+    case Qt::RightButton:
+        button = 2;
+        break;
+    default:
+        break;
+    }
+    if (button < 0) {
+        event->ignore();
+        return;
+    }
+
+    const QPoint position = toMpvPosition(event->position());
+    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
+        qInfo() << "VideoHost: mouse button forwarded" << button << position
+                << "count" << m_mouseEventCount;
+    emit mouseButtonPressed(button, position, false);
+    event->accept();
+}
+
+void VideoHost::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    ++m_mouseEventCount;
+    if (QWidget *top = window()) {
+        top->activateWindow();
+        top->setFocus(Qt::MouseFocusReason);
+    }
+
+    int button = -1;
+    switch (event->button()) {
+    case Qt::LeftButton:
+        button = 0;
+        break;
+    case Qt::MiddleButton:
+        button = 1;
+        break;
+    case Qt::RightButton:
+        button = 2;
+        break;
+    default:
+        break;
+    }
+    if (button < 0) {
+        event->ignore();
+        return;
+    }
+
+    const QPoint position = toMpvPosition(event->position());
+    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
+        qInfo() << "VideoHost: mouse double click forwarded" << button << position
+                << "count" << m_mouseEventCount;
+    emit mouseButtonPressed(button, position, true);
+    event->accept();
+}
+
+void VideoHost::mouseReleaseEvent(QMouseEvent *event)
+{
+    ++m_mouseEventCount;
+    int button = -1;
+    switch (event->button()) {
+    case Qt::LeftButton:
+        button = 0;
+        break;
+    case Qt::MiddleButton:
+        button = 1;
+        break;
+    case Qt::RightButton:
+        button = 2;
+        break;
+    default:
+        break;
+    }
+    if (button >= 0)
+        emit mouseButtonReleased(button);
+    event->accept();
+}
+
+void VideoHost::wheelEvent(QWheelEvent *event)
+{
+    ++m_mouseEventCount;
+    int delta = event->angleDelta().y();
+    if (delta == 0)
+        delta = event->pixelDelta().y();
+    if (delta == 0) {
+        event->ignore();
+        return;
+    }
+
+    const int button = delta > 0 ? 3 : 4; // mpv: 3=WHEEL_UP, 4=WHEEL_DOWN
+    const int steps = qMax(1, qAbs(delta) / 120);
+    const QPoint position = toMpvPosition(event->position());
+    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
+        qInfo() << "VideoHost: mouse wheel forwarded" << button << position
+                << "steps" << steps << "count" << m_mouseEventCount;
+    for (int i = 0; i < steps; ++i)
+        emit mouseWheel(button, position);
+    event->accept();
+}
+
 void VideoHost::syncMpvChildGeometry()
 {
 #ifdef Q_OS_WIN
@@ -270,96 +302,49 @@ void VideoHost::syncMpvChildGeometry()
                 << width << "x" << height;
     }
 
-    // 输入转发：--wid 模式下 mpv 禁用自己窗口的输入（mpv issue #4795），
-    // 宿主必须把 mpv 子 HWND 的鼠标消息转发成 mpv 的 `mouse` 命令。
-    if (m_mpvChildHandle && !::IsWindow(reinterpret_cast<HWND>(m_mpvChildHandle)))
-        m_mpvChildHandle = 0;
-    if (HWND child = ::GetWindow(host, GW_CHILD))
-        installMouseSubclass(reinterpret_cast<quintptr>(child));
+    // T22：不再跨线程 SetWindowSubclass。给直接子窗口加 WS_EX_TRANSPARENT，
+    // 鼠标消息穿透到 Qt 的 VideoHost；WS_EX_NOACTIVATE 防止点击激活 mpv 子窗口。
+    if (HWND child = ::GetWindow(host, GW_CHILD)) {
+        ensureMousePassthrough(reinterpret_cast<quintptr>(child));
+    } else {
+        m_passthroughChild = 0;
+    }
 #endif
 }
 
-void VideoHost::installMouseSubclass(quintptr child)
-{
 #ifdef Q_OS_WIN
+void VideoHost::ensureMousePassthrough(quintptr child)
+{
     if (!child)
         return;
-    if (m_mpvChildHandle == child)
-        return;
-    if (m_mpvChildHandle) {
-        ::RemoveWindowSubclass(reinterpret_cast<HWND>(m_mpvChildHandle),
-                               mpvMouseSubclassProc, kMpvMouseSubclassId);
-        m_mpvChildHandle = 0;
-    }
-    m_mpvChildHandle = child;
-    if (!::SetWindowSubclass(reinterpret_cast<HWND>(child), mpvMouseSubclassProc,
-                             kMpvMouseSubclassId, reinterpret_cast<DWORD_PTR>(this))) {
-        qWarning() << "VideoHost: SetWindowSubclass failed for mpv child"
-                   << child << "error" << ::GetLastError();
-        m_mpvChildHandle = 0;
+    HWND hwnd = reinterpret_cast<HWND>(child);
+    const LONG_PTR required = WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+    const LONG_PTR current = ::GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    if ((current & required) == required) {
+        m_passthroughChild = child;
+        m_passthroughFailureChild = 0;
         return;
     }
-    qInfo() << "VideoHost: mouse subclass installed on mpv child" << child;
-#else
-    Q_UNUSED(child);
+
+    ::SetLastError(0);
+    const LONG_PTR previous =
+        ::SetWindowLongPtr(hwnd, GWL_EXSTYLE, current | required);
+    const DWORD error = ::GetLastError();
+    if (previous == 0 && error != 0) {
+        if (m_passthroughFailureChild != child) {
+            qWarning() << "VideoHost: SetWindowLongPtr(WS_EX_TRANSPARENT) failed for mpv child"
+                       << child << "error" << error;
+            m_passthroughFailureChild = child;
+        }
+        return;
+    }
+
+    m_passthroughFailureChild = 0;
+    m_passthroughChild = child;
+    qInfo() << "VideoHost: mouse passthrough enabled on mpv child" << child
+            << "exstyle" << Qt::hex << static_cast<qulonglong>(current | required);
+}
 #endif
-}
-
-void VideoHost::notifyMouseMove(const QPoint &position)
-{
-    ++m_mouseEventCount;
-    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0
-        && (m_mouseEventCount == 1 || m_mouseEventCount % 20 == 0)) {
-        qInfo() << "VideoHost: mouse move forwarded" << position
-                << "count" << m_mouseEventCount;
-    }
-    emit mouseMoved(position);
-}
-
-void VideoHost::notifyMouseButton(int button, const QPoint &position, bool doubleClick)
-{
-    ++m_mouseEventCount;
-    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0) {
-        qInfo() << "VideoHost: mouse button forwarded" << button << position
-                << "double" << doubleClick << "count" << m_mouseEventCount;
-    }
-    emit mouseButtonPressed(button, position, doubleClick);
-}
-
-void VideoHost::notifyMouseRelease(int button)
-{
-    ++m_mouseEventCount;
-    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0)
-        qInfo() << "VideoHost: mouse release forwarded" << button;
-    emit mouseButtonReleased(button);
-}
-
-void VideoHost::notifyMouseWheel(int button, const QPoint &position)
-{
-    ++m_mouseEventCount;
-    if (qEnvironmentVariableIntValue("EMBY_PC_MPV_OSC") > 0) {
-        qInfo() << "VideoHost: mouse wheel forwarded" << button << position
-                << "count" << m_mouseEventCount;
-    }
-    emit mouseWheel(button, position);
-}
-
-void VideoHost::notifyKeyPressed(int virtualKey, int modifiers, bool down)
-{
-    ++m_keyEventCount;
-    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT")) {
-        qInfo() << "VideoHost: native key" << (down ? "down" : "up")
-                << "vk" << virtualKey << "mods" << modifiers
-                << "count" << m_keyEventCount;
-    }
-    emit keyPressed(virtualKey, modifiers, down);
-}
-
-void VideoHost::notifyChildDestroyed(quintptr child)
-{
-    if (m_mpvChildHandle == child)
-        m_mpvChildHandle = 0;
-}
 
 QString VideoHost::diagnosticSummary()
 {
@@ -390,8 +375,13 @@ QString VideoHost::diagnosticSummary()
                      .arg(clientRect.bottom - clientRect.top)
                      .arg(windowRect.right - windowRect.left)
                      .arg(windowRect.bottom - windowRect.top));
-    lines.append(QStringLiteral("  mouse subclass hwnd=0x%1 forwarded_events=%2")
-                     .arg(m_mpvChildHandle, 0, 16)
+
+    LONG_PTR exStyle = 0;
+    if (m_passthroughChild)
+        exStyle = ::GetWindowLongPtr(reinterpret_cast<HWND>(m_passthroughChild), GWL_EXSTYLE);
+    lines.append(QStringLiteral("  mouse passthrough hwnd=0x%1 exstyle=0x%2 forwarded_events=%3")
+                     .arg(m_passthroughChild, 0, 16)
+                     .arg(static_cast<qulonglong>(exStyle), 0, 16)
                      .arg(m_mouseEventCount));
     lines.append(QStringLiteral("  mpv child windows:"));
     ::EnumChildWindows(host, collectChildWindow, reinterpret_cast<LPARAM>(&lines));

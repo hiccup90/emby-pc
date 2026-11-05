@@ -147,61 +147,6 @@ QString mpvKeyNameFromEvent(const QKeyEvent *event)
 
 } // namespace
 
-QString PlayerController::mpvKeyNameFromVirtualKey(int virtualKey, int modifiers)
-{
-    // VideoHost 的 modifiers 位：1=Shift，2=Ctrl，4=Alt。Ctrl/Alt 留给 Qt。
-    if (modifiers & (2 | 4))
-        return {};
-
-    QString base;
-    switch (virtualKey) {
-    case 0x20: base = QStringLiteral("SPACE"); break;
-    case 0x25: base = QStringLiteral("LEFT"); break;
-    case 0x27: base = QStringLiteral("RIGHT"); break;
-    case 0x26: base = QStringLiteral("UP"); break;
-    case 0x28: base = QStringLiteral("DOWN"); break;
-    case 0x0D: base = QStringLiteral("ENTER"); break;
-    case 0x1B: base = QStringLiteral("ESC"); break;
-    case 0x08: base = QStringLiteral("BACKSPACE"); break;
-    case 0x2E: base = QStringLiteral("DELETE"); break;
-    case 0x2D: base = QStringLiteral("INSERT"); break;
-    case 0x24: base = QStringLiteral("HOME"); break;
-    case 0x23: base = QStringLiteral("END"); break;
-    case 0x21: base = QStringLiteral("PGUP"); break;
-    case 0x22: base = QStringLiteral("PGDN"); break;
-    case 0x09: base = QStringLiteral("TAB"); break;
-    // 常用 OEM 键（US 布局）；Shift 形态由下面的 Shift+ 前缀表达。
-    case 0xBA: base = QStringLiteral(";"); break;
-    case 0xBB: base = QStringLiteral("="); break;
-    case 0xBC: base = QStringLiteral(","); break;
-    case 0xBD: base = QStringLiteral("-"); break;
-    case 0xBE: base = QStringLiteral("."); break;
-    case 0xBF: base = QStringLiteral("/"); break;
-    case 0xC0: base = QStringLiteral("`"); break;
-    case 0xDB: base = QStringLiteral("["); break;
-    case 0xDC: base = QStringLiteral("\\"); break;
-    case 0xDD: base = QStringLiteral("]"); break;
-    case 0xDE: base = QStringLiteral("'"); break;
-    default:
-        break;
-    }
-
-    if (base.isEmpty()) {
-        if (virtualKey >= 'A' && virtualKey <= 'Z')
-            base = QString(QChar('a' + virtualKey - 'A'));
-        else if (virtualKey >= '0' && virtualKey <= '9')
-            base = QString(QChar('0' + virtualKey - '0'));
-        else if (virtualKey >= 0x70 && virtualKey <= 0x79)
-            base = QStringLiteral("F%1").arg(virtualKey - 0x70 + 1);
-    }
-    if (base.isEmpty())
-        return {};
-
-    if (modifiers & 1)
-        return QStringLiteral("Shift+") + base;
-    return base;
-}
-
 PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playerPage,
                                    QObject *parent)
     : QObject(parent)
@@ -219,8 +164,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     m_videoHost->hide();
     m_player = new MpvPlayer(this);
 
-    // mpv --wid 模式禁用自身窗口输入（mpv issue #4795）：VideoHost 子类化 mpv 子
-    // HWND 后把鼠标消息转成 mpv `mouse` 命令，OSC/点击视频才有输入。
+    // T22：mpv 子窗口加 WS_EX_TRANSPARENT，鼠标事件穿透到 VideoHost（Qt）；
+    // 这里把 Qt 鼠标信号转成 mpv `mouse` 命令，OSC/点击视频才有输入。
     connect(m_videoHost, &VideoHost::mouseMoved, this, [this](const QPoint &position) {
         if (m_player->isReady())
             m_player->command({QStringLiteral("mouse"), QString::number(position.x()),
@@ -244,21 +189,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                                        QString::number(position.y()),
                                        QString::number(button)});
             });
-    // 点击视频后 Windows 焦点会进 mpv 子 HWND，Qt 主窗口收不到键盘；子类化回调
-    // 转发 WM_KEYDOWN/UP，映射成 mpv keydown/keyup。
-    connect(m_videoHost, &VideoHost::keyPressed, this,
-            [this](int virtualKey, int modifiers, bool down) {
-                // 焦点在 mpv 子窗口时 Qt 的 F11 快捷键收不到，直接走 UI 全屏。
-                if (virtualKey == 0x7A) { // VK_F11
-                    if (down && m_playerPage)
-                        QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested",
-                                                  Qt::DirectConnection);
-                    return;
-                }
-                const QString keyName = mpvKeyNameFromVirtualKey(virtualKey, modifiers);
-                if (!keyName.isEmpty())
-                    forwardNativeKeyToMpv(keyName, down);
-            });
+    // T22：点击视频后 VideoHost 会把焦点还给 Qt 主窗口；键盘继续走 Qt 的
+    // eventFilter（mpvKeyNameFromEvent → keypress），不再有 native key 路径。
     preparePlayerOverlays();
 
     m_progressTimer = new QTimer(this);
@@ -268,7 +200,10 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             reportPlaybackProgress(QStringLiteral("TimeUpdate"));
     });
 
-    connect(m_player, &MpvPlayer::positionChanged, this, [this](double) { updatePositionUi(); });
+    connect(m_player, &MpvPlayer::positionChanged, this, [this](double position) {
+        m_lastKnownPositionSeconds = position;
+        updatePositionUi();
+    });
     connect(m_player, &MpvPlayer::durationChanged, this, [this](double) { updatePositionUi(); });
     connect(m_player, &MpvPlayer::pausedChanged, this, [this](bool paused) {
         m_playerPage->setPlaying(!paused);
@@ -410,6 +345,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         if (m_window->isPlayerMode())
             m_window->setPlayerMode(false);
         updatePlayerWindowChrome();
+        scheduleHomeRefresh(600);
     });
 
     // 离开播放页（返回按钮/Esc/切页）时停止 mpv 并上报 Stopped。
@@ -421,13 +357,18 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         connect(stack, &QStackedWidget::currentChanged, this, [this, stack](int index) {
             if (stack->widget(index) == m_playerPage)
                 return;
-            if (m_player && m_player->isReady())
+            if (m_player && m_player->isReady()) {
+                // 先记住位置再 stop；否则 mpv 的 position 可能已经归零，
+                // Stopped 上报 0 会让服务器把条目从 Continue Watching 移除。
+                m_lastKnownPositionSeconds = m_player->position();
                 m_player->stop();
+            }
             if (!m_embyItemId.isEmpty() || m_reporting)
                 clearEmbySession();
             if (m_window->isPlayerMode())
                 m_window->setPlayerMode(false);
             updatePlayerWindowChrome();
+            scheduleHomeRefresh(600);
         });
     }
 
@@ -628,6 +569,7 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
 
     if (!ensurePlayer())
         return;
+    m_lastKnownPositionSeconds = 0.0;
 
     const QFileInfo firstInfo(files.first());
     m_currentSubtitle = tr("本地播放 · %1 个文件 · %2")
@@ -862,6 +804,7 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
     m_player->setPropertyString("force-media-title", title.isEmpty() ? itemId : title);
     if (source->runTimeTicks > 0)
         m_playerPage->setPosition(0, source->runTimeTicks / 10000);
+    m_lastKnownPositionSeconds = 0.0;
     m_pendingSeekSeconds = startPositionTicks > 0 ? secondsFromTicks(startPositionTicks) : 0.0;
     m_player->loadPlaylist({url.toString()}, 0);
 
@@ -1057,6 +1000,20 @@ void PlayerController::updatePlayerWindowChrome()
             << "fullscreen" << m_window->isFullScreen();
 }
 
+void PlayerController::scheduleHomeRefresh(int delayMs)
+{
+    if (!m_window)
+        return;
+    QTimer::singleShot(qMax(0, delayMs), this, [this]() {
+        if (!m_window || m_window->isPlayerMode())
+            return;
+        if (m_window->currentStackIndex() != static_cast<int>(ui::MainWindow::Page::Home))
+            return;
+        // 播放停止/返回首页后重新拉 Resume；navigateTo(Home) 会在首页重新 fetchHome。
+        m_window->navigateTo(ui::MainWindow::Page::Home);
+    });
+}
+
 bool PlayerController::isDuplicateKeyForward(const QString &name, int source)
 {
     if (name.isEmpty())
@@ -1080,21 +1037,6 @@ void PlayerController::forwardKeyPressToMpv(const QString &name)
     m_player->command({QStringLiteral("keypress"), name});
     if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
         qInfo() << "forward key to mpv (qt)" << name;
-}
-
-void PlayerController::forwardNativeKeyToMpv(const QString &name, bool down)
-{
-    if (!m_player || !m_player->isReady())
-        return;
-    if (down) {
-        if (isDuplicateKeyForward(name, 1))
-            return;
-        m_player->command({QStringLiteral("keydown"), name});
-    } else {
-        m_player->command({QStringLiteral("keyup"), name});
-    }
-    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
-        qInfo() << "forward key to mpv (native)" << (down ? "down" : "up") << name;
 }
 
 void PlayerController::preparePlayerOverlays()
@@ -1209,6 +1151,13 @@ QString PlayerController::diagnosticSummary()
     if (m_videoHost)
         lines.append(m_videoHost->diagnosticSummary());
 
+    // T20：海报缓存/来源统计（请求/失败/重试/缺 tag 条目数）。
+    if (m_window) {
+        const QString posterStats = m_window->posterStatsSummary();
+        for (const QString &line : posterStats.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            lines.append(line);
+    }
+
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     lines.append(QStringLiteral("log directory: %1").arg(QDir::toNativeSeparators(dir)));
     lines.append(QStringLiteral("app.log: %1").arg(
@@ -1309,23 +1258,30 @@ void PlayerController::reportPlaybackStopped()
     if (!m_emby || m_embyItemId.isEmpty())
         return;
 
+    const double seconds = m_lastKnownPositionSeconds > 0.0 ? m_lastKnownPositionSeconds
+                                                            : m_player->position();
     emby::PlaybackProgressInfo info;
     info.itemId = m_embyItemId;
     info.mediaSourceId = m_mediaSourceId;
     info.playSessionId = m_playSessionId;
-    info.positionTicks = ticksFromSeconds(m_player->position());
+    info.positionTicks = ticksFromSeconds(seconds);
     info.playMethod = m_playMethod;
     info.eventName = QStringLiteral("Stopped");
+    qInfo() << "playback stopped report: item" << m_embyItemId
+            << "positionSeconds" << seconds;
 
     m_reporting = false;
     if (m_progressTimer)
         m_progressTimer->stop();
+    m_lastKnownPositionSeconds = 0.0;
     QPointer<PlayerController> self(this);
     m_emby->reportPlaybackStopped(info, [self](const emby::ApiError &error) {
         if (!self)
             return;
         if (error.isError())
             self->handleApiError(error);
+        // Stopped 请求返回后再刷新首页，确保 Resume 能读到刚写入的位置。
+        self->scheduleHomeRefresh(0);
     });
 }
 
@@ -1340,6 +1296,7 @@ void PlayerController::clearEmbySession()
     m_playSessionId.clear();
     m_playMethod.clear();
     m_embyDurationTicks = 0;
+    m_lastKnownPositionSeconds = 0.0;
     m_episodeQueue.clear();
     m_episodeIndex = -1;
     m_pendingSeekSeconds = 0.0;

@@ -153,7 +153,7 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     scroll->setWidget(m_resumeContent);
     resumeSectionLayout->addWidget(scroll);
 
-    m_resumeEmpty = new QLabel(QStringLiteral("暂无继续观看（Resume 为空）"), resumeSection);
+    m_resumeEmpty = new QLabel(QStringLiteral("暂无继续观看（可能已看完，或该账号没有未看完条目）"), resumeSection);
     m_resumeEmpty->setObjectName(QStringLiteral("EmptyState"));
     m_resumeEmpty->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_resumeEmpty->setFixedHeight(40);
@@ -208,7 +208,7 @@ void HomeView::rebuildResume()
         return;
     }
     if (m_resumeItems.isEmpty()) {
-        m_resumeEmpty->setText(QStringLiteral("暂无继续观看（Resume 为空）"));
+        m_resumeEmpty->setText(QStringLiteral("暂无继续观看（可能已看完，或该账号没有未看完条目）"));
         m_resumeEmpty->setProperty("state", QStringLiteral("empty"));
         m_resumeEmpty->show();
         return;

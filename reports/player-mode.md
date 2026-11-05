@@ -185,12 +185,14 @@ initial true playerHidden true fsHidden true exitFsHidden true restored true fsN
 | 文件 | 改动 |
 |---|---|
 | `app/src/mainwindow.cpp/.h` | player mode 进入/退出；全屏走 UI；返回按钮全屏拦截；音轨过滤 + 切换失败提示；Qt 键盘转发；鼠标信号转 mpv 命令 |
-| `app/src/videohost.cpp/.h` | `SetWindowSubclass` 子类化 mpv 子 HWND；鼠标消息转信号；鼠标计数日志；子窗口销毁清理 |
+| `app/src/videohost.cpp/.h` | T22 起用 `WS_EX_TRANSPARENT` 鼠标穿透 + Qt 鼠标事件转信号；鼠标计数日志；子窗口几何同步 |
 | `app/src/mpvplayer.cpp` | input.conf 中键探针；`app-mouse-probe` 日志 |
-| `app/CMakeLists.txt` | WIN32 链接 `comctl32`（SetWindowSubclass） |
+| `app/CMakeLists.txt` | WIN32 链接 `user32`（SetWindowLongPtr 设置扩展样式） |
 | `reports/player-mode.md` | 本报告 |
 
 ## 10. T19 键盘焦点补丁（追加，2026-11-04）
+
+> **T22 更正（2026-11-05）**：实机证明本节依赖的跨线程 `SetWindowSubclass` 实际失败（每 120ms 刷 `SetWindowSubclass failed ... error 0`，`mouse subclass hwnd=0x0 forwarded_events=0`），本节方案已由第 11 节 `WS_EX_TRANSPARENT` 鼠标穿透取代，仅保留历史记录。
 
 ### 10.1 问题
 
@@ -227,4 +229,51 @@ T17 的键盘转发只挂在 Qt 主窗口。实机点一下视频后，Windows �
   覆盖 SPACE/LEFT/ESC/ENTER/f/5/,/Shift+f/修饰键空/F11 空。
 - Windows CI：run `41872144136`（commit `0c8cfcb`）全绿，MSVC 2022 x64 的 Build (Release) 步骤通过（`WM_KEYDOWN` 子类化 + VK 映射编译无误）；artifact `emby-pc-win64` id `13346200280`（72,214,946 bytes）。
 - Windows 实机待验证：点视频后按空格暂停、方向键 seek、F/F11 全屏、Esc 退全屏；`EMBY_PC_DEBUG_INPUT=1` 时 app.log 应出现 `VideoHost: native key down/up` 与 `forward key to mpv (native)`。
+
+
+
+## 11. T22 输入转发修复：WS_EX_TRANSPARENT 鼠标穿透（2026-11-05）
+
+### 11.1 实机证据与根因
+
+- 用户日志：app.log 每 120ms 刷一次
+  `VideoHost: SetWindowSubclass failed for mpv child 853554 error 0`；
+  diagnostics：`mouse subclass hwnd=0x0 forwarded_events=0`。
+- 结论：T19 的 `SetWindowSubclass` 没生效。mpv 的 VO 子窗口在 mpv 自己的线程创建，跨线程子类化通常直接失败；`error 0` 是 `SetWindowSubclass` 失败时未设置 `GetLastError` 的典型表现。转发计数始终为 0，鼠标/键盘实际都没走 T19 路径。
+
+### 11.2 修复方案（A）
+
+- 删除 `SetWindowSubclass/RemoveWindowSubclass/DefSubclassProc` 路径和每 120ms 失败日志；删除 `comctl32` 链接。
+- `VideoHost::syncMpvChildGeometry()`（120ms 定时 + resize/show）对 mpv 直接子 HWND 设置：
+  `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`。
+  - 鼠标命中测试跳过 mpv 子窗口，事件落到父级 Qt `VideoHost`。
+  - `WS_EX_NOACTIVATE` 防止点击激活 mpv 子窗口。
+  - 若 mpv 重建/重置窗口样式，定时器会重新检查并补上；只在样式变化时打一条 `VideoHost: mouse passthrough enabled on mpv child ... exstyle 0x...`，不再刷屏。
+- `VideoHost` 开启 `setMouseTracking(true)`，重写 Qt 鼠标事件：
+  - move → `mouseMoved`；左/中/右按下 → `mouseButtonPressed(0/1/2)`；双击 → `doubleClick=true`；wheel → `mouseWheel(3/4)`；
+  - 坐标按 `devicePixelRatioF()` 从 Qt 逻辑坐标换算成 mpv 物理像素；
+  - 点击时 `window()->activateWindow() + setFocus(Qt::MouseFocusReason)`，焦点回到 Qt 主窗口，键盘继续走 Qt `eventFilter` 的 `keypress` 路径。
+- PlayerController 保留 Qt 鼠标信号 → mpv `mouse` 命令（原 T17 逻辑）；删除 T19 native keydown/keyup 连接和 `mpvKeyNameFromVirtualKey/forwardNativeKeyToMpv` 死代码。
+
+### 11.3 自测
+
+- Linux Debug 构建通过；`-Wall -Wextra` 无新增 warning。
+- offscreen `VideoHost` 鼠标测试：
+  ```text
+  moves 1 lastMove QPoint(10,12)
+  buttons 2 lastButton QPoint(20,30) double true
+  releases 0 wheels 1 lastWheel QPoint(40,50)
+  hasSubclassWord false
+  exit=0
+  ```
+  覆盖 move / left press / double click / wheel，坐标按 DPR=1 原样；诊断中无 subclass。
+- `grep SetWindowSubclass/RemoveWindowSubclass/DefSubclassProc`：只剩注释，无调用代码。
+
+### 11.4 实机待验证
+
+1. 播放视频后移动鼠标：控制条出现/保持，不再需要点击才刷新。
+2. 点击视频左键：暂停/继续；双击：全屏（按 input.conf 绑定）；右键：菜单；滚轮：音量/seek（按 input.conf）。
+3. 点击视频后按空格/方向键/F/F11/Esc：应正常，焦点已回 Qt。
+4. app.log 应只出现一次（或每次重建一次）`mouse passthrough enabled on mpv child ... exstyle ...`，**不再有** `SetWindowSubclass failed` 刷屏；diagnostics 的 `mouse passthrough hwnd=0x... forwarded_events=N` 应随鼠标操作增长。
+5. 若某些 Windows/mpv 版本仍不穿透：回退方案 B（`WH_MOUSE_LL` 低级钩子或每帧重设样式）已在任务描述中，可按日志中 `SetWindowLongPtr ... failed` 定位。
 
