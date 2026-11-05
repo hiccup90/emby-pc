@@ -191,6 +191,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | 2026-11-04 | 88d1268 | <https://github.com/hiccup90/emby-pc/actions/runs/41867053696> | emby-pc-win64 / emby-pc-win64.zip（72,211,822 字节，artifact id 13342717652） | **T17/T18 最终版**：MBTN_MID 探针、音轨 serial 修正、player mode 隐藏 QMenuBar、VideoHost 去 windowsx.h（LOWORD/HIWORD）；全步骤通过（4m30s），供用户复测 |
 | 2026-11-04 | 0c8cfcb | <https://github.com/hiccup90/emby-pc/actions/runs/41872144136> | emby-pc-win64 / emby-pc-win64.zip（72,214,946 字节，artifact id 13346200280） | **T19**：mpv 子窗口 WM_KEYDOWN/UP 转发 keydown/keyup + VK 映射 + F11/Esc + 去重；全步骤通过（4m39s），键盘焦点兜底版 |
 | 2026-11-05 | 81c2751 | <https://github.com/hiccup90/emby-pc/actions/runs/41952931196> | emby-pc-win64 / emby-pc-win64.zip（72,221,356 字节，artifact id 13382555893） | **T20+T21+T22**：海报回退链/失败重试（T20）、继续观看刷新/Stopped 位置（T21）、Qt 原生鼠标+键盘转发（T22，删除 SetWindowSubclass/comctl32）；全步骤通过（4m32s），供用户复测 |
+| 2026-11-05 | bbdc809 | <https://github.com/hiccup90/emby-pc/actions/runs/41957153193> | emby-pc-win64 / emby-pc-win64.zip（72,230,490 字节，artifact id 13384052192） | **T23+T24**：海报请求 in-flight 去重/并发 6/FIFO（T23）、首页继续观看卡片 0 高度修复（T24）；全步骤通过（3m37s），供用户复测 |
 
 包内容（各次一致，54 个条目，解压约 171MB）：
 emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
