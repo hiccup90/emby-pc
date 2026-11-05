@@ -14,14 +14,22 @@
 #include "sidebar.h"
 #include "theme.h"
 #include "thumbnailcache.h"
+#include "titlebar.h"
 #include "tokenstore.h"
+#include "windowframe.h"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDebug>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenuBar>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScreen>
+#include <QSettings>
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -32,6 +40,8 @@
 
 namespace ui {
 namespace {
+
+constexpr int kWindowTitleBarHeight = 36;
 
 TrackInfo makeTrack(const QString &id, const QString &language, const QString &title,
                     const QString &codec, bool selected)
@@ -82,6 +92,7 @@ MainWindow::MainWindow(const Options &options, QWidget *parent)
 
     buildUi();
     connectSignals();
+    restoreWindowState();
     applyMockMode();
     m_settings->setTokenBackendName(m_tokenStore->backendName());
     updateSessionUi();
@@ -178,6 +189,142 @@ void MainWindow::buildUi()
     columnLayout->addWidget(m_stack, 1);
     rootLayout->addWidget(column, 1);
     setCentralWidget(root);
+    setupTitleBar();
+}
+
+void MainWindow::setupTitleBar()
+{
+    m_titleBar = new TitleBar(this, this);
+    m_titleBar->setObjectName(QStringLiteral("TitleBar"));
+    connect(m_titleBar, &TitleBar::minimizeRequested, this, &QWidget::showMinimized);
+    connect(m_titleBar, &TitleBar::maximizeToggleRequested, this, [this]() {
+        if (m_windowFrame)
+            m_windowFrame->toggleMaximize();
+        else if (isMaximized())
+            showNormal();
+        else
+            showMaximized();
+    });
+    connect(m_titleBar, &TitleBar::closeRequested, this, &QWidget::close);
+    connect(m_titleBar, &TitleBar::maximizeButtonRectChanged, this,
+            [this](const QRect &rect) {
+                if (m_windowFrame)
+                    m_windowFrame->setMaximizeButtonRect(rect);
+            });
+
+    m_windowFrame = WindowFrame::attach(this);
+    if (m_windowFrame) {
+        m_windowFrame->setTitleBarHeight(kWindowTitleBarHeight);
+        m_windowFrame->setTitleBarWidget(m_titleBar);
+        m_windowFrame->setMaximizeButtonRect(m_titleBar->maximizeButtonRect());
+        connect(m_windowFrame, &WindowFrame::maximizedChanged, this,
+                [this](bool maximized) { m_titleBar->setMaximized(maximized); });
+    }
+
+    // WindowFrame 的原生最小尺寸下限是 800x480；UI 产品最小尺寸仍是 960x600。
+    setMinimumSize(960, 600);
+    setContentsMargins(0, kWindowTitleBarHeight, 0, 0);
+    syncTitleBarGeometry();
+    m_titleBar->setMaximized(isMaximized());
+    m_titleBar->show();
+    m_titleBar->raise();
+}
+
+void MainWindow::syncTitleBarGeometry()
+{
+    if (!m_titleBar)
+        return;
+    m_titleBar->setGeometry(0, 0, width(), kWindowTitleBarHeight);
+    m_titleBar->raise();
+    if (m_windowFrame) {
+        m_windowFrame->setTitleBarHeight(titleBarVisible() ? kWindowTitleBarHeight : 0);
+        m_windowFrame->setMaximizeButtonRect(m_titleBar->maximizeButtonRect());
+    }
+}
+
+bool MainWindow::titleBarVisible() const
+{
+    // T17 的 PlayerController 可能直接调用 showFullScreen()/showNormal()，
+    // 因此除内部 m_fullscreen 外还要看窗口真实状态。
+    return !m_playerMode && !m_fullscreen && !isFullScreen();
+}
+
+void MainWindow::updateWindowChrome()
+{
+    const bool chromeVisible = titleBarVisible();
+    if (m_titleBar)
+        m_titleBar->setVisible(chromeVisible);
+    if (QMenuBar *menu = findChild<QMenuBar *>(QString(), Qt::FindDirectChildrenOnly))
+        menu->setVisible(chromeVisible);
+    setContentsMargins(0, chromeVisible ? kWindowTitleBarHeight : 0, 0, 0);
+    if (m_windowFrame)
+        m_windowFrame->setTitleBarHeight(chromeVisible ? kWindowTitleBarHeight : 0);
+    if (chromeVisible) {
+        syncTitleBarGeometry();
+        m_titleBar->raise();
+    }
+}
+
+void MainWindow::restoreWindowState()
+{
+    QSettings settings;
+    const QRect saved = settings.value(QStringLiteral("window/normalGeometry")).toRect();
+    if (saved.isValid()) {
+        QRect bounded = saved;
+        QScreen *screen = QGuiApplication::screenAt(saved.center());
+        if (!screen)
+            screen = QGuiApplication::primaryScreen();
+        if (screen) {
+            const QRect available = screen->availableGeometry();
+            bounded.setWidth(qMin(bounded.width(), available.width()));
+            bounded.setHeight(qMin(bounded.height(), available.height()));
+            if (bounded.left() < available.left())
+                bounded.moveLeft(available.left());
+            if (bounded.top() < available.top())
+                bounded.moveTop(available.top());
+            if (bounded.right() > available.right())
+                bounded.moveRight(available.right());
+            if (bounded.bottom() > available.bottom())
+                bounded.moveBottom(available.bottom());
+            setGeometry(bounded);
+        }
+    }
+    if (settings.value(QStringLiteral("window/maximized"), false).toBool())
+        setWindowState(Qt::WindowMaximized);
+    if (m_titleBar)
+        m_titleBar->setMaximized(isMaximized());
+}
+
+void MainWindow::saveWindowState()
+{
+    QSettings settings;
+    const QRect normal = isMaximized() ? normalGeometry() : geometry();
+    if (normal.isValid())
+        settings.setValue(QStringLiteral("window/normalGeometry"), normal);
+    settings.setValue(QStringLiteral("window/maximized"), isMaximized());
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    if (m_titleBar && titleBarVisible())
+        syncTitleBarGeometry();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        updateWindowChrome();
+        if (m_titleBar)
+            m_titleBar->setMaximized(isMaximized());
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    saveWindowState();
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::connectSignals()
@@ -854,6 +1001,7 @@ void MainWindow::setPlayerMode(bool enabled)
         m_sidebar->hide();
         m_topBar->hide();
         statusBar()->hide();
+        updateWindowChrome();
         m_stack->setCurrentIndex(StackPlayer);
         m_player->setPlayerModeActive(true);
         emit playerModeChanged(true);
@@ -873,6 +1021,7 @@ void MainWindow::setPlayerMode(bool enabled)
     m_sidebar->show();
     m_topBar->show();
     statusBar()->show();
+    updateWindowChrome();
     const int returnIndex = qBound(static_cast<int>(StackHome), m_playerReturnIndex,
                                    static_cast<int>(StackPlayer));
     m_stack->setCurrentIndex(returnIndex);
@@ -891,6 +1040,7 @@ void MainWindow::toggleFullscreen()
             m_sidebar->show();
             m_topBar->show();
             statusBar()->show();
+            updateWindowChrome();
             m_stack->setCurrentIndex(m_fullscreenReturnIndex);
         }
         return;
@@ -901,6 +1051,7 @@ void MainWindow::toggleFullscreen()
     m_sidebar->hide();
     m_topBar->hide();
     statusBar()->hide();
+    updateWindowChrome();
     m_stack->setCurrentIndex(StackPlayer);
     m_player->setPlayerModeActive(true);
     m_player->setFullscreen(true);

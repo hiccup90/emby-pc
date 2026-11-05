@@ -46,6 +46,7 @@ set(UI_SOURCES
     playerpage.cpp playerpage.h
     sidebar.cpp sidebar.h
     settingspage.cpp settingspage.h
+    titlebar.cpp titlebar.h
     mainwindow.cpp mainwindow.h
 )
 
@@ -71,7 +72,10 @@ qt_add_resources(ui "ui_style"
 
 option(EMBY_UI_BUILD_DEMO "Build the standalone UI demo / screenshot tool" ${EMBY_UI_STANDALONE})
 if(EMBY_UI_BUILD_DEMO)
-    add_executable(emby-ui-demo demo_main.cpp)
+    # 独立 demo 需要 WindowFrame 符号（T26），app 目标则由 app/CMakeLists.txt 提供。
+    add_executable(emby-ui-demo demo_main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../windowframe.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../windowframe.h)
     target_link_libraries(emby-ui-demo PRIVATE ui)
     target_include_directories(emby-ui-demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

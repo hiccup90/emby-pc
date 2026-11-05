@@ -87,3 +87,38 @@ exit=0
 5. 将窗口缩到 800x480（播放页可到 320x180 区域）确认控件可用；确认代码无 900x600/960x540 硬编码下限。
 6. 进入播放模式/全屏：TitleBar 由 T27 隐藏，视频区域不受 DWM frame 影响，退出恢复。
 7. app.log 应出现 `WindowFrame: native styles applied`、`DPI changed`；无异常 `DwmExtendFrameIntoClientArea failed`。
+
+## 6. T27 自绘标题栏与窗口状态记忆
+
+### 6.1 文件与集成
+
+- 新增 `app/src/ui/titlebar.h/.cpp`：
+  - 左侧 app 图标占位 + 标题（跟随 QWidget::windowTitle 的 WindowTitleChange 事件）；
+  - 右侧最小化/最大化/关闭按钮，逻辑尺寸 46x32、标题栏逻辑高 36；
+  - 空白区支持双击最大化/还原；最大化图标随状态切换；
+  - 发出 `maximizeButtonRectChanged(QRect)`，矩形为 TitleBar 本地逻辑坐标。
+- `ui::MainWindow`：
+  - 构造时 `WindowFrame::attach(this)`，`setTitleBarWidget(m_titleBar)`、`setTitleBarHeight(36)`、`setMaximizeButtonRect(...)`；
+  - 标题栏放在 QMenuBar 之上：`setContentsMargins(0,36,0,0)` + 顶部直接子控件，QMenuBar 由 QMainWindow 布局排在标题栏下方；
+  - 播放模式/全屏（含 T17 直接 `showFullScreen()` 的路径）隐藏 TitleBar + QMenuBar；退出恢复；
+  - `resizeEvent/changeEvent` 同步几何、最大化图标和 WindowFrame 命中区域。
+- standalone demo 的 `emby-ui-demo` target 补 `../windowframe.cpp`，避免 ui 静态库引用 WindowFrame 符号时链接失败；app target 继续使用 `app/CMakeLists.txt` 里的 `src/windowframe.cpp`。
+
+### 6.2 窗口状态记忆（WIN-04）
+
+- QSettings keys：`window/normalGeometry`（QRect）与 `window/maximized`（bool）。
+- `restoreWindowState()`：先 restore 到 QSettings 的 normalGeometry，再按当前屏幕 `availableGeometry` clamp（窗口比屏幕大时也保证左上角可见），最后才应用最大化状态。
+- `closeEvent()` 保存；最大化时保存 `normalGeometry()`（还原后的尺寸），不是最大化后的客户区尺寸。
+- 演示/截图可通过临时 QSettings 路径隔离；实测状态恢复使用临时 QSettings。
+
+### 6.3 自测
+
+- `--selftest` 新增 T27 断言：TitleBar 存在/高 36/按钮 46x32、标题跟随、WindowFrame titleBarHost 与最大化矩形、双击触发最大化切换、播放模式与全屏隐藏、退出恢复、QMenuBar 位于 TitleBar 下方。
+- 窗口状态：normalGeometry 保存/恢复（offscreen 屏宽不足时按最小宽度处理）、位置 clamp、最大化状态恢复。
+- 全部假服务器/offscreen，不依赖 Windows；Windows 实机仍需按第 5 节验证 DWM/Snap/DPI。
+
+## 7. 已知限制
+
+- Windows 实机行为（DWM/任务栏/Snap/多显示器）本机 Linux 无法验证，需要 Windows CI 打包后按第 5 节验收。
+- 标题栏高度按逻辑像素 36；125%/150%/200% DPI 的实际视觉验收需 Windows 实机确认。
+- 最小尺寸仍为 960x600（T26 原生层默认 800x480 由 UI 层覆盖）；更小窗口的页面布局未做额外适配。

@@ -18,6 +18,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `mediamodel.h/.cpp` | `MediaListModel`（QAbstractListModel）+ `MediaFilterProxyModel` 搜索过滤 |
 | `detailview.h/.cpp` | 详情页：背景/海报、标题元数据、简介、播放按钮、真实季/集列表 |
 | `playerpage.h/.cpp` | 播放页容器：视频区铺满整页，顶层半透明浮层控制条（自动隐藏/鼠标轮询） |
+| `titlebar.h/.cpp` | T27 自绘标题栏：图标/标题/最小化/最大化/关闭、双击、WindowFrame 最大化按钮矩形上报 |
 | `thumbnailcache.h/.cpp` | 缩略图缓存接口：同步 get + 异步 request + LRU，默认生成离线占位海报 |
 | `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：EmbyClient QNAM + api_key/Authorization、15s 超时、in-flight 去重/并发 6/FIFO、1GB 磁盘 LRU |
 | `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（离线占位资源） |
@@ -191,6 +192,16 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   光标在主窗口内移动 → 显示并重置计时；静止 2.5s → 隐藏；暂停时保持显示。
 - 播放页背景纯黑（`#000`）；`EMBY_PC_PLAYER_OVERLAY=0` 时退回页面内浮层（排障/无合成器环境）。
 
+### 2.1 自绘标题栏（T27）
+
+- `ui::TitleBar` 是 MainWindow 顶部直接子控件，逻辑高 36，位于 QMenuBar 之上；
+  右侧最小化/最大化/关闭按钮 46x32，标题跟随 `windowTitle`，双击空白切换最大化。
+- MainWindow 构造时 `WindowFrame::attach(this)`、`setTitleBarWidget(m_titleBar)`、
+  `setTitleBarHeight(36)`，并把 `maximizeButtonRectChanged` 的 TitleBar 本地逻辑矩形传给 WindowFrame。
+- 播放模式/全屏（包括 T17 直接调用 `showFullScreen()`）隐藏 TitleBar 与 QMenuBar，退出恢复。
+- 窗口状态：`window/normalGeometry` + `window/maximized` 存 QSettings；启动恢复后 clamp 到当前屏幕 availableGeometry。
+- standalone demo target 额外编译 `../windowframe.cpp` 解决 WindowFrame 符号链接；app target 使用 `app/CMakeLists.txt` 的 `src/windowframe.cpp`。
+
 ### 3. 控制信号（PlayerPage → 播放控制层）
 
 | 信号 | 触发 |
@@ -225,7 +236,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   - 每请求 `setTransferTimeout(15000)`，超时按失败释放槽位；失败最多重试 2 次（共 3 次网络尝试）；
   - 图片 URL 追加 `api_key`（qEmby/Jellyfin 兼容），同时保留 Authorization 头；
   - `EMBY_PC_IMAGE_HTTP2=1` 可开启 HTTP/2 对比（默认关闭）；
-  - 本地磁盘缓存：`QStandardPaths::CacheLocation/images`，key=itemId/type/tag/尺寸 hash，
+  - 本地磁盘缓存：`QStandardPaths::CacheLocation/images`，key 由 itemId、type、tag、尺寸组成并 hash，
     先读盘、成功写盘，默认 1GB LRU；`EMBY_PC_IMAGE_DISK_CACHE=0` 可关闭；
   - 逐请求 start/finish/timeout 日志（前 20 条 + 失败全部，url/error 中的 token 已脱敏）；
   - 诊断追加 qnam_reused/http2/timeouts/avg_ms/disk_hits/disk_misses/disk_writes/disk_bytes。
@@ -240,7 +251,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **123 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **140 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
@@ -261,6 +272,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   - T23：同一 URL request 100 次仅发 1 次网络请求；12 张延迟图片并发上限 6 + FIFO 队列完成；
   - T25：复用 QNAM/默认关 HTTP/2/开关生效；500ms 延迟 + 100ms 传输超时释放槽位并重试上限 2 次；
     磁盘缓存写盘/新 cache 命中不联网；图片 URL 带 api_key、元数据 URL 不含 token；
+  - T27：TitleBar 高度/按钮尺寸/标题跟随/WindowFrame host 与最大化矩形/双击切换；播放模式与全屏隐藏 TitleBar/QMenuBar；窗口 normalGeometry/最大化状态保存恢复与屏幕 clamp；
   - 设置页 mock 开关可来回切换数据源。
 - `embyClient()`、`loginStateChanged(bool)`、`MainWindow::visibleItems()` 等 T8 接口可用。
 

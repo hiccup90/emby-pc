@@ -10,10 +10,14 @@
 
 class QLabel;
 class QLineEdit;
+class QMenuBar;
 class QPushButton;
 class QStackedWidget;
 class QTimer;
 class QWidget;
+class QCloseEvent;
+class QResizeEvent;
+class WindowFrame;
 
 namespace emby {
 class EmbyClient;
@@ -30,6 +34,7 @@ class LoginDialog;
 class PlayerPage;
 class SettingsPage;
 class Sidebar;
+class TitleBar;
 class TokenStore;
 
 // MainWindow 的启动选项（放在类外，避免嵌套类的默认成员初始化在默认实参里触发 GCC 限制）。
@@ -91,6 +96,10 @@ public:
     bool isPlayerMode() const { return m_playerMode; }
     PlayerPage *playerPage() const { return m_player; }
 
+    // T27：自绘标题栏 / 原生窗口层（用于自测和诊断）。
+    TitleBar *titleBar() const { return m_titleBar; }
+    WindowFrame *windowFrame() const { return m_windowFrame; }
+
     QStringList libraryIds() const;
     QStringList sectionNames() const;
     // 当前可见的完整 item（真实数据包含简介/季集等字段），供播放链路和自测使用。
@@ -117,6 +126,12 @@ private:
 
     void buildUi();
     void connectSignals();
+    void setupTitleBar();
+    void syncTitleBarGeometry();
+    bool titleBarVisible() const;
+    void updateWindowChrome();
+    void restoreWindowState();
+    void saveWindowState();
 
     // 数据源
     void applyMockMode();
@@ -177,6 +192,8 @@ private:
 
     bool m_mockMode = true;
     QList<MediaItem> m_mockLibrary;
+    TitleBar *m_titleBar = nullptr;
+    WindowFrame *m_windowFrame = nullptr;
     QHash<QString, int> m_mockIndex;
     QHash<QString, MediaItem> m_knownItems;
 
@@ -201,6 +218,11 @@ private:
 
     QList<TrackInfo> m_subtitleTracks;
     QList<TrackInfo> m_audioTracks;
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+    void changeEvent(QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 };
 
 } // namespace ui

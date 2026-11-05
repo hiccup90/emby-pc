@@ -877,3 +877,43 @@ QPushButton[role="secondary"]:disabled {
     border-color: #1E293B;
     background-color: #0D1522;
 }
+
+/* T27 自绘标题栏 */
+QWidget#TitleBar {
+    background-color: #0B1220;
+    border-bottom: 1px solid #1E293B;
+}
+
+QLabel#TitleBarTitle {
+    color: #CBD5E1;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QPushButton[titleBarButton="true"] {
+    background-color: transparent;
+    border: none;
+    color: #94A3B8;
+    font-size: 14px;
+    padding: 0px;
+}
+
+QPushButton[titleBarButton="true"]:hover {
+    background-color: #1E293B;
+    color: #E2E8F0;
+}
+
+QPushButton[titleBarButton="true"]:pressed {
+    background-color: #334155;
+    color: #F8FAFC;
+}
+
+QPushButton#TitleBarCloseButton:hover {
+    background-color: #DC2626;
+    color: #FFFFFF;
+}
+
+QPushButton#TitleBarCloseButton:pressed {
+    background-color: #B91C1C;
+    color: #FFFFFF;
+}

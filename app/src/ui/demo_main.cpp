@@ -16,7 +16,9 @@
 #include "mainwindow.h"
 #include "playerpage.h"
 #include "theme.h"
+#include "titlebar.h"
 #include "tokenstore.h"
+#include "windowframe.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -29,8 +31,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QLineEdit>
 #include <QLayout>
+#include <QMenu>
+#include <QMenuBar>
 #include <QListView>
 #include <QPainter>
 #include <QPointer>
@@ -321,6 +326,50 @@ int runSelfTest(QApplication &app)
     check(qApp->styleSheet().contains(QStringLiteral("QWidget#Sidebar")),
           QStringLiteral("深色 QSS 已加载"));
 
+    // T27：自绘 TitleBar + WindowFrame 连接。
+    auto *titleBar = window.findChild<ui::TitleBar *>(QStringLiteral("TitleBar"));
+    auto *windowFrame = window.windowFrame();
+    check(titleBar && titleBar->isVisible() && titleBar->height() == 36,
+          QStringLiteral("TitleBar 创建并显示（高 36）"));
+    check(titleBar && titleBar->geometry().top() == 0
+              && titleBar->width() == window.width(),
+          QStringLiteral("TitleBar 位于窗口顶部并铺满宽度"));
+    check(titleBar && titleBar->minimizeButton() && titleBar->maximizeButton()
+              && titleBar->closeButton()
+              && titleBar->minimizeButton()->size() == QSize(46, 32)
+              && titleBar->closeButton()->size() == QSize(46, 32),
+          QStringLiteral("TitleBar 最小化/最大化/关闭按钮存在且为 46x32"));
+    check(titleBar && titleBar->title() == window.windowTitle(),
+          QStringLiteral("TitleBar 标题跟随窗口标题"));
+    const QString originalWindowTitle = window.windowTitle();
+    window.setWindowTitle(QStringLiteral("T27 标题跟随测试"));
+    settle(app, 80);
+    check(titleBar && titleBar->title() == QStringLiteral("T27 标题跟随测试"),
+          QStringLiteral("窗口标题变化后 TitleBar 自动更新"));
+    window.setWindowTitle(originalWindowTitle);
+    check(windowFrame && windowFrame->titleBarHost() == titleBar
+              && windowFrame->maximizeButtonRect() == titleBar->maximizeButtonRect(),
+          QStringLiteral("WindowFrame 使用 TitleBar host 与最大化按钮矩形"));
+
+    QMenuBar *menuBar = window.menuBar();
+    menuBar->addMenu(QStringLiteral("文件"));
+    settle(app, 80);
+    check(titleBar && menuBar && menuBar->isVisible()
+              && menuBar->geometry().top() >= titleBar->height(),
+          QStringLiteral("TitleBar 位于 QMenuBar 之上"));
+
+    int titleDoubleClicks = 0;
+    QObject::connect(titleBar, &ui::TitleBar::maximizeToggleRequested,
+                     [&titleDoubleClicks]() { ++titleDoubleClicks; });
+    QMouseEvent doubleClick(QEvent::MouseButtonDblClick, QPointF(200, 18),
+                            titleBar->mapToGlobal(QPoint(200, 18)), Qt::LeftButton,
+                            Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(titleBar, &doubleClick);
+    settle(app, 80);
+    check(titleDoubleClicks == 1, QStringLiteral("标题栏双击触发最大化切换"));
+    window.showNormal();
+    titleBar->setMaximized(false);
+
     check(window.isMockMode() && window.sectionNames()
               == QStringList({QStringLiteral("电影"), QStringLiteral("剧集")}),
           QStringLiteral("mock 模式侧边栏媒体库来自 2 个 section"));
@@ -493,12 +542,16 @@ int runSelfTest(QApplication &app)
     player->setOverlayHideDelay(2500);
     player->setOverlayCursorPositionForTest(QPoint(), false);
 
+    check(titleBar && titleBar->isHidden(), QStringLiteral("播放器模式隐藏 TitleBar"));
+    check(menuBar && menuBar->isHidden(), QStringLiteral("播放器模式隐藏 QMenuBar"));
     window.setPlayerMode(false);
     check(!window.isPlayerMode() && playerSidebar && !playerSidebar->isHidden()
               && playerTopBar && !playerTopBar->isHidden()
               && !window.statusBar()->isHidden()
+              && titleBar && titleBar->isVisible()
+              && menuBar && menuBar->isVisible()
               && !player->controlsVisible(),
-          QStringLiteral("退出播放器模式恢复 chrome 并隐藏顶层浮层"));
+          QStringLiteral("退出播放器模式恢复 chrome/TitleBar/QMenuBar 并隐藏顶层浮层"));
     window.setPlayerMode(true);
     player->setOverlayAutoHide(false);
     if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton")))
@@ -537,6 +590,14 @@ int runSelfTest(QApplication &app)
     check(window.currentStackIndex() == 3,
           QStringLiteral("播放页返回详情页（stack=3，实际 %1）").arg(window.currentStackIndex()));
 
+    // T27：外部 showFullScreen（T17 PlayerController 路径）也隐藏 TitleBar。
+    window.showFullScreen();
+    settle(app, 120);
+    check(titleBar && !titleBar->isVisible(), QStringLiteral("全屏状态隐藏 TitleBar"));
+    window.showNormal();
+    settle(app, 120);
+    check(titleBar && titleBar->isVisible(), QStringLiteral("退出全屏恢复 TitleBar"));
+
     // 最小窗口尺寸下布局不崩
     window.resize(960, 600);
     settle(app, 120);
@@ -567,6 +628,89 @@ int runSelfTest(QApplication &app)
     out << (failures == 0 ? "ALL PASS" : QStringLiteral("FAILURES: %1").arg(failures)) << "\n";
     out.flush();
     return failures == 0 ? 0 : 1;
+}
+
+int runWindowStateTests(QApplication &app)
+{
+    QTextStream out(stdout);
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &name) {
+        out << (ok ? "PASS  " : "FAIL  ") << name << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    QTemporaryDir settingsDir;
+    check(settingsDir.isValid(), QStringLiteral("T27 创建窗口状态临时 QSettings"));
+    const QString oldOrganization = QCoreApplication::organizationName();
+    const QString oldApplication = QCoreApplication::applicationName();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("emby-pc-test"));
+    QCoreApplication::setApplicationName(QStringLiteral("ui-window-state-test"));
+
+    QRect savedNormalGeometry;
+    {
+        ui::MainWindow window(ui::MainWindow::Options{false});
+        window.resize(960, 600);
+        // offscreen 屏宽可能小于窗口最小宽度；用 x=0 验证保存/恢复，clamp 另测。
+        window.move(0, 60);
+        window.show();
+        settle(app, 120);
+        window.close();
+        settle(app, 80);
+        QSettings settings;
+        savedNormalGeometry = settings.value(QStringLiteral("window/normalGeometry")).toRect();
+    }
+    {
+        ui::MainWindow window(ui::MainWindow::Options{false});
+        settle(app, 120);
+        check(savedNormalGeometry.isValid() && window.geometry() == savedNormalGeometry,
+              QStringLiteral("窗口 normalGeometry 保存/恢复（saved=%1,%2 %3x%4 actual=%5,%6 %7x%8）")
+                  .arg(savedNormalGeometry.x()).arg(savedNormalGeometry.y())
+                  .arg(savedNormalGeometry.width()).arg(savedNormalGeometry.height())
+                  .arg(window.x()).arg(window.y())
+                  .arg(window.width()).arg(window.height()));
+        check(!window.isMaximized(), QStringLiteral("窗口非最大化状态恢复"));
+        window.close();
+    }
+
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("window/normalGeometry"),
+                          QRect(10000, 10000, 700, 500));
+        settings.setValue(QStringLiteral("window/maximized"), false);
+    }
+    {
+        ui::MainWindow window(ui::MainWindow::Options{false});
+        settle(app, 120);
+        QScreen *screen = QGuiApplication::primaryScreen();
+        const QRect available = screen ? screen->availableGeometry() : QRect();
+        const QRect geometry = window.geometry();
+        check(!available.isEmpty() && available.intersects(geometry)
+                  && geometry.left() >= available.left()
+                  && geometry.top() >= available.top(),
+              QStringLiteral("窗口位置 clamp 到当前屏幕 availableGeometry（左上可见）"));
+        window.close();
+    }
+
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("window/normalGeometry"),
+                          QRect(100, 80, 700, 500));
+        settings.setValue(QStringLiteral("window/maximized"), true);
+    }
+    {
+        ui::MainWindow window(ui::MainWindow::Options{false});
+        settle(app, 120);
+        check(window.isMaximized(), QStringLiteral("窗口最大化状态恢复"));
+        window.close();
+    }
+
+    QCoreApplication::setOrganizationName(oldOrganization);
+    QCoreApplication::setApplicationName(oldApplication);
+    return failures;
 }
 
 int runAuthTests(QApplication &app)
@@ -1571,6 +1715,7 @@ int main(int argc, char *argv[])
     if (args.contains(QStringLiteral("--selftest"))) {
         int failures = runSelfTest(app);
         failures += runAuthTests(app);
+        failures += runWindowStateTests(app);
         return failures == 0 ? 0 : 1;
     }
 
