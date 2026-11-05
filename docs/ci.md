@@ -193,6 +193,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | 2026-11-05 | 81c2751 | <https://github.com/hiccup90/emby-pc/actions/runs/41952931196> | emby-pc-win64 / emby-pc-win64.zip（72,221,356 字节，artifact id 13382555893） | **T20+T21+T22**：海报回退链/失败重试（T20）、继续观看刷新/Stopped 位置（T21）、Qt 原生鼠标+键盘转发（T22，删除 SetWindowSubclass/comctl32）；全步骤通过（4m32s），供用户复测 |
 | 2026-11-05 | bbdc809 | <https://github.com/hiccup90/emby-pc/actions/runs/41957153193> | emby-pc-win64 / emby-pc-win64.zip（72,230,490 字节，artifact id 13384052192） | **T23+T24**：海报请求 in-flight 去重/并发 6/FIFO（T23）、首页继续观看卡片 0 高度修复（T24）；全步骤通过（3m37s），供用户复测 |
 | 2026-11-05 | 80a798a | <https://github.com/hiccup90/emby-pc/actions/runs/41968294548> | emby-pc-win64 / emby-pc-win64.zip（72,235,727 字节，artifact id 13388133321） | **T25**：复用客户端 QNAM、15s transferTimeout + 最多 2 次重试、api_key 图片 URL、本地磁盘 1GB LRU 缓存、qnam/http2/disk 统计；全步骤通过（4m18s），供用户复测 |
+| 2026-11-05 | 1756163 | <https://github.com/hiccup90/emby-pc/actions/runs/41972577073> | emby-pc-win64 / emby-pc-win64.zip（72,245,921 字节，artifact id 13390243094） | **T26+T27**：DWM 无边框窗口（dwmapi/user32/shell32）+ 自绘 TitleBar/窗口状态记忆；全步骤通过（4m19s），DWM API 编译链接通过，供用户实机验收 |
 
 包内容（各次一致，54 个条目，解压约 171MB）：
 emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
