@@ -7,6 +7,7 @@
 #include <QWidget>
 
 class QLabel;
+class QPaintEvent;
 class QPushButton;
 class QResizeEvent;
 class QSlider;
@@ -47,6 +48,10 @@ public:
     int volume() const;
     void setFullscreen(bool fullscreen);
 
+    // T32：队列为空/到首尾时禁用上一集/下一集，并更新 tooltip。
+    // 由 ui::MainWindow(mock) 或 PlayerController(Emby 队列) 在切集/加载队列后调用。
+    void setEpisodeNavigationEnabled(bool hasPrevious, bool hasNext);
+
     // 播放器模式：显示/隐藏顶层 overlay，并启停自动隐藏轮询。
     // MainWindow::setPlayerMode() 负责调用。
     void setPlayerModeActive(bool active);
@@ -85,6 +90,7 @@ signals:
     void volumeChanged(int volume);
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
@@ -94,6 +100,7 @@ private:
     void buildUi();
     void createOverlayWindows();
     void ensureHostWindow();
+    void applyVideoMargins();
     void syncOverlayGeometry();
     void updateDockedOverlayGeometry();
     void showOverlays();

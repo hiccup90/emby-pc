@@ -3,6 +3,7 @@
 #include "icons.h"
 
 #include <QAction>
+#include <QDebug>
 #include <QActionGroup>
 #include <climits>
 #include <QCursor>
@@ -13,6 +14,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -24,6 +26,10 @@
 
 namespace ui {
 namespace {
+
+// T31：播放模式下视频子 HWND 不能贴死顶层客户区，否则 Windows 的 WM_NCHITTEST
+// 会落在 mpv 子窗口上，WindowFrame 的四边/四角缩放命中失效。留 5px 给顶层窗口。
+constexpr int kPlayerResizeMargin = 5;
 
 QString formatTimeValue(qint64 milliseconds)
 {
@@ -269,14 +275,39 @@ void PlayerPage::buildUi()
 
     connect(m_backButton, &QPushButton::clicked, this, &PlayerPage::backRequested);
     connect(m_playButton, &QPushButton::clicked, this, &PlayerPage::playPauseRequested);
-    connect(m_prevButton, &QPushButton::clicked, this, &PlayerPage::previousEpisodeRequested);
-    connect(m_nextButton, &QPushButton::clicked, this, &PlayerPage::nextEpisodeRequested);
+    connect(m_prevButton, &QPushButton::clicked, this, [this]() {
+        qInfo() << "PlayerPage: PrevButton clicked enabled=" << m_prevButton->isEnabled()
+                << "playerMode=" << m_playerModeActive;
+        emit previousEpisodeRequested();
+    });
+    connect(m_nextButton, &QPushButton::clicked, this, [this]() {
+        qInfo() << "PlayerPage: NextButton clicked enabled=" << m_nextButton->isEnabled()
+                << "playerMode=" << m_playerModeActive;
+        emit nextEpisodeRequested();
+    });
     connect(m_subtitleButton, &QPushButton::clicked, this,
             [this]() { showTrackMenu(m_subtitleButton, m_subtitleTracks, false); });
     connect(m_audioButton, &QPushButton::clicked, this,
             [this]() { showTrackMenu(m_audioButton, m_audioTracks, true); });
     connect(m_statsButton, &QPushButton::clicked, this, &PlayerPage::statsRequested);
-    connect(m_fullscreenButton, &QPushButton::clicked, this, &PlayerPage::fullscreenRequested);
+    connect(m_fullscreenButton, &QPushButton::clicked, this, [this]() {
+        const bool wasFullScreen = window() && window()->isFullScreen();
+        qInfo() << "PlayerPage: FullscreenButton clicked fullscreen=" << m_fullscreen
+                << "playerMode=" << m_playerModeActive
+                << "windowFullScreen=" << wasFullScreen;
+        emit fullscreenRequested();
+        // 兜底：若 UI 层的 fullscreenRequested 连接缺失/被意外断开，直接调用
+        // MainWindow 的 Q_INVOKABLE 槽一次；正常连接已改变状态时不会重复切换。
+        QTimer::singleShot(0, this, [this, wasFullScreen]() {
+            if (!window() || window()->isFullScreen() != wasFullScreen)
+                return;
+            qWarning() << "PlayerPage: fullscreenRequested did not change window state; "
+                          "invoking MainWindow::toggleFullscreen fallback";
+            const bool invoked = QMetaObject::invokeMethod(window(), "toggleFullscreen",
+                                                           Qt::DirectConnection);
+            qInfo() << "PlayerPage: fullscreen fallback invoked=" << invoked;
+        });
+    });
     connect(m_volumeSlider, &QSlider::valueChanged, this, &PlayerPage::volumeChanged);
     connect(m_seekSlider, &QSlider::sliderMoved, this, [this](int value) {
         if (!m_updatingSlider)
@@ -289,6 +320,19 @@ void PlayerPage::buildUi()
 
     if (!m_topLevelOverlay)
         updateDockedOverlayGeometry();
+
+    // 初始没有剧集队列上下文，避免用户误点。
+    setEpisodeNavigationEnabled(false, false);
+}
+
+void PlayerPage::paintEvent(QPaintEvent *event)
+{
+    QWidget::paintEvent(event);
+    // 播放模式的 5px 可缩放边缘保持纯黑，避免主题底色或视频边缘露出杂色。
+    if (m_playerModeActive && !m_fullscreen) {
+        QPainter painter(this);
+        painter.fillRect(rect(), Qt::black);
+    }
 }
 
 void PlayerPage::resizeEvent(QResizeEvent *event)
@@ -383,6 +427,19 @@ QRect PlayerPage::hostGlobalRect() const
     return QRect(host->mapToGlobal(QPoint(0, 0)), host->size());
 }
 
+void PlayerPage::applyVideoMargins()
+{
+    auto *layout = qobject_cast<QVBoxLayout *>(this->layout());
+    if (!layout)
+        return;
+    const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
+    layout->setContentsMargins(margin, margin, margin, margin);
+    if (m_topLevelOverlay && m_playerModeActive)
+        syncOverlayGeometry();
+    else if (!m_topLevelOverlay)
+        updateDockedOverlayGeometry();
+}
+
 void PlayerPage::syncOverlayGeometry()
 {
     if (!m_topBar || !m_controlBar)
@@ -397,15 +454,17 @@ void PlayerPage::syncOverlayGeometry()
     if (!host.isValid() || host.isEmpty())
         return;
 
+    const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
     const int topHeight = 76;
-    const int maxTopWidth = qMax(200, host.width() - 24);
+    const int maxTopWidth = qMax(200, host.width() - 24 - 2 * margin);
     const int topWidth = qMin(qMax(260, m_topBar->sizeHint().width()), maxTopWidth);
-    m_topBar->setGeometry(host.left() + 12, host.top() + 10, topWidth, topHeight);
+    m_topBar->setGeometry(host.left() + 12 + margin, host.top() + 10 + margin, topWidth, topHeight);
 
-    // 底部控制条宽度跟随主窗口客户区，贴底；顶层窗口不会被 mpv 原生子窗口盖住。
+    // T31：底部 overlay 同步内缩，避免盖住窗口底边的可缩放边缘；全屏 margin=0。
     const int controlHeight = 96;
-    m_controlBar->setGeometry(host.left(), host.top() + host.height() - controlHeight,
-                              host.width(), controlHeight);
+    m_controlBar->setGeometry(host.left() + margin,
+                              host.top() + host.height() - controlHeight - margin,
+                              qMax(0, host.width() - 2 * margin), controlHeight);
 
     if (m_overlaysVisible) {
         m_topBar->raise();
@@ -417,10 +476,12 @@ void PlayerPage::updateDockedOverlayGeometry()
 {
     if (!m_topBar || !m_controlBar)
         return;
+    const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
     const int topHeight = qBound(58, height() / 9, 84);
     const int controlHeight = qBound(96, height() / 7, 112);
-    m_topBar->setGeometry(0, 0, width(), topHeight);
-    m_controlBar->setGeometry(0, height() - controlHeight, width(), controlHeight);
+    m_topBar->setGeometry(margin, margin, qMax(0, width() - 2 * margin), topHeight);
+    m_controlBar->setGeometry(margin, height() - controlHeight - margin,
+                              qMax(0, width() - 2 * margin), controlHeight);
     if (m_overlaysVisible) {
         m_topBar->raise();
         m_controlBar->raise();
@@ -468,6 +529,7 @@ void PlayerPage::setPlayerModeActive(bool active)
     }
 
     m_playerModeActive = active;
+    applyVideoMargins();
     if (active) {
         ensureHostWindow();
         m_controlsRequested = true;
@@ -481,6 +543,7 @@ void PlayerPage::setPlayerModeActive(bool active)
     } else {
         stopAutoHideTimer();
         hideOverlays();
+        applyVideoMargins();
     }
 }
 
@@ -691,9 +754,31 @@ int PlayerPage::volume() const
     return m_volumeSlider->value();
 }
 
+void PlayerPage::setEpisodeNavigationEnabled(bool hasPrevious, bool hasNext)
+{
+    if (m_prevButton) {
+        m_prevButton->setEnabled(hasPrevious);
+        m_prevButton->setToolTip(hasPrevious ? QStringLiteral("上一集")
+                                             : QStringLiteral("没有上一集"));
+    }
+    if (m_nextButton) {
+        m_nextButton->setEnabled(hasNext);
+        m_nextButton->setToolTip(hasNext ? QStringLiteral("下一集")
+                                         : QStringLiteral("没有下一集"));
+    }
+    qInfo() << "PlayerPage: episode navigation updated prev=" << hasPrevious
+            << "next=" << hasNext;
+}
+
 void PlayerPage::setFullscreen(bool fullscreen)
 {
+    qInfo() << "PlayerPage: setFullscreen" << fullscreen
+            << "playerMode=" << m_playerModeActive
+            << "windowFullScreen=" << (window() && window()->isFullScreen());
     m_fullscreen = fullscreen;
+    applyVideoMargins();
+    if (m_playerModeActive)
+        syncOverlayGeometry();
     m_fullscreenButton->setIcon(icon(fullscreen ? Icon::ExitFullscreen : Icon::Fullscreen,
                                      QColor(0xE2, 0xE8, 0xF0), 22));
     m_fullscreenButton->setToolTip(fullscreen ? QStringLiteral("退出全屏") : QStringLiteral("全屏"));

@@ -285,6 +285,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // 全屏按钮/mpv F 走 PlayerPage 信号；Qt F11 走 WindowStateChange。
     // 延迟到 toggleFullscreen 完成后再同步菜单栏，避免读到旧状态。
     connect(m_playerPage, &ui::PlayerPage::fullscreenRequested, this, [this]() {
+        qInfo() << "PlayerController: fullscreenRequested received; window fullscreen="
+                << m_window->isFullScreen() << "playerMode=" << m_window->isPlayerMode();
         QTimer::singleShot(0, this, &PlayerController::updatePlayerWindowChrome);
     });
 
@@ -296,16 +298,24 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             m_player->togglePause();
     });
     connect(m_playerPage, &ui::PlayerPage::previousEpisodeRequested, this, [this]() {
+        qInfo() << "PlayerController: previousEpisodeRequested item=" << m_embyItemId
+                << "queue=" << m_episodeQueue.size() << "index=" << m_episodeIndex;
         if (!m_embyItemId.isEmpty())
             stepEmbyEpisode(-1);
         else if (m_player->isReady())
             m_player->playlistPrevious();
+        else
+            m_playerPage->setEpisodeNavigationEnabled(false, false);
     });
     connect(m_playerPage, &ui::PlayerPage::nextEpisodeRequested, this, [this]() {
+        qInfo() << "PlayerController: nextEpisodeRequested item=" << m_embyItemId
+                << "queue=" << m_episodeQueue.size() << "index=" << m_episodeIndex;
         if (!m_embyItemId.isEmpty())
             stepEmbyEpisode(1);
         else if (m_player->isReady())
             m_player->playlistNext();
+        else
+            m_playerPage->setEpisodeNavigationEnabled(false, false);
     });
     connect(m_playerPage, &ui::PlayerPage::seekRequested, this, [this](qint64 positionMs) {
         if (!m_player->isReady())
@@ -667,6 +677,11 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
                             .arg(files.size())
                             .arg(firstInfo.absolutePath());
     m_player->loadPlaylist(files, qBound(0, startIndex, static_cast<int>(files.size()) - 1));
+    if (m_playerPage) {
+        const bool multiple = files.size() > 1;
+        m_playerPage->setEpisodeNavigationEnabled(multiple && startIndex > 0,
+                                                  multiple && startIndex + 1 < files.size());
+    }
     m_player->setPropertyString("force-media-title", firstInfo.fileName());
     showPlayerPage();
     m_playerPage->setEpisodeInfo(firstInfo.fileName(), m_currentSubtitle);
@@ -779,7 +794,7 @@ void PlayerController::loadEpisodeQueue(const QString &seriesId, const QString &
 
     showStatus(tr("正在获取剧集列表…"), 3000);
     QPointer<PlayerController> self(this);
-    m_emby->fetchItems(query, [self, request, seriesTitle, season, episode](
+    m_emby->fetchItems(query, [self, request, seriesId, seriesTitle, season, episode](
                                   const emby::ItemQueryResult &result,
                                   const emby::ApiError &error) {
         if (!self || request != self->m_requestSerial)
@@ -804,6 +819,9 @@ void PlayerController::loadEpisodeQueue(const QString &seriesId, const QString &
         }
 
         if (self->m_episodeQueue.isEmpty()) {
+            qInfo() << "PlayerController::loadEpisodeQueue empty series=" << seriesId;
+            if (self->m_playerPage)
+                self->m_playerPage->setEpisodeNavigationEnabled(false, false);
             self->showStatus(QObject::tr("没有找到可播放的剧集"), 4000);
             return;
         }
@@ -817,6 +835,11 @@ void PlayerController::loadEpisodeQueue(const QString &seriesId, const QString &
             }
         }
         self->m_episodeIndex = index;
+        qInfo() << "PlayerController::loadEpisodeQueue series=" << seriesId
+                << "queue=" << self->m_episodeQueue.size() << "index=" << index;
+        if (self->m_playerPage)
+            self->m_playerPage->setEpisodeNavigationEnabled(
+                index > 0, index + 1 < self->m_episodeQueue.size());
         const EpisodeEntry entry = self->m_episodeQueue.at(index);
         self->playEmbyItem(entry.itemId,
                            entry.title.isEmpty() ? seriesTitle : entry.title,
@@ -831,6 +854,14 @@ void PlayerController::playEmbyItem(const QString &itemId, const QString &title,
     if (!m_emby || !m_window->hasSession()) {
         showStatus(tr("未登录 Emby，无法播放"), 3000);
         return;
+    }
+
+    if (m_playerPage) {
+        if (m_episodeQueue.isEmpty())
+            m_playerPage->setEpisodeNavigationEnabled(false, false);
+        else
+            m_playerPage->setEpisodeNavigationEnabled(
+                m_episodeIndex > 0, m_episodeIndex + 1 < m_episodeQueue.size());
     }
 
     const int request = ++m_requestSerial;
@@ -942,10 +973,20 @@ void PlayerController::showPlayerPage()
 
 void PlayerController::stepEmbyEpisode(int delta)
 {
-    if (m_episodeQueue.isEmpty() || m_episodeIndex < 0)
+    qInfo() << "PlayerController::stepEmbyEpisode delta=" << delta
+            << "item=" << m_embyItemId << "queue=" << m_episodeQueue.size()
+            << "index=" << m_episodeIndex << "target=" << (m_episodeIndex + delta);
+    if (m_episodeQueue.isEmpty() || m_episodeIndex < 0) {
+        if (m_playerPage)
+            m_playerPage->setEpisodeNavigationEnabled(false, false);
+        showStatus(tr("没有上一集/下一集"), 2000);
         return;
+    }
     const int nextIndex = m_episodeIndex + delta;
     if (nextIndex < 0 || nextIndex >= m_episodeQueue.size()) {
+        if (m_playerPage)
+            m_playerPage->setEpisodeNavigationEnabled(
+                m_episodeIndex > 0, m_episodeIndex + 1 < m_episodeQueue.size());
         showStatus(tr("已经是第一集/最后一集"), 2000);
         return;
     }
@@ -957,6 +998,11 @@ void PlayerController::playEpisodeAt(int index)
     if (index < 0 || index >= m_episodeQueue.size())
         return;
     m_episodeIndex = index;
+    qInfo() << "PlayerController::playEpisodeAt index=" << index
+            << "queue=" << m_episodeQueue.size();
+    if (m_playerPage)
+        m_playerPage->setEpisodeNavigationEnabled(
+            index > 0, index + 1 < m_episodeQueue.size());
     const EpisodeEntry entry = m_episodeQueue.at(index);
     playEmbyItem(entry.itemId, entry.title, entry.season, entry.episode,
                  entry.startPositionTicks);
@@ -1403,6 +1449,8 @@ void PlayerController::clearEmbySession()
     m_lastKnownPositionSeconds = 0.0;
     m_episodeQueue.clear();
     m_episodeIndex = -1;
+    if (m_playerPage)
+        m_playerPage->setEpisodeNavigationEnabled(false, false);
     m_pendingSeekSeconds = 0.0;
     m_reporting = false;
 }

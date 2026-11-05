@@ -450,8 +450,16 @@ void MainWindow::connectSignals()
     connect(m_player, &PlayerPage::playPauseRequested, this, [this]() {
         m_player->setPlaying(!m_player->isPlaying());
     });
-    connect(m_player, &PlayerPage::previousEpisodeRequested, this, [this]() { stepEpisode(-1); });
-    connect(m_player, &PlayerPage::nextEpisodeRequested, this, [this]() { stepEpisode(1); });
+    connect(m_player, &PlayerPage::previousEpisodeRequested, this, [this]() {
+        // mock 数据由 UI 自己的 episode 列表切换；真实播放由 PlayerController 的
+        // Emby episode queue 处理，避免同一信号双触发。
+        if (m_mockMode)
+            stepEpisode(-1);
+    });
+    connect(m_player, &PlayerPage::nextEpisodeRequested, this, [this]() {
+        if (m_mockMode)
+            stepEpisode(1);
+    });
     connect(m_player, &PlayerPage::seekRequested, this, [this](qint64 position) {
         m_player->setPosition(position, m_currentDurationMs);
     });
@@ -1001,12 +1009,39 @@ void MainWindow::playItem(const QString &itemId, int seasonNumber, int episodeNu
     };
     m_player->setSubtitleTracks(m_subtitleTracks);
     m_player->setAudioTracks(m_audioTracks);
+    updateEpisodeNavigation();
 
     setPlayerMode(true);
 }
 
+void MainWindow::updateEpisodeNavigation()
+{
+    if (!m_player)
+        return;
+    bool hasPrevious = false;
+    bool hasNext = false;
+    if (m_currentItem.isSeries()) {
+        QList<Episode> flat;
+        int currentIndex = -1;
+        for (const Season &season : m_currentItem.seasons) {
+            for (const Episode &episode : season.episodes) {
+                if (season.number == m_currentSeason && episode.number == m_currentEpisode)
+                    currentIndex = flat.size();
+                flat.append(episode);
+            }
+        }
+        hasPrevious = currentIndex > 0;
+        hasNext = currentIndex >= 0 && currentIndex + 1 < flat.size();
+    }
+    m_player->setEpisodeNavigationEnabled(hasPrevious, hasNext);
+}
+
 void MainWindow::stepEpisode(int delta)
 {
+    qInfo() << "MainWindow::stepEpisode delta=" << delta
+            << "item=" << m_currentItem.id
+            << "season=" << m_currentSeason << "episode=" << m_currentEpisode
+            << "mockMode=" << m_mockMode;
     if (!m_currentItem.isSeries() || m_currentSeason < 0 || m_currentEpisode < 0)
         return;
 
@@ -1035,6 +1070,7 @@ void MainWindow::stepEpisode(int delta)
         for (const Episode &episode : season.episodes) {
             if (count == nextIndex) {
                 playItem(m_currentItem.id, season.number, episode.number);
+                updateEpisodeNavigation();
                 return;
             }
             ++count;
@@ -1085,6 +1121,9 @@ void MainWindow::setPlayerMode(bool enabled)
 
 void MainWindow::toggleFullscreen()
 {
+    qInfo() << "MainWindow::toggleFullscreen enter isFullScreen=" << isFullScreen()
+            << "m_fullscreen=" << m_fullscreen << "m_playerMode=" << m_playerMode
+            << "geometry=" << geometry();
     if (m_fullscreen) {
         showNormal();
         m_fullscreen = false;
@@ -1097,6 +1136,8 @@ void MainWindow::toggleFullscreen()
             updateWindowChrome();
             m_stack->setCurrentIndex(m_fullscreenReturnIndex);
         }
+        qInfo() << "MainWindow::toggleFullscreen leave-fullscreen isFullScreen=" << isFullScreen()
+                << "m_fullscreen=" << m_fullscreen << "geometry=" << geometry();
         return;
     }
 
@@ -1110,6 +1151,8 @@ void MainWindow::toggleFullscreen()
     m_player->setPlayerModeActive(true);
     m_player->setFullscreen(true);
     showFullScreen();
+    qInfo() << "MainWindow::toggleFullscreen enter-fullscreen isFullScreen=" << isFullScreen()
+            << "m_fullscreen=" << m_fullscreen << "geometry=" << geometry();
 }
 
 void MainWindow::handleEscape()

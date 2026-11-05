@@ -122,3 +122,44 @@ exit=0
 - Windows 实机行为（DWM/任务栏/Snap/多显示器）本机 Linux 无法验证，需要 Windows CI 打包后按第 5 节验收。
 - 标题栏高度按逻辑像素 36；125%/150%/200% DPI 的实际视觉验收需 Windows 实机确认。
 - T30/WIN-01 已把 UI 最小尺寸与原生层统一为 **800x480**；T15 的 PlayerController 720x480 覆盖已删除。播放页视频宿主 placeholder 仍为 320x180 下限。
+
+## 8. T31 播放模式四边缩放（原生子窗口覆盖边框）
+
+> 任务：task-31 · 负责人：build-verifier · 日期：2026-11-05
+> 范围：app/src/ui/playerpage.h/.cpp（布局边距/overlay geometry）、app/src/ui/demo_main.cpp（更新旧断言）。未改 T32 按钮/信号代码。
+
+### 8.1 根因
+
+播放模式下 `VideoHost`（内部是 mpv 原生子 HWND）铺满整个客户区。Windows 会把鼠标命中发给子 HWND，顶层 `WindowFrame` 收不到边缘位置的 `WM_NCHITTEST`，所以媒体页四边正常、播放页四边/四角失效。
+
+### 8.2 修复（方案 A）
+
+- `PlayerPage` 根布局在播放模式设置 **5px 外边距**（`applyVideoMargins()`），视频区 `QStackedWidget`/VideoHost 因此缩进 5px；顶层窗口在四边有可命中区域。
+- 外边距区域由 `PlayerPage::paintEvent()` 画纯黑，作为可接受的播放黑边。
+- 全屏时边距为 **0**（`m_fullscreen`），无缝；退出全屏恢复 5px。
+- 顶层底部控制条 overlay 同步内缩：left/right/bottom 各 5px、宽度减 10px；顶部浮层也相应偏移，避免盖住上/左/右边缘。
+- 页面内兜底 overlay（`EMBY_PC_PLAYER_OVERLAY=0`）同样内缩 5px。
+- 不改 `WindowFrame` 的 `WM_NCHITTEST` 边框逻辑，不改 mpv 子窗口；最小尺寸仍由 WindowFrame 800x480 保证。
+
+### 8.3 验证
+
+offscreen 页面几何测试：
+
+```text
+normal  page=800x480 video=(0,0 800x480)
+player  page=800x480 video=(5,5 790x470) bottom=(7,381 790x96)
+full    page=800x480 video=(0,0 800x480) bottom=(...,800x96)
+unfull  page=800x480 video=(5,5 790x470)
+leave   page=800x480 video=(0,0 800x480)
+```
+
+- `emby-ui-demo --selftest`：**151 项 ALL PASS**（T31 更新 4 条旧 overlay 贴边断言为 5px 内缩）。
+- Linux app Debug 构建通过；`-Wall -Wextra` 无新增 warning。
+
+### 8.4 Windows 实机验收
+
+1. 进入播放模式，鼠标在视频画面外的四周 5px 黑边拖动：四边、四角都应出现缩放光标并可改变窗口大小。
+2. 最小缩到 800x480，确认控件/播放区域可用。
+3. 全屏（F11/控制条按钮）：黑边为 0，画面铺满；退出全屏恢复 5px。
+4. 底部控制条不遮挡底边；顶栏不遮挡上边。
+5. 仅四周多 5px 黑边为方案 A 的预期代价；若实机仍无法命中，再考虑子 HWND `HTTRANSPARENT` 方案 B。

@@ -136,6 +136,7 @@ private:
     void saveWindowState();
     void applySettings();
     void clearImageCache();
+    void updateEpisodeNavigation();
 
     // 数据源
     void applyMockMode();
@@ -154,7 +155,7 @@ private:
     void showDetailFor(const MediaItem &item);
     void playItem(const QString &itemId, int seasonNumber, int episodeNumber);
     void stepEpisode(int delta);
-    void toggleFullscreen();
+    Q_INVOKABLE void toggleFullscreen();
     void handleEscape();
     const MediaItem *findMockItem(const QString &itemId) const;
     bool knownItem(const QString &itemId, MediaItem *out) const;

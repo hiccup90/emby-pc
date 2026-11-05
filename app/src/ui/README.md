@@ -207,6 +207,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 - 自动隐藏：`QTimer` 每 150ms 轮询 `QCursor::pos()`（不依赖 mpv 子窗口的 mouse move）：
   光标在主窗口内移动 → 显示并重置计时；静止 2.5s → 隐藏；暂停时保持显示。
 - 播放页背景纯黑（`#000`）；`EMBY_PC_PLAYER_OVERLAY=0` 时退回页面内浮层（排障/无合成器环境）。
+- T32：`FullscreenButton` 点击链路加日志并有 UI 状态兜底；`PrevButton/NextButton` 由 `setEpisodeNavigationEnabled()` 按队列/首尾状态 disable 并更新 tooltip。
 
 ### 2.1 自绘标题栏（T27）
 
@@ -268,7 +269,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **151 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **155 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；

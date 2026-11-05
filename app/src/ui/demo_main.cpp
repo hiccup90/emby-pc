@@ -491,12 +491,15 @@ int runSelfTest(QApplication &app)
     auto hostRect = [&window]() {
         return QRect(window.mapToGlobal(QPoint(0, 0)), window.size());
     };
+    // T31：播放模式视频区四周留 5px 顶层可缩放边缘，overlay 同步内缩。
+    const int playerInset = 5;
     QRect host = hostRect();
-    check(player->topOverlay()->geometry().topLeft() == host.topLeft() + QPoint(12, 10)
-              && player->topOverlay()->width() <= host.width() - 24
-              && player->bottomOverlay()->geometry().left() == host.left()
-              && player->bottomOverlay()->geometry().width() == host.width()
-              && player->bottomOverlay()->geometry().bottom() == host.bottom(),
+    check(player->topOverlay()->geometry().topLeft()
+              == host.topLeft() + QPoint(12 + playerInset, 10 + playerInset)
+              && player->topOverlay()->width() <= host.width() - 24 - 2 * playerInset
+              && player->bottomOverlay()->geometry().left() == host.left() + playerInset
+              && player->bottomOverlay()->geometry().width() == host.width() - 2 * playerInset
+              && player->bottomOverlay()->geometry().bottom() == host.bottom() - playerInset,
           QStringLiteral("浮层跟随主窗口客户区（顶栏左上自适应/控制条贴底铺满）"));
     check(player->size() == window.centralWidget()->size(),
           QStringLiteral("视频区铺满主窗口客户区（%1x%2）")
@@ -506,16 +509,16 @@ int runSelfTest(QApplication &app)
     window.resize(960, 600);
     settle(app, 120);
     host = hostRect();
-    check(player->bottomOverlay()->geometry().width() == host.width()
-              && player->bottomOverlay()->geometry().bottom() == host.bottom()
-              && player->topOverlay()->geometry().left() == host.left() + 12,
+    check(player->bottomOverlay()->geometry().width() == host.width() - 2 * playerInset
+              && player->bottomOverlay()->geometry().bottom() == host.bottom() - playerInset
+              && player->topOverlay()->geometry().left() == host.left() + 12 + playerInset,
           QStringLiteral("窗口 resize 后顶层浮层跟随（960x600）"));
 
     window.move(window.pos() + QPoint(40, 30));
     settle(app, 120);
     host = hostRect();
-    check(player->topOverlay()->geometry().left() == host.left() + 12
-              && player->bottomOverlay()->geometry().bottom() == host.bottom(),
+    check(player->topOverlay()->geometry().left() == host.left() + 12 + playerInset
+              && player->bottomOverlay()->geometry().bottom() == host.bottom() - playerInset,
           QStringLiteral("窗口 move 后顶层浮层跟随"));
 
     window.resize(1280, 760);
@@ -561,6 +564,34 @@ int runSelfTest(QApplication &app)
     if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton")))
         check(subtitleButton->text().contains(QStringLiteral("中文")),
               QStringLiteral("字幕按钮反映当前轨道：%1").arg(subtitleButton->text()));
+
+    // T32：FullscreenButton clicked -> fullscreenRequested -> MainWindow::toggleFullscreen。
+    auto *fullscreenButton = player->findChild<QPushButton *>(QStringLiteral("FullscreenButton"));
+    auto *prevButton = player->findChild<QPushButton *>(QStringLiteral("PrevButton"));
+    auto *nextButton = player->findChild<QPushButton *>(QStringLiteral("NextButton"));
+    int fullscreenSignals = 0;
+    QObject::connect(player, &ui::PlayerPage::fullscreenRequested,
+                     [&fullscreenSignals]() { ++fullscreenSignals; });
+    check(fullscreenButton && fullscreenButton->isEnabled(),
+          QStringLiteral("FullscreenButton 存在且可点击"));
+    if (fullscreenButton) {
+        fullscreenButton->click();
+        settle(app, 160);
+        check(fullscreenSignals == 1 && window.isFullScreen(),
+              QStringLiteral("FullscreenButton 点击链路生效（全屏）"));
+        fullscreenButton->click();
+        settle(app, 160);
+        check(fullscreenSignals == 2 && !window.isFullScreen(),
+              QStringLiteral("FullscreenButton 再次点击退出全屏"));
+    }
+
+    // T32：无 episode 队列时禁用上一集/下一集并给出 tooltip。
+    player->setEpisodeNavigationEnabled(false, false);
+    check(prevButton && nextButton && !prevButton->isEnabled() && !nextButton->isEnabled()
+              && prevButton->toolTip().contains(QStringLiteral("没有上一集"))
+              && nextButton->toolTip().contains(QStringLiteral("没有下一集")),
+          QStringLiteral("队列为空时上一集/下一集按钮禁用并有 tooltip"));
+    player->setEpisodeNavigationEnabled(true, true);
 
     int playSignals = 0;
     int prevSignals = 0;
@@ -627,8 +658,8 @@ int runSelfTest(QApplication &app)
         docked.setPlayerModeActive(true);
         settle(app, 80);
         check(docked.controlsVisible()
-                  && docked.topOverlay()->geometry().top() == 0
-                  && docked.bottomOverlay()->geometry().bottom() + 1 == docked.height(),
+                  && docked.topOverlay()->geometry().top() == 5
+                  && docked.bottomOverlay()->geometry().bottom() + 1 == docked.height() - 5,
               QStringLiteral("页面内兜底浮层贴住播放页顶部/底部"));
         docked.setPlayerModeActive(false);
     }

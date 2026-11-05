@@ -281,3 +281,52 @@ T17 的键盘转发只挂在 Qt 主窗口。实机点一下视频后，Windows �
 4. app.log 应只出现一次（或每次重建一次）`mouse passthrough enabled on mpv child ... exstyle ...`，**不再有** `SetWindowSubclass failed` 刷屏；diagnostics 的 `mouse passthrough hwnd=0x... forwarded_events=N` 应随鼠标操作增长。
 5. 若某些 Windows/mpv 版本仍不穿透：回退方案 B（`WH_MOUSE_LL` 低级钩子或每帧重设样式）已在任务描述中，可按日志中 `SetWindowLongPtr ... failed` 定位。
 
+
+## 12. T32 全屏按钮/上下集按钮排查（2026-11-05）
+
+### 12.1 全屏按钮链路
+
+现在 FullscreenButton 的全链路为：
+
+```text
+QPushButton::clicked
+  -> PlayerPage::fullscreenRequested
+  -> ui::MainWindow::toggleFullscreen
+  -> PlayerPage::setFullscreen + QWidget::showFullScreen()
+```
+
+- PlayerPage 按钮日志：`PlayerPage: FullscreenButton clicked fullscreen=... playerMode=... windowFullScreen=...`
+- MainWindow 入口/出口日志：`MainWindow::toggleFullscreen enter isFullScreen=... m_fullscreen=... m_playerMode=... geometry=...`
+- PlayerPage::setFullscreen 日志记录目标状态和窗口真实全屏状态。
+- **兜底修复**：按钮发出 `fullscreenRequested` 后，在下一轮事件循环检查窗口真实状态；若状态没有变化（说明 UI 层连接缺失/断开/被异常拦截），通过 `QMetaObject::invokeMethod(window(), "toggleFullscreen")` 直接调用 MainWindow 的 `Q_INVOKABLE` 槽一次。正常路径已改变状态时不会重复切换。
+- Windows app.log 排查顺序：先看 `PlayerPage: FullscreenButton clicked`，再看 `MainWindow::toggleFullscreen enter`；若只有第一条没有第二条，说明信号连接问题；若两条都有但 `isFullScreen` 仍 false，检查 WindowFrame/窗口状态。
+
+### 12.2 上一集/下一集
+
+- `PlayerPage::setEpisodeNavigationEnabled(hasPrevious, hasNext)`：
+  - 首集：上一集按钮 disabled，tooltip「没有上一集」；
+  - 末集：下一集按钮 disabled，tooltip「没有下一集」；
+  - 空队列：两个按钮均 disabled；初始构造即 disabled，避免未开始播放时误点。
+- PlayerPage 的 Prev/Next clicked 日志记录 enabled/playerMode；信号仍保持 `previousEpisodeRequested/nextEpisodeRequested`。
+- UI `MainWindow::stepEpisode` 只处理 `m_mockMode` 的 mock 数据切换；真实播放不再被 UI mock 连接和 PlayerController 的 Emby 队列连接双重处理。
+- `PlayerController::stepEmbyEpisode/playEpisodeAt/loadEpisodeQueue` 日志包含 `m_embyItemId`、`m_episodeQueue.size()`、`m_episodeIndex`、目标 index；队列加载、切集和清空时同步按钮状态。
+- 本地播放列表：`playFiles` 根据文件数量/起始 index 设置按钮状态；Emby movie（无剧集队列）禁用 Prev/Next。
+
+### 12.3 自测
+
+- `emby-ui-demo --selftest` **155 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
+- 全屏测试输出可见完整日志：
+```text
+PlayerPage: FullscreenButton clicked ...
+MainWindow::toggleFullscreen enter ...
+MainWindow::toggleFullscreen enter-fullscreen ...
+```
+- 不依赖真实服务器；Windows 实机仍需按下方日志确认。
+
+### 12.4 Windows 实机复测
+
+1. 播放任意条目，点控制条全屏按钮：应进入全屏；再点退出。
+2. 检查 app.log 是否按顺序出现上述三条日志；若 fallback 生效会出现 `PlayerPage: fullscreenRequested did not change window state; invoking MainWindow::toggleFullscreen fallback`。
+3. 播放剧集第一集：上一集按钮应灰色、tooltip「没有上一集」；最后一集下一集同理；中间集两个可用。
+4. 播放电影：Prev/Next 均应 disabled；点击不应改变播放状态。
+5. 连续点上一集/下一集，检查 app.log 的 `PlayerController::stepEmbyEpisode ... queue=... index=... target=...`，目标 index 应在 0..size-1 内。
