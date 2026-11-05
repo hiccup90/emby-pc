@@ -50,6 +50,10 @@ signals:
     void titleChanged(const QString &title);
     void fileLoaded();
     void endReached();
+    // T29：设置/关于页只读信息。hwdec-current 可能随片源变化。
+    void hardwareDecoderChanged(const QString &hwdecCurrent, const QString &vo,
+                                const QString &gpuApi);
+    void libmpvVersionChanged(const QString &version);
     void toggleFullscreenRequested();
     void exitFullscreenRequested();
     void errorOccurred(const QString &message);

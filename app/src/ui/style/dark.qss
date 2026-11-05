@@ -689,9 +689,44 @@ QLabel#SettingName {
     font-size: 13px;
 }
 
-QLabel#SettingValue {
+QLabel#SettingValue,
+QLabel#SettingsConnectionValue,
+QLabel#SettingsCacheUsageValue,
+QLabel#SettingsHardwareDecoderValue,
+QLabel#SettingsAppVersionValue,
+QLabel#SettingsQtVersionValue,
+QLabel#SettingsBuildTimeValue,
+QLabel#SettingsLibmpvVersionValue {
     color: #64748B;
     font-size: 12px;
+}
+
+QLabel#SettingsConnectionValue[state="connected"] {
+    color: #6EE7B7;
+}
+
+QLabel#SettingsConnectionValue[state="disconnected"] {
+    color: #FCA5A5;
+}
+
+QSpinBox {
+    background-color: #111C2E;
+    border: 1px solid #263449;
+    border-radius: 7px;
+    padding: 5px 10px;
+    min-width: 96px;
+    color: #CBD5E1;
+    font-size: 12px;
+}
+
+QSpinBox:hover {
+    border-color: #3B82F6;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    width: 18px;
+    border: none;
+    background-color: transparent;
 }
 
 /* ------------------------------ 菜单 / 状态栏 / 滚动条 ------------------------------ */

@@ -27,7 +27,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `logindialog.h/.cpp` | 登录/连接对话框：测试连接、登录、HTTPS 自签开关、中文错误提示 |
 | `tokenstore.h/.cpp` | TokenStore 抽象 + QSettingsTokenStore 临时实现（预留 Windows DPAPI） |
 | `authutils.h/.cpp` | 服务器地址规范化 + ApiError → 中文提示 |
-| `settingspage.h/.cpp` | 设置页：账户（服务器/用户/版本/Token 状态、登录/退出）+ 播放/界面/关于 |
+| `settingspage.h/.cpp` | 设置页（T28）：服务器/账号、播放（字幕/连播/音量/延时/硬件解码）、存储缓存清理、日志目录、关于/诊断 + QSettings 持久化 |
 | `theme.h/.cpp` + `style/dark.qss` | 深色主题（Fusion + QPalette + QSS，QSS 编译进 Qt 资源） |
 | `demo_main.cpp` | 独立 demo / headless 自测 / 截图入口（仅 standalone 构建） |
 | `CMakeLists.txt` | 自有构建脚本：`add_library(ui STATIC ...)`；不改 `app/CMakeLists.txt` |
@@ -127,6 +127,22 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
 
 `--selftest` 默认使用本地假 Emby 服务器（QTcpServer），不依赖真实网络；`--live-login` / `--live-data` 才访问环境变量指定的真实服务器。
 
+## 设置页持久化（T28）
+
+设置页新增服务器/账号、播放、存储与日志、关于四个完整分区；QSettings 键约定：
+
+| Key | 默认 | 说明 |
+|---|---|---|
+| `player/subtitleLanguage` | `chi,zho,zh` | mpv slang：`chi,zho,zh` / `zho,chi,zh` / `en` / `none` |
+| `player/autoPlayNext` | `true` | 自动连播 |
+| `player/rememberVolume` | `true` | 记住音量；关闭后不自动恢复 |
+| `player/volume` | `80` | 上次音量（0–100） |
+| `player/autoHideDelayMs` | `2500` | 控制条自动隐藏延时（1500/2500/3000） |
+| `cache/imageLimitMB` | `1024` | 海报磁盘缓存上限 |
+
+`ui::MainWindow::settingsPage()` 暴露设置页，T29 可回填硬件解码/libmpv 版本；`settingsChanged()` 实时应用设置。
+存储页可显示/清理 `CacheLocation/images`、打开日志目录、导出诊断信息；关于页显示应用/Qt/构建/libmpv 版本并可复制不含 token 的诊断摘要。
+
 ## 真实媒体库（T7 / M2-B）
 
 ### 数据流
@@ -200,6 +216,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   `setTitleBarHeight(36)`，并把 `maximizeButtonRectChanged` 的 TitleBar 本地逻辑矩形传给 WindowFrame。
 - 播放模式/全屏（包括 T17 直接调用 `showFullScreen()`）隐藏 TitleBar 与 QMenuBar，退出恢复。
 - 窗口状态：`window/normalGeometry` + `window/maximized` 存 QSettings；启动恢复后 clamp 到当前屏幕 availableGeometry。
+- T30/WIN-01：MainWindow 最小尺寸 **800x480**，删除 PlayerController 的 720x480 覆盖；播放视频宿主仍为 320x180 下限。
 - standalone demo target 额外编译 `../windowframe.cpp` 解决 WindowFrame 符号链接；app target 使用 `app/CMakeLists.txt` 的 `src/windowframe.cpp`。
 
 ### 3. 控制信号（PlayerPage → 播放控制层）
@@ -251,7 +268,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **140 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **151 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
@@ -273,6 +290,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   - T25：复用 QNAM/默认关 HTTP/2/开关生效；500ms 延迟 + 100ms 传输超时释放槽位并重试上限 2 次；
     磁盘缓存写盘/新 cache 命中不联网；图片 URL 带 api_key、元数据 URL 不含 token；
   - T27：TitleBar 高度/按钮尺寸/标题跟随/WindowFrame host 与最大化矩形/双击切换；播放模式与全屏隐藏 TitleBar/QMenuBar；窗口 normalGeometry/最大化状态保存恢复与屏幕 clamp；
+  - T28：设置页控件/默认值、settingsChanged、六个 QSettings 键、缓存清理/诊断导出信号、关于字段；重新构造 SettingsPage 恢复值；T30：minimumSize==800x480 且 resize(700,400) 被约束；
   - 设置页 mock 开关可来回切换数据源。
 - `embyClient()`、`loginStateChanged(bool)`、`MainWindow::visibleItems()` 等 T8 接口可用。
 
@@ -294,6 +312,8 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 - 未使用参数用 `Q_UNUSED`；`QList` 与 `QVector` 在 Qt 6 已统一，代码未使用差异 API。
 
 ### 预览截图（1280x760 / 960x600）
+
+> 截图文件名沿用历史 960x600 预览；T30/WIN-01 后实际最小尺寸为 800x480。
 
 | 页面 | 截图 |
 |---|---|

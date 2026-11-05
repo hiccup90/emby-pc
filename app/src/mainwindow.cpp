@@ -11,6 +11,7 @@
 #include "ui/libraryview.h"
 #include "ui/mainwindow.h"
 #include "ui/playerpage.h"
+#include "ui/settingspage.h"
 
 #include <QAction>
 #include <QApplication>
@@ -36,6 +37,7 @@
 #include <QPointer>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -194,10 +196,30 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     preparePlayerOverlays();
 
     m_progressTimer = new QTimer(this);
-    m_progressTimer->setInterval(7000);
+    m_progressTimer->setInterval(10000); // T29：按规格 10 秒；pause/seek/切轨仍立即上报
     connect(m_progressTimer, &QTimer::timeout, this, [this]() {
         if (m_reporting)
             reportPlaybackProgress(QStringLiteral("TimeUpdate"));
+    });
+
+    // T29：设置页变化实时应用；QSettings 默认值由 SettingsPage 落盘。
+    if (auto *settingsPage = m_window->settingsPage()) {
+        connect(settingsPage, &ui::SettingsPage::settingsChanged, this,
+                &PlayerController::applyPlayerSettings);
+    }
+    applyPlayerSettings();
+
+    connect(m_player, &MpvPlayer::hardwareDecoderChanged, this,
+            [this](const QString &hwdec, const QString &vo, const QString &gpuApi) {
+                if (auto *settings = m_window->settingsPage()) {
+                    settings->setHardwareDecoderText(
+                        QStringLiteral("hwdec-current=%1 · vo=%2 · gpu-api=%3")
+                            .arg(hwdec.isEmpty() ? QStringLiteral("no") : hwdec, vo, gpuApi));
+                }
+            });
+    connect(m_player, &MpvPlayer::libmpvVersionChanged, this, [this](const QString &version) {
+        if (auto *settings = m_window->settingsPage())
+            settings->setLibmpvVersionText(version);
     });
 
     connect(m_player, &MpvPlayer::positionChanged, this, [this](double position) {
@@ -222,6 +244,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             m_pendingSeekSeconds = 0.0;
         }
         logMpvState(QStringLiteral("file-loaded"));
+        updateHardwareInfo();
         showStatus(tr("正在播放"));
         // track-list 在 FILE_LOADED 后才稳定；稍等再取，兼顾部分格式解析延迟。
         QTimer::singleShot(150, this, &PlayerController::refreshTracks);
@@ -379,16 +402,15 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         });
     }
 
-    // T15：ui::MainWindow 构造时 setMinimumSize(960,600) 且状态栏 size grip 关闭，
-    // 在部分高 DPI/小屏上用户会觉得主窗口“不可缩放”。这里在不改 ui 源码的前提下
-    // 放宽最小尺寸并启用右下角 resize grip（最大化/拖边框仍由系统窗口管理）。
+    // T30/WIN-01：主窗口最小尺寸统一由 ui::MainWindow 的 800x480 决定；
+    // PlayerController 不再覆盖 widget minimumSize（T15 的 720x480 已删除）。
+    // 保留 size grip 与小屏初始尺寸收紧逻辑。
     const QSize uiMinimum = m_window->minimumSize();
     m_window->installEventFilter(this);
     connect(m_window, &ui::MainWindow::playerModeChanged, this,
             [this](bool) { updatePlayerWindowChrome(); });
     if (QCoreApplication *app = QCoreApplication::instance())
         app->installEventFilter(this);
-    m_window->setMinimumSize(QSize(720, 480));
     m_window->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
     if (QStatusBar *status = m_window->statusBar())
         status->setSizeGripEnabled(true);
@@ -398,7 +420,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         const QSize available = screen->availableGeometry().size();
         if (available.isValid()) {
             QSize target = m_window->size().boundedTo(available - QSize(48, 96));
-            target = target.expandedTo(QSize(720, 480));
+            target = target.expandedTo(QSize(800, 480));
             if (target != m_window->size())
                 m_window->resize(target);
         }
@@ -413,10 +435,79 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     connectUiPlaybackSignals();
 }
 
-PlayerController::~PlayerController() = default;
+PlayerController::~PlayerController()
+{
+    // T29/SYN-03：窗口关闭/Controller 析构时兜底上报 Stopped；aboutToQuit 和
+    // MainWindow closeEvent 路径也会调用，reportPlaybackStopped() 自身有 m_reporting 防重。
+    if (m_reporting)
+        reportPlaybackStopped();
+}
+
+void PlayerController::applyPlayerSettings()
+{
+    QSettings settings;
+    m_autoNextEpisode = settings.value(QStringLiteral("player/autoPlayNext"), true).toBool();
+    m_rememberVolume = settings.value(QStringLiteral("player/rememberVolume"), true).toBool();
+    m_savedVolume = qBound(0, settings.value(QStringLiteral("player/volume"), 80).toInt(), 100);
+    m_subtitleLanguage = settings.value(QStringLiteral("player/subtitleLanguage"),
+                                        QStringLiteral("chi,zho,zh"))
+                              .toString();
+    const int hideDelay = qBound(500,
+                                 settings.value(QStringLiteral("player/autoHideDelayMs"), 2500).toInt(),
+                                 10000);
+
+    if (m_playerPage) {
+        m_playerPage->setOverlayHideDelay(hideDelay);
+        if (m_rememberVolume)
+            m_playerPage->setVolume(m_savedVolume);
+    }
+    if (m_player && m_player->isReady())
+        applyMpvSettings();
+    qInfo() << "player settings applied: slang" << normalizedSubtitleLanguage()
+            << "autoNext" << m_autoNextEpisode << "rememberVolume" << m_rememberVolume
+            << "volume" << m_savedVolume << "hideDelay" << hideDelay;
+}
+
+QString PlayerController::normalizedSubtitleLanguage() const
+{
+    QString language = m_subtitleLanguage.trimmed();
+    if (language.isEmpty() || language.compare(QStringLiteral("none"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("no");
+    return language;
+}
+
+void PlayerController::applyMpvSettings()
+{
+    if (!m_player || !m_player->isReady())
+        return;
+    // mpv 的 slang 为空/不自动开启时用 "no"，避免空字符串被当成无效语言列表。
+    m_player->setPropertyString("slang", normalizedSubtitleLanguage());
+    if (m_playerPage)
+        m_player->setVolume(m_playerPage->volume());
+}
+
+void PlayerController::updateHardwareInfo()
+{
+    if (!m_player || !m_player->isReady())
+        return;
+    if (auto *settings = m_window->settingsPage()) {
+        const QString hwdec = m_player->getPropertyString("hwdec-current");
+        const QString vo = m_player->getPropertyString("vo");
+        const QString gpuApi = m_player->getPropertyString("gpu-api");
+        settings->setHardwareDecoderText(
+            QStringLiteral("hwdec-current=%1 · vo=%2 · gpu-api=%3")
+                .arg(hwdec.isEmpty() ? QStringLiteral("no") : hwdec, vo, gpuApi));
+    }
+}
 
 bool PlayerController::eventFilter(QObject *watched, QEvent *event)
 {
+    // T29/SYN-03：窗口 closeEvent 先于对象析构；保证上报最后已知位置而不是 0。
+    if (watched == m_window && event->type() == QEvent::Close) {
+        if (m_reporting)
+            reportPlaybackStopped();
+    }
+
     // 键盘转发：mpv 子窗口在 --wid 下收不到输入，Qt 主窗口把按键转成
     // mpv `keypress`，空格/方向键/F/n/p/i 等 input.conf 绑定才会生效。
     // Esc/F11 留给 Qt 自己的快捷键；Ctrl/Alt 组合也不转发。
@@ -612,7 +703,8 @@ bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
         return false;
     }
 
-    m_player->setVolume(m_playerPage->volume());
+    applyMpvSettings();
+    updateHardwareInfo();
     logMpvState(QStringLiteral("initialized"));
     return true;
 }

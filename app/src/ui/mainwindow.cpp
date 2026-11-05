@@ -18,10 +18,15 @@
 #include "tokenstore.h"
 #include "windowframe.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
+#include <QStandardPaths>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -87,13 +92,14 @@ MainWindow::MainWindow(const Options &options, QWidget *parent)
         m_mockIndex.insert(m_mockLibrary.at(i).id, i);
 
     setWindowTitle(QStringLiteral("Emby PC — 自研客户端"));
-    setMinimumSize(960, 600);
+    setMinimumSize(800, 480);
     resize(1280, 760);
 
     buildUi();
     connectSignals();
     restoreWindowState();
     applyMockMode();
+    applySettings();
     m_settings->setTokenBackendName(m_tokenStore->backendName());
     updateSessionUi();
 
@@ -221,8 +227,8 @@ void MainWindow::setupTitleBar()
                 [this](bool maximized) { m_titleBar->setMaximized(maximized); });
     }
 
-    // WindowFrame 的原生最小尺寸下限是 800x480；UI 产品最小尺寸仍是 960x600。
-    setMinimumSize(960, 600);
+    // T30/WIN-01：UI 与原生层统一 800x480。
+    setMinimumSize(800, 480);
     setContentsMargins(0, kWindowTitleBarHeight, 0, 0);
     syncTitleBarGeometry();
     m_titleBar->setMaximized(isMaximized());
@@ -309,6 +315,41 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
     if (m_titleBar && titleBarVisible())
         syncTitleBarGeometry();
+}
+
+void MainWindow::applySettings()
+{
+    QSettings settings;
+    if (m_player) {
+        const int delay = qBound(500, settings.value(QStringLiteral("player/autoHideDelayMs"), 2500).toInt(),
+                                 10000);
+        m_player->setOverlayHideDelay(delay);
+        if (settings.value(QStringLiteral("player/rememberVolume"), true).toBool()) {
+            const int volume = qBound(0, settings.value(QStringLiteral("player/volume"), 80).toInt(),
+                                      100);
+            if (m_player->volume() != volume)
+                m_player->setVolume(volume);
+        }
+    }
+    if (m_cache) {
+        const int limitMb = qBound(64, settings.value(QStringLiteral("cache/imageLimitMB"), 1024).toInt(),
+                                   8192);
+        m_cache->setDiskCacheMaxBytes(qint64(limitMb) * 1024 * 1024);
+    }
+}
+
+void MainWindow::clearImageCache()
+{
+    if (m_cache)
+        m_cache->clear();
+    QDir dir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+             + QStringLiteral("/images"));
+    const QFileInfoList files = dir.entryInfoList(QDir::Files, QDir::NoSort);
+    for (const QFileInfo &file : files)
+        QFile::remove(file.absoluteFilePath());
+    if (m_settings)
+        m_settings->refreshCacheUsage();
+    statusBar()->showMessage(QStringLiteral("海报缓存已清理"), 2500);
 }
 
 void MainWindow::changeEvent(QEvent *event)
@@ -420,6 +461,9 @@ void MainWindow::connectSignals()
     });
     connect(m_player, &PlayerPage::volumeChanged, this, [this](int volume) {
         statusBar()->showMessage(QStringLiteral("音量 %1%").arg(volume), 1200);
+        QSettings settings;
+        if (settings.value(QStringLiteral("player/rememberVolume"), true).toBool())
+            settings.setValue(QStringLiteral("player/volume"), volume);
     });
     connect(m_player, &PlayerPage::subtitleTrackSelected, this, [this](const QString &trackId) {
         for (TrackInfo &track : m_subtitleTracks)
@@ -437,6 +481,16 @@ void MainWindow::connectSignals()
     connect(m_settings, &SettingsPage::loginRequested, this, &MainWindow::requestLogin);
     connect(m_settings, &SettingsPage::logoutRequested, this, &MainWindow::logout);
     connect(m_settings, &SettingsPage::mockModeChanged, this, &MainWindow::setMockMode);
+    connect(m_settings, &SettingsPage::settingsChanged, this, &MainWindow::applySettings);
+    connect(m_settings, &SettingsPage::clearImageCacheRequested, this,
+            &MainWindow::clearImageCache);
+    connect(m_settings, &SettingsPage::exportDiagnosticsRequested, this, [this]() {
+        // T17 的导出逻辑在 app 层；UI 层复用其 QAction（action 由 PlayerController 挂到帮助菜单）。
+        if (auto *action = findChild<QAction *>(QStringLiteral("ExportDiagnosticsAction")))
+            action->trigger();
+        else
+            statusBar()->showMessage(QStringLiteral("诊断导出功能尚未就绪"), 2500);
+    });
 
     auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(escape, &QShortcut::activated, this, &MainWindow::handleEscape);

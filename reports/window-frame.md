@@ -49,7 +49,7 @@ T27 集成约定：TitleBar 是 MainWindow 的直接子控件，不包含 QMenuB
 ### 2.3 多显示器/最小尺寸
 
 - 最大化/还原、`WM_GETMINMAXINFO` 均以 `MonitorFromWindow(MONITOR_DEFAULTTONEAREST)` 当前显示器工作区计算。
-- 最小尺寸默认 800x480；T27 可再按页面调整（播放页 320x180 由上层布局保证）。
+- 最小尺寸 800x480（WIN-01）；T30 已把 UI/PlayerController 对齐到该值，播放页视频宿主 placeholder 320x180 由上层布局保证。
 - 窗口位置恢复由上层负责（T27 WIN-04），本层不抢 normalGeometry。
 
 ## 3. Linux 编译隔离
@@ -121,4 +121,4 @@ exit=0
 
 - Windows 实机行为（DWM/任务栏/Snap/多显示器）本机 Linux 无法验证，需要 Windows CI 打包后按第 5 节验收。
 - 标题栏高度按逻辑像素 36；125%/150%/200% DPI 的实际视觉验收需 Windows 实机确认。
-- 最小尺寸仍为 960x600（T26 原生层默认 800x480 由 UI 层覆盖）；更小窗口的页面布局未做额外适配。
+- T30/WIN-01 已把 UI 最小尺寸与原生层统一为 **800x480**；T15 的 PlayerController 720x480 覆盖已删除。播放页视频宿主 placeholder 仍为 320x180 下限。

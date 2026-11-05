@@ -15,6 +15,7 @@
 #include "logindialog.h"
 #include "mainwindow.h"
 #include "playerpage.h"
+#include "settingspage.h"
 #include "theme.h"
 #include "titlebar.h"
 #include "tokenstore.h"
@@ -22,6 +23,8 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
+#include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -44,6 +47,7 @@
 #include <QStatusBar>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -599,10 +603,15 @@ int runSelfTest(QApplication &app)
     check(titleBar && titleBar->isVisible(), QStringLiteral("退出全屏恢复 TitleBar"));
 
     // 最小窗口尺寸下布局不崩
-    window.resize(960, 600);
+    window.resize(700, 400);
     settle(app, 120);
-    check(window.minimumWidth() == 960 && window.minimumHeight() == 600,
-          QStringLiteral("最小尺寸 960x600"));
+    check(window.minimumWidth() == 800 && window.minimumHeight() == 480
+              && window.width() >= 800 && window.height() >= 480,
+          QStringLiteral("最小尺寸 800x480（resize(700,400) 被约束）"));
+    auto *videoPlaceholder = window.findChild<QWidget *>(QStringLiteral("VideoHostPlaceholder"));
+    check(videoPlaceholder && videoPlaceholder->minimumWidth() <= 320
+              && videoPlaceholder->minimumHeight() <= 180,
+          QStringLiteral("视频区 placeholder 保持 320x180 下限"));
 
     // EMBY_PC_PLAYER_OVERLAY=0 兜底：浮层回到页面内。
     qputenv("EMBY_PC_PLAYER_OVERLAY", QByteArrayLiteral("0"));
@@ -653,7 +662,7 @@ int runWindowStateTests(QApplication &app)
     QRect savedNormalGeometry;
     {
         ui::MainWindow window(ui::MainWindow::Options{false});
-        window.resize(960, 600);
+        window.resize(800, 600);
         // offscreen 屏宽可能小于窗口最小宽度；用 x=0 验证保存/恢复，clamp 另测。
         window.move(0, 60);
         window.show();
@@ -706,6 +715,108 @@ int runWindowStateTests(QApplication &app)
         settle(app, 120);
         check(window.isMaximized(), QStringLiteral("窗口最大化状态恢复"));
         window.close();
+    }
+
+    QCoreApplication::setOrganizationName(oldOrganization);
+    QCoreApplication::setApplicationName(oldApplication);
+    return failures;
+}
+
+int runSettingsTests(QApplication &app)
+{
+    QTextStream out(stdout);
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &name) {
+        out << (ok ? "PASS  " : "FAIL  ") << name << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    QTemporaryDir settingsDir;
+    check(settingsDir.isValid(), QStringLiteral("T28 创建设置临时 QSettings"));
+    const QString oldOrganization = QCoreApplication::organizationName();
+    const QString oldApplication = QCoreApplication::applicationName();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("emby-pc-test"));
+    QCoreApplication::setApplicationName(QStringLiteral("ui-settings-test"));
+
+    {
+        ui::SettingsPage page;
+        page.show();
+        settle(app, 80);
+        auto *subtitle = page.findChild<QComboBox *>(QStringLiteral("SettingsSubtitleLanguageCombo"));
+        auto *autoPlay = page.findChild<QCheckBox *>(QStringLiteral("SettingsAutoPlayNextCheck"));
+        auto *remember = page.findChild<QCheckBox *>(QStringLiteral("SettingsRememberVolumeCheck"));
+        auto *delay = page.findChild<QComboBox *>(QStringLiteral("SettingsAutoHideDelayCombo"));
+        auto *cacheLimit = page.findChild<QSpinBox *>(QStringLiteral("SettingsCacheLimitSpin"));
+        auto *hardware = page.findChild<QLabel *>(QStringLiteral("SettingsHardwareDecoderValue"));
+        check(subtitle && autoPlay && remember && delay && cacheLimit && hardware,
+              QStringLiteral("设置页播放/存储控件存在"));
+        check(page.subtitleLanguage() == QStringLiteral("chi,zho,zh")
+                  && page.autoPlayNext() && page.rememberVolume()
+                  && page.autoHideDelayMs() == 2500 && page.cacheImageLimitMB() == 1024,
+              QStringLiteral("设置页默认值"));
+
+        int changedCount = 0;
+        QObject::connect(&page, &ui::SettingsPage::settingsChanged,
+                         [&changedCount]() { ++changedCount; });
+        subtitle->setCurrentIndex(subtitle->findData(QStringLiteral("zho,chi,zh")));
+        autoPlay->setChecked(false);
+        remember->setChecked(false);
+        delay->setCurrentIndex(delay->findData(1500));
+        cacheLimit->setValue(512);
+        settle(app, 80);
+        check(changedCount >= 5, QStringLiteral("设置页修改发出 settingsChanged"));
+
+        QSettings settings;
+        check(settings.value(QStringLiteral("player/subtitleLanguage")).toString()
+                  == QStringLiteral("zho,chi,zh")
+                  && !settings.value(QStringLiteral("player/autoPlayNext")).toBool()
+                  && !settings.value(QStringLiteral("player/rememberVolume")).toBool()
+                  && settings.value(QStringLiteral("player/autoHideDelayMs")).toInt() == 1500
+                  && settings.value(QStringLiteral("cache/imageLimitMB")).toInt() == 512,
+              QStringLiteral("设置页写入约定 QSettings 键"));
+
+        int clearCount = 0;
+        int exportCount = 0;
+        QObject::connect(&page, &ui::SettingsPage::clearImageCacheRequested,
+                         [&clearCount]() { ++clearCount; });
+        QObject::connect(&page, &ui::SettingsPage::exportDiagnosticsRequested,
+                         [&exportCount]() { ++exportCount; });
+        if (auto *clear = page.findChild<QPushButton *>(QStringLiteral("SettingsClearCacheButton")))
+            clear->click();
+        if (auto *exportButton = page.findChild<QPushButton *>(QStringLiteral("SettingsExportDiagnosticsButton")))
+            exportButton->click();
+        check(clearCount == 1 && exportCount == 1,
+              QStringLiteral("设置页缓存清理/诊断导出按钮发出信号"));
+
+        page.setHardwareDecoderText(QStringLiteral("d3d11va"));
+        page.setLibmpvVersionText(QStringLiteral("mpv 0.38"));
+        check(hardware->text() == QStringLiteral("d3d11va")
+                  && page.findChild<QLabel *>(QStringLiteral("SettingsLibmpvVersionValue"))->text()
+                         == QStringLiteral("mpv 0.38"),
+              QStringLiteral("设置页回填硬件解码/libmpv 版本"));
+        const auto aboutValues = {
+            page.findChild<QLabel *>(QStringLiteral("SettingsAppVersionValue")),
+            page.findChild<QLabel *>(QStringLiteral("SettingsQtVersionValue")),
+            page.findChild<QLabel *>(QStringLiteral("SettingsBuildTimeValue")),
+            page.findChild<QLabel *>(QStringLiteral("SettingsLibmpvVersionValue"))};
+        bool aboutNonEmpty = true;
+        for (QLabel *label : aboutValues)
+            aboutNonEmpty = aboutNonEmpty && label && !label->text().isEmpty();
+        check(aboutNonEmpty, QStringLiteral("关于页版本/Qt/构建/libmpv 字段非空"));
+        check(page.findChild<QLabel *>(QStringLiteral("SettingsCacheUsageValue"))->text().size() > 0,
+              QStringLiteral("存储页显示缓存占用"));
+    }
+
+    {
+        ui::SettingsPage restored;
+        check(restored.subtitleLanguage() == QStringLiteral("zho,chi,zh")
+                  && !restored.autoPlayNext() && !restored.rememberVolume()
+                  && restored.autoHideDelayMs() == 1500 && restored.cacheImageLimitMB() == 512,
+              QStringLiteral("重新构造 SettingsPage 恢复设置值"));
     }
 
     QCoreApplication::setOrganizationName(oldOrganization);
@@ -1716,6 +1827,7 @@ int main(int argc, char *argv[])
         int failures = runSelfTest(app);
         failures += runAuthTests(app);
         failures += runWindowStateTests(app);
+        failures += runSettingsTests(app);
         return failures == 0 ? 0 : 1;
     }
 

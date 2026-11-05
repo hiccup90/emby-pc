@@ -99,6 +99,8 @@ public:
     // T27：自绘标题栏 / 原生窗口层（用于自测和诊断）。
     TitleBar *titleBar() const { return m_titleBar; }
     WindowFrame *windowFrame() const { return m_windowFrame; }
+    // T28/T29：设置页（T29 可写硬件解码/libmpv 状态并读 QSettings 键）。
+    SettingsPage *settingsPage() const { return m_settings; }
 
     QStringList libraryIds() const;
     QStringList sectionNames() const;
@@ -132,6 +134,8 @@ private:
     void updateWindowChrome();
     void restoreWindowState();
     void saveWindowState();
+    void applySettings();
+    void clearImageCache();
 
     // 数据源
     void applyMockMode();

@@ -70,6 +70,10 @@ private:
     void preparePlayerOverlays();
     void updatePlayerWindowChrome();
     void scheduleHomeRefresh(int delayMs = 0);
+    void applyPlayerSettings();
+    void applyMpvSettings();
+    QString normalizedSubtitleLanguage() const;
+    void updateHardwareInfo();
     bool isDuplicateKeyForward(const QString &name, int source);
     void forwardKeyPressToMpv(const QString &name);
     void logMpvState(const QString &reason);
@@ -121,6 +125,9 @@ private:
     qint64 m_embyDurationTicks = 0;
     bool m_reporting = false;
     bool m_autoNextEpisode = true;
+    bool m_rememberVolume = true;
+    int m_savedVolume = 80;
+    QString m_subtitleLanguage;
     int m_requestSerial = 0;
     int m_audioSwitchSerial = 0;
     QString m_lastForwardedKeyName;

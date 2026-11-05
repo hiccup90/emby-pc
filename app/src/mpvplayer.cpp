@@ -246,6 +246,14 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
     a.observeProperty(m_mpv, 2, "duration", MPV_FORMAT_DOUBLE);
     a.observeProperty(m_mpv, 3, "pause", MPV_FORMAT_FLAG);
     a.observeProperty(m_mpv, 4, "media-title", MPV_FORMAT_STRING);
+    // T29：hwdec-current 会随片源/硬解初始化变化，设置页只读显示。
+    a.observeProperty(m_mpv, 5, "hwdec-current", MPV_FORMAT_STRING);
+
+    // T29：初始化完成即把 libmpv 版本和当前渲染信息提供给设置/关于页。
+    emit libmpvVersionChanged(getPropertyString("mpv-version"));
+    emit hardwareDecoderChanged(getPropertyString("hwdec-current"),
+                                getPropertyString("vo"),
+                                getPropertyString("gpu-api"));
 
     m_timer.start();
     return true;
@@ -399,6 +407,11 @@ void MpvPlayer::handleEvent(mpv_event *event)
             const char *value = *static_cast<char **>(prop->data);
             m_title = QString::fromUtf8(value ? value : "");
             emit titleChanged(m_title);
+        } else if (name == "hwdec-current" && prop->format == MPV_FORMAT_STRING) {
+            const char *value = *static_cast<char **>(prop->data);
+            emit hardwareDecoderChanged(QString::fromUtf8(value ? value : ""),
+                                        getPropertyString("vo"),
+                                        getPropertyString("gpu-api"));
         }
         break;
     }
