@@ -3,7 +3,11 @@
 #include "authutils.h"
 #include "embyclient.h"
 
+#include <QDateTime>
 #include <QDebug>
+#include <QHash>
+#include <QPointer>
+#include <QSettings>
 #include <QSharedPointer>
 
 #include <algorithm>
@@ -78,6 +82,7 @@ LibraryData::LibraryData(emby::EmbyClient *client, QObject *parent)
 void LibraryData::setClient(emby::EmbyClient *client)
 {
     m_client = client;
+    clearHomeSectionsCache();
 }
 
 QString LibraryData::posterImageUrl(const emby::MediaItem &source, int maxHeight,
@@ -531,6 +536,276 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
     });
 }
 
+
+void LibraryData::clearHomeSectionsCache()
+{
+    m_homeCacheKey.clear();
+    m_homeCacheMs = 0;
+    m_homeCacheSections.clear();
+}
+
+void LibraryData::fetchHomeSections(const HomeQuery &query, HomeSectionsHandler handler)
+{
+    if (!handler)
+        return;
+    if (!m_client) {
+        handler({}, QStringLiteral("未登录，无法加载首页。"));
+        return;
+    }
+
+    QPointer<LibraryData> self(this);
+    QSettings settings;
+    QStringList hidden = query.hiddenLibraryIds;
+    for (const QString &key : {QStringLiteral("home/hiddenLibraries"),
+                               QStringLiteral("sidebar/hiddenLibraries")}) {
+        for (const QString &id : settings.value(key).toStringList()) {
+            if (!id.trimmed().isEmpty() && !hidden.contains(id.trimmed()))
+                hidden.append(id.trimmed());
+        }
+    }
+
+    QStringList requestedOrder = query.sectionOrder;
+    if (requestedOrder.isEmpty())
+        requestedOrder = settings.value(QStringLiteral("home/sectionOrder")).toStringList();
+    QStringList cleanOrder;
+    for (const QString &token : requestedOrder) {
+        const QString trimmed = token.trimmed();
+        if (!trimmed.isEmpty() && !cleanOrder.contains(trimmed))
+            cleanOrder.append(trimmed);
+    }
+
+    const QString cacheKey = QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
+                                 .arg(qMax(1, query.resumeLimit))
+                                 .arg(qMax(1, query.recentLimit))
+                                 .arg(qMax(1, query.perLibraryLimit))
+                                 .arg(hidden.join(QLatin1Char(',')))
+                                 .arg(cleanOrder.join(QLatin1Char(',')))
+                                 .arg(m_client->profile().userId)
+                                 .arg(m_client->baseUrl());
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!m_homeCacheKey.isEmpty() && cacheKey == m_homeCacheKey
+        && now - m_homeCacheMs < 60 * 1000) {
+        qInfo() << "home sections cache hit: sections" << m_homeCacheSections.size()
+                << "ageMs" << (now - m_homeCacheMs);
+        handler(m_homeCacheSections, QString());
+        return;
+    }
+
+    fetchViews([self, handler, query, hidden, cleanOrder, cacheKey](
+                   const QList<LibrarySection> &views, const QString &viewError) {
+        if (!self)
+            return;
+        if (viewError.isEmpty()) {
+            qInfo() << "home sections views:" << views.size();
+        } else {
+            qWarning() << "home sections views error:" << viewError;
+        }
+
+        QStringList visibleIds;
+        QHash<QString, LibrarySection> visibleById;
+        for (const LibrarySection &view : views) {
+            if (hidden.contains(view.id))
+                continue;
+            if (view.collectionType != QLatin1String("movies")
+                && view.collectionType != QLatin1String("tvshows")
+                && view.collectionType != QLatin1String("boxsets")) {
+                continue;
+            }
+            visibleIds.append(view.id);
+            visibleById.insert(view.id, view);
+        }
+
+        struct PlanEntry
+        {
+            HomeSection section;
+            QString libraryId;
+        };
+        QList<PlanEntry> plan;
+        auto addResume = [&plan]() {
+            for (const PlanEntry &entry : plan) {
+                if (entry.section.kind == HomeSection::Kind::Resume)
+                    return;
+            }
+            PlanEntry entry;
+            entry.section.kind = HomeSection::Kind::Resume;
+            entry.section.title = QStringLiteral("继续观看");
+            plan.append(entry);
+        };
+        auto addRecent = [&plan]() {
+            for (const PlanEntry &entry : plan) {
+                if (entry.section.kind == HomeSection::Kind::Recent)
+                    return;
+            }
+            PlanEntry entry;
+            entry.section.kind = HomeSection::Kind::Recent;
+            entry.section.title = QStringLiteral("最近添加");
+            plan.append(entry);
+        };
+        auto addLibrary = [&plan, &visibleById](const QString &libraryId) {
+            if (!visibleById.contains(libraryId))
+                return;
+            for (const PlanEntry &entry : plan) {
+                if (entry.section.kind == HomeSection::Kind::Library
+                    && entry.section.libraryId == libraryId) {
+                    return;
+                }
+            }
+            PlanEntry entry;
+            entry.section.kind = HomeSection::Kind::Library;
+            entry.section.libraryId = libraryId;
+            entry.section.title = visibleById.value(libraryId).name;
+            plan.append(entry);
+        };
+
+        for (const QString &token : cleanOrder) {
+            if (token.compare(QStringLiteral("resume"), Qt::CaseInsensitive) == 0)
+                addResume();
+            else if (token.compare(QStringLiteral("recent"), Qt::CaseInsensitive) == 0)
+                addRecent();
+            else if (token.startsWith(QStringLiteral("lib:")))
+                addLibrary(token.mid(4));
+        }
+        if (plan.isEmpty()) {
+            // 未配置或配置项全部失效：默认 resume、recent、Views 顺序。
+            addResume();
+            addRecent();
+            for (const QString &libraryId : visibleIds)
+                addLibrary(libraryId);
+        }
+
+        struct State
+        {
+            QList<HomeSection> sections;
+            QList<QString> libraryIds;
+            int pending = 0;
+            QString overallError;
+            HomeSectionsHandler handler;
+            QString cacheKey;
+        };
+        auto state = QSharedPointer<State>::create();
+        state->handler = std::move(handler);
+        state->cacheKey = cacheKey;
+        state->overallError = viewError;
+        for (const PlanEntry &entry : plan) {
+            state->sections.append(entry.section);
+            state->libraryIds.append(entry.libraryId);
+        }
+        state->pending = state->sections.size();
+        if (state->pending == 0) {
+            auto callback = std::move(state->handler);
+            state->handler = nullptr;
+            callback({}, state->overallError);
+            return;
+        }
+
+        QSharedPointer<std::function<void()>> finish =
+            QSharedPointer<std::function<void()>>::create();
+        // 弱引用避免 lambda 自持有 finish 形成环；不能在执行中 reset 自己（会 UAF）。
+        const QWeakPointer<std::function<void()>> weakFinish = finish.toWeakRef();
+        *finish = [self, state, weakFinish]() {
+            if (!self)
+                return;
+            if (--state->pending > 0)
+                return;
+            if (!state->handler)
+                return;
+            qInfo() << "home sections finish: sections" << state->sections.size()
+                    << "error" << state->overallError;
+            for (const HomeSection &section : state->sections) {
+                qInfo() << "home section:"
+                        << (section.kind == HomeSection::Kind::Resume
+                                ? "resume"
+                                : (section.kind == HomeSection::Kind::Recent ? "recent"
+                                                                            : "library"))
+                        << "libraryId" << section.libraryId << "items" << section.items.size()
+                        << "total" << section.totalCount << "hasMore" << section.hasMore
+                        << "error" << section.error;
+            }
+            self->m_homeCacheKey = state->cacheKey;
+            self->m_homeCacheMs = QDateTime::currentMSecsSinceEpoch();
+            self->m_homeCacheSections = state->sections;
+            auto callback = std::move(state->handler);
+            state->handler = nullptr;
+            callback(state->sections, state->overallError);
+        };
+
+        for (int index = 0; index < state->sections.size(); ++index) {
+            const HomeSection &section = state->sections.at(index);
+            if (section.kind == HomeSection::Kind::Resume) {
+                const int limit = qMax(1, query.resumeLimit);
+                self->m_client->fetchResumeItems(
+                    limit, 0,
+                    [self, state, index, finish](const emby::ItemQueryResult &page,
+                                                 const emby::ApiError &error) {
+                        if (!self)
+                            return;
+                        HomeSection &target = state->sections[index];
+                        target.totalCount = page.totalRecordCount;
+                        target.hasMore = page.totalRecordCount > page.items.size();
+                        if (error.isError())
+                            target.error = friendlyApiError(error);
+                        for (const emby::MediaItem &source : page.items)
+                            target.items.append(self->toMediaItem(source));
+                        qInfo() << "home section resume: items" << target.items.size()
+                                << "error" << target.error;
+                        (*finish)();
+                    });
+            } else if (section.kind == HomeSection::Kind::Recent) {
+                emby::ItemQuery recentQuery;
+                recentQuery.recursive = true;
+                recentQuery.includeItemTypes = {QStringLiteral("Movie"), QStringLiteral("Series")};
+                recentQuery.fields = listFields();
+                recentQuery.limit = qMax(1, query.recentLimit);
+                recentQuery.sortBy = {QStringLiteral("DateCreated")};
+                recentQuery.sortOrder = QStringLiteral("Descending");
+                self->m_client->fetchItems(
+                    recentQuery,
+                    [self, state, index, finish](const emby::ItemQueryResult &page,
+                                                 const emby::ApiError &error) {
+                        if (!self)
+                            return;
+                        HomeSection &target = state->sections[index];
+                        target.totalCount = page.totalRecordCount;
+                        target.hasMore = page.totalRecordCount > page.items.size();
+                        if (error.isError())
+                            target.error = friendlyApiError(error);
+                        for (const emby::MediaItem &source : page.items)
+                            target.items.append(self->toMediaItem(source));
+                        qInfo() << "home section recent: items" << target.items.size()
+                                << "error" << target.error;
+                        (*finish)();
+                    });
+            } else if (section.kind == HomeSection::Kind::Library) {
+                const LibrarySection library = visibleById.value(section.libraryId);
+                emby::ItemQuery libraryQuery;
+                libraryQuery.parentId = library.id;
+                libraryQuery.recursive = true;
+                libraryQuery.includeItemTypes = itemTypesForCollection(library.collectionType);
+                libraryQuery.fields = listFields();
+                libraryQuery.limit = qMax(1, query.perLibraryLimit);
+                libraryQuery.sortBy = {QStringLiteral("DateCreated")};
+                libraryQuery.sortOrder = QStringLiteral("Descending");
+                self->m_client->fetchItems(
+                    libraryQuery,
+                    [self, state, index, finish](const emby::ItemQueryResult &page,
+                                                 const emby::ApiError &error) {
+                        if (!self)
+                            return;
+                        HomeSection &target = state->sections[index];
+                        target.totalCount = page.totalRecordCount;
+                        target.hasMore = page.totalRecordCount > page.items.size();
+                        if (error.isError())
+                            target.error = friendlyApiError(error);
+                        for (const emby::MediaItem &source : page.items)
+                            target.items.append(self->toMediaItem(source));
+                        qInfo() << "home section library:" << target.libraryId << "items"
+                                << target.items.size() << "error" << target.error;
+                        (*finish)();
+                    });
+            }
+        }
+    });
+}
 
 void LibraryData::fetchDetail(const QString &itemId, DetailHandler handler)
 {

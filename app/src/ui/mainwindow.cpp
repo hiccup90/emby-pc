@@ -36,6 +36,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QShortcut>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTimer>
@@ -127,10 +128,14 @@ void MainWindow::buildUi()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    m_sidebar = new Sidebar(root);
-    rootLayout->addWidget(m_sidebar);
+    m_splitter = new QSplitter(Qt::Horizontal, root);
+    m_splitter->setObjectName(QStringLiteral("MainSplitter"));
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->setHandleWidth(4);
+    m_sidebar = new Sidebar(m_splitter);
+    m_splitter->addWidget(m_sidebar);
 
-    auto *column = new QWidget(root);
+    auto *column = new QWidget(m_splitter);
     column->setObjectName(QStringLiteral("MainColumn"));
     auto *columnLayout = new QVBoxLayout(column);
     columnLayout->setContentsMargins(0, 0, 0, 0);
@@ -193,9 +198,15 @@ void MainWindow::buildUi()
     m_stack->addWidget(m_player);       // StackPlayer
 
     columnLayout->addWidget(m_stack, 1);
-    rootLayout->addWidget(column, 1);
+    m_splitter->addWidget(column);
+    m_splitter->setStretchFactor(0, 0);
+    m_splitter->setStretchFactor(1, 1);
+    rootLayout->addWidget(m_splitter, 1);
     setCentralWidget(root);
+    connect(m_splitter, &QSplitter::splitterMoved, this,
+            [this](int, int) { saveSidebarWidth(); });
     setupTitleBar();
+    restoreSidebarWidth();
 }
 
 void MainWindow::setupTitleBar()
@@ -317,8 +328,34 @@ void MainWindow::resizeEvent(QResizeEvent *event)
         syncTitleBarGeometry();
 }
 
+void MainWindow::restoreSidebarWidth()
+{
+    if (!m_splitter || m_splitter->count() < 2)
+        return;
+    QSettings settings;
+    const int width = qBound(180, settings.value(QStringLiteral("ui/sidebarWidth"), 224).toInt(), 320);
+    const int total = qMax(width, m_splitter->width());
+    m_splitter->setSizes({width, qMax(1, total - width)});
+    QTimer::singleShot(0, this, [this, width]() {
+        if (!m_splitter || m_splitter->count() < 2)
+            return;
+        const int totalNow = qMax(width, m_splitter->width());
+        m_splitter->setSizes({width, qMax(1, totalNow - width)});
+    });
+}
+
+void MainWindow::saveSidebarWidth()
+{
+    if (!m_sidebar)
+        return;
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/sidebarWidth"), m_sidebar->width());
+}
+
 void MainWindow::applySettings()
 {
+    if (m_data)
+        m_data->clearHomeSectionsCache();
     QSettings settings;
     if (m_player) {
         const int delay = qBound(500, settings.value(QStringLiteral("player/autoHideDelayMs"), 2500).toInt(),
@@ -365,6 +402,7 @@ void MainWindow::changeEvent(QEvent *event)
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveWindowState();
+    saveSidebarWidth();
     QMainWindow::closeEvent(event);
 }
 
@@ -708,35 +746,49 @@ void MainWindow::loadRealHome()
     m_home->recentView()->setLocalSortingEnabled(false);
     m_home->recentView()->setTitle(QStringLiteral("最近添加"));
 
-    m_data->fetchHome(12, 24, [this, generation](const QList<MediaItem> &resume,
-                                                 const QList<MediaItem> &recent,
-                                                 const QString &error) {
-        qInfo() << "MainWindow::loadRealHome callback: generation" << generation
-                << "currentGeneration" << m_homeGeneration
-                << "resume" << resume.size()
-                << "recent" << recent.size()
-                << "error" << error
-                << "homeVisible" << m_home->isVisible()
-                << "stackIndex" << m_stack->currentIndex();
-        if (generation != m_homeGeneration)
-            return;
-        if (!error.isEmpty()) {
-            m_home->setError(error);
-            emit dataLoaded(false, error);
-            return;
-        }
-        m_home->setResumeItems(resume);
-        m_home->setRecentItems(recent);
-        m_home->setLoading(false);
-        m_home->recentView()->setTotalCount(recent.size());
-        m_home->recentView()->setHasMore(false);
-        rememberItems(resume);
-        rememberItems(recent);
-        emit dataLoaded(true, QString());
-        statusBar()->showMessage(QStringLiteral("已连接真实媒体库 · 最近添加 %1 项")
-                                     .arg(recent.size()),
-                                 3000);
-    });
+    HomeQuery query;
+    query.resumeLimit = 12;
+    query.recentLimit = 24;
+    query.perLibraryLimit = 18;
+    QPointer<MainWindow> self(this);
+    m_data->fetchHomeSections(
+        query, [self, generation](const QList<HomeSection> &sections, const QString &error) {
+            // 测试/退出时 MainWindow 可能先于网络回调销毁，QPointer 防止悬空。
+            if (!self || generation != self->m_homeGeneration)
+                return;
+            QList<MediaItem> resume;
+            QList<MediaItem> recent;
+            for (const HomeSection &section : sections) {
+                if (section.kind == HomeSection::Kind::Resume)
+                    resume = section.items;
+                else if (section.kind == HomeSection::Kind::Recent)
+                    recent = section.items;
+            }
+            qInfo() << "MainWindow::loadRealHome callback: generation" << generation
+                    << "currentGeneration" << self->m_homeGeneration
+                    << "sections" << sections.size()
+                    << "resume" << resume.size()
+                    << "recent" << recent.size()
+                    << "error" << error
+                    << "homeVisible" << self->m_home->isVisible()
+                    << "stackIndex" << self->m_stack->currentIndex();
+            if (!error.isEmpty() && sections.isEmpty()) {
+                self->m_home->setError(error);
+                emit self->dataLoaded(false, error);
+                return;
+            }
+            self->m_home->setResumeItems(resume);
+            self->m_home->setRecentItems(recent);
+            self->m_home->setLoading(false);
+            self->m_home->recentView()->setTotalCount(recent.size());
+            self->m_home->recentView()->setHasMore(false);
+            self->rememberItems(resume);
+            self->rememberItems(recent);
+            emit self->dataLoaded(true, QString());
+            self->statusBar()->showMessage(QStringLiteral("已连接真实媒体库 · 最近添加 %1 项")
+                                               .arg(recent.size()),
+                                           3000);
+        });
 }
 
 void MainWindow::selectSection(int sectionIndex)
@@ -1269,6 +1321,8 @@ void MainWindow::onLoggedIn(const emby::ServerProfile &profile, const emby::Serv
     m_lastServerUrl = profile.baseUrl();
     m_lastUserName = profile.userName;
     m_client->setProfile(profile);
+    if (m_data)
+        m_data->clearHomeSectionsCache();
     m_tokenStore->saveProfile(profile);
     m_settings->setSession(profile, info);
     m_cache->clear();
@@ -1305,6 +1359,8 @@ void MainWindow::logout()
     m_serverInfo = {};
     m_sessionActive = false;
     m_client->setProfile(emby::ServerProfile());
+    if (m_data)
+        m_data->clearHomeSectionsCache();
     m_client->abortAll();
     m_cache->clear();
     if (m_data)

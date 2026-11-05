@@ -38,6 +38,31 @@ struct PosterSourceStats
     QString summary() const;
 };
 
+// 首页分栏数据（T37）。HomeView 只消费有序的 HomeSection 列表，
+// 顺序/隐藏库/刷新缓存由数据层按 QSettings 解析。
+struct HomeQuery
+{
+    int resumeLimit = 12;
+    int recentLimit = 24;
+    int perLibraryLimit = 18;
+    // 非空时覆盖 QSettings.hiddenLibraries；实际会与 home/sidebar 隐藏集合合并。
+    QStringList hiddenLibraryIds;
+    // 非空时覆盖 QSettings.home/sectionOrder；token: resume / recent / lib:<viewId>。
+    QStringList sectionOrder;
+};
+
+struct HomeSection
+{
+    enum class Kind { Resume, Recent, Library };
+    Kind kind = Kind::Resume;
+    QString libraryId;
+    QString title;
+    QList<MediaItem> items;
+    int totalCount = 0;
+    bool hasMore = false;
+    QString error;
+};
+
 // UI 数据层：把 emby::MediaItem 转成 ui::MediaItem，负责 Views / Items 分页 /
 // 首页 Resume+最近添加 / 详情（含季集）的请求编排。只依赖 emby 模块，不碰 Widgets。
 class LibraryData : public QObject
@@ -49,6 +74,7 @@ public:
                                             const QString &error)>;
     using HomeHandler = std::function<void(const QList<MediaItem> &resume,
                                            const QList<MediaItem> &recent, const QString &error)>;
+    using HomeSectionsHandler = std::function<void(const QList<HomeSection> &, const QString &error)>;
     using DetailHandler = std::function<void(const MediaItem &, const QString &error)>;
 
     explicit LibraryData(emby::EmbyClient *client = nullptr, QObject *parent = nullptr);
@@ -60,6 +86,9 @@ public:
     void fetchItems(const LibrarySection &section, int startIndex, int limit, int sortMode,
                     const QString &searchTerm, ItemsHandler handler);
     void fetchHome(int resumeLimit, int recentLimit, HomeHandler handler);
+    void fetchHomeSections(const HomeQuery &query, HomeSectionsHandler handler);
+    // 登录/退出/设置变更时调用；60 秒缓存用。
+    void clearHomeSectionsCache();
     void fetchDetail(const QString &itemId, DetailHandler handler);
 
     PosterSourceStats posterStats() const { return m_posterStats; }
@@ -76,6 +105,9 @@ private:
 
     emby::EmbyClient *m_client = nullptr;
     mutable PosterSourceStats m_posterStats;
+    QString m_homeCacheKey;
+    qint64 m_homeCacheMs = 0;
+    QList<HomeSection> m_homeCacheSections;
     mutable QSet<QString> m_posterCounted;
 };
 
