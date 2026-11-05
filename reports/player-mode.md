@@ -269,7 +269,11 @@ T17 的键盘转发只挂在 Qt 主窗口。实机点一下视频后，Windows �
   覆盖 move / left press / double click / wheel，坐标按 DPR=1 原样；诊断中无 subclass。
 - `grep SetWindowSubclass/RemoveWindowSubclass/DefSubclassProc`：只剩注释，无调用代码。
 
-### 11.4 实机待验证
+### 11.4 Windows CI
+
+- run `41952931196`（commit `81c2751`）全绿；MSVC 2022 x64 Build (Release) 通过，`WS_EX_TRANSPARENT`/Qt 鼠标事件代码编译无误；artifact `emby-pc-win64` id `13382555893`（72,221,356 bytes）。
+
+### 11.5 实机待验证
 
 1. 播放视频后移动鼠标：控制条出现/保持，不再需要点击才刷新。
 2. 点击视频左键：暂停/继续；双击：全屏（按 input.conf 绑定）；右键：菜单；滚轮：音量/seek（按 input.conf）。

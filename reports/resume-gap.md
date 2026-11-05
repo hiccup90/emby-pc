@@ -102,7 +102,11 @@ cd /root/github/emby-pc/app
 - 真实 `ui::MainWindow` + 真实账号：resumeCount=1、dataLoaded=true（见 2.2 日志）。
 - 代理 `https://j.<host>:222`：容器可通过 Caddy 访问；同参 query 返回 HTTP 200 / total=1，真实 UI 探针 resumeCount=1。
 
-### 4.3 自测
+### 4.3 Windows CI
+
+- run `41952931196`（commit `81c2751`，含 T21+T22）全绿；MSVC 2022 x64 的 Build (Release) 通过；artifact `emby-pc-win64` id `13382555893`（72,221,356 bytes）。
+
+### 4.4 自测
 
 - 现有 UI 自测/构建：T20 selftest 105 PASS、live-data PASS、app 全量构建通过（ui-builder 结果）。
 - 本任务真实 UI 探针：真实服务器 + 真实 `ui::MainWindow` → `resumeCount=1`、`dataLoaded=true`（见 2.2）。
