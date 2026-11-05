@@ -9,7 +9,9 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QProgressBar>
+#include <QElapsedTimer>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QTimer>
@@ -298,8 +300,18 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     connect(m_recent, &LibraryView::playRequested, this, &HomeView::playRequested);
     connect(m_recent, &LibraryView::loadMoreRequested, this, &HomeView::loadMoreRequested);
     connect(m_recent, &LibraryView::sortChanged, this, &HomeView::sortChanged);
+    m_lazyBuildTimer = new QTimer(this);
+    m_lazyBuildTimer->setSingleShot(true);
+    m_lazyBuildTimer->setInterval(80);
+    connect(m_lazyBuildTimer, &QTimer::timeout, this, &HomeView::buildVisibleSections);
+    m_thumbnailRefreshTimer = new QTimer(this);
+    m_thumbnailRefreshTimer->setSingleShot(true);
+    m_thumbnailRefreshTimer->setInterval(120);
+    connect(m_thumbnailRefreshTimer, &QTimer::timeout, this, &HomeView::refreshThumbnailsNow);
+    connect(m_sectionsScroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int) { scheduleSectionBuild(); });
     connect(m_cache, &ThumbnailCache::thumbnailReady, this,
-            [this](const QString &, const QSize &) { refreshThumbnails(); });
+            [this](const QString &, const QSize &) { scheduleSectionBuild(); m_thumbnailRefreshTimer->start(); });
 }
 
 void HomeView::clearResume()
@@ -443,15 +455,27 @@ void HomeView::showEvent(QShowEvent *event)
     // 数据可能在首页隐藏时已经加载；显示后补一次 content 尺寸，避免 0 高度。
     QTimer::singleShot(0, this, &HomeView::resizeResumeContent);
     QTimer::singleShot(0, this, &HomeView::resizeHomeSectionRows);
+    if (m_usingSections)
+        scheduleSectionBuild();
 }
 
 void HomeView::refreshThumbnails()
+{
+    if (m_thumbnailRefreshTimer)
+        m_thumbnailRefreshTimer->start();
+    else
+        refreshThumbnailsNow();
+}
+
+void HomeView::refreshThumbnailsNow()
 {
     for (QWidget *widget : m_resumeCards) {
         if (auto *card = dynamic_cast<ResumeCard *>(widget))
             card->refreshThumbnail();
     }
     for (SectionRow &row : m_sectionRows) {
+        if (!row.cardsBuilt)
+            continue;
         for (QWidget *widget : row.cards) {
             if (auto *card = dynamic_cast<HomeSectionCard *>(widget))
                 card->refreshThumbnail();
@@ -525,12 +549,48 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
 
         const bool visible = !section.items.isEmpty() && section.error.isEmpty();
         row.row->setVisible(visible);
-        row.scroll->setVisible(visible);
+        row.scroll->setVisible(false); // 懒构建：进入视口附近才创建卡片
+        if (visible) {
+            m_sectionsLayout->insertWidget(m_sectionsLayout->count() - 1, row.row);
+            m_sectionRows.append(row);
+        } else {
+            delete row.row;
+        }
+    }
+    m_builtSectionCount = 0;
+    m_thumbnailMisses = 0;
+    resizeHomeSectionRows();
+    scheduleSectionBuild();
+    QTimer::singleShot(0, this, &HomeView::buildVisibleSections);
+    qInfo() << "HomeView::setHomeSections: sections" << sections.size()
+            << "visibleRows" << visibleSectionCount() << "lazyPending" << true;
+}
 
+void HomeView::scheduleSectionBuild()
+{
+    if (m_lazyBuildTimer && m_usingSections)
+        m_lazyBuildTimer->start();
+}
+
+void HomeView::buildVisibleSections()
+{
+    if (!m_usingSections || !m_sectionsScroll || !m_sectionsLayout)
+        return;
+    QElapsedTimer timer;
+    timer.start();
+    int builtNow = 0;
+    const int viewportBottom = m_sectionsScroll->viewport()->height() + 320;
+    for (SectionRow &row : m_sectionRows) {
+        if (row.cardsBuilt || !row.row || !row.layout)
+            continue;
+        const QPoint rowTop = row.row->mapTo(m_sectionsScroll->viewport(), QPoint(0, 0));
+        // 首屏至少 2 个 section，其余按视口 + 320px 预取。
+        if (m_builtSectionCount >= 2 && rowTop.y() > viewportBottom)
+            continue;
         int cardIndex = 0;
-        for (const MediaItem &item : section.items) {
+        for (const MediaItem &item : row.section.items) {
             auto *card = new HomeSectionCard(item, m_cache, row.content);
-            const bool playOnClick = section.kind == HomeSection::Kind::Resume;
+            const bool playOnClick = row.section.kind == HomeSection::Kind::Resume;
             card->onClick = [this, item, playOnClick]() {
                 if (playOnClick)
                     emit playRequested(item.id);
@@ -540,17 +600,18 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
             row.layout->insertWidget(cardIndex++, card);
             row.cards.append(card);
         }
-        if (visible) {
-            m_sectionsLayout->insertWidget(m_sectionsLayout->count() - 1, row.row);
-            m_sectionRows.append(row);
-        } else {
-            delete row.row;
-        }
+        row.scroll->setVisible(true);
+        row.cardsBuilt = true;
+        ++m_builtSectionCount;
+        ++builtNow;
     }
-    resizeHomeSectionRows();
-    QTimer::singleShot(0, this, &HomeView::resizeHomeSectionRows);
-    qInfo() << "HomeView::setHomeSections: sections" << sections.size()
-            << "visibleRows" << visibleSectionCount();
+    if (builtNow > 0) {
+        resizeHomeSectionRows();
+        qInfo() << "HomeView::buildVisibleSections: builtNow" << builtNow
+                << "builtTotal" << m_builtSectionCount << "visibleRows"
+                << visibleSectionCount() << "elapsedMs" << timer.elapsed()
+                << "thumbnailMisses" << m_thumbnailMisses;
+    }
 }
 
 int HomeView::visibleSectionCount() const
@@ -610,6 +671,9 @@ void HomeView::clearHomeSections()
         delete item;
     }
     m_sectionRows.clear();
+    m_builtSectionCount = 0;
+    if (m_lazyBuildTimer)
+        m_lazyBuildTimer->stop();
     m_sectionsLayout->addStretch(1);
 }
 
