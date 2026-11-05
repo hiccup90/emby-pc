@@ -3,11 +3,26 @@
 #include "authutils.h"
 #include "embyclient.h"
 
+#include <QDebug>
 #include <QSharedPointer>
 
 #include <algorithm>
 
 namespace ui {
+
+QString PosterSourceStats::summary() const
+{
+    return QStringLiteral("poster sources: items=%1 own_primary=%2 missing_primary=%3 "
+                          "series_fallback=%4 thumb=%5 backdrop=%6 no_image=%7")
+        .arg(items)
+        .arg(ownPrimary)
+        .arg(missingPrimary)
+        .arg(seriesPrimary)
+        .arg(thumb)
+        .arg(backdrop)
+        .arg(noImage);
+}
+
 namespace {
 
 QStringList listFields()
@@ -65,19 +80,117 @@ void LibraryData::setClient(emby::EmbyClient *client)
     m_client = client;
 }
 
-QString LibraryData::primaryImageUrl(const emby::MediaItem &source, int maxHeight) const
+QString LibraryData::posterImageUrl(const emby::MediaItem &source, int maxHeight,
+                                 int *kind) const
 {
+    if (kind)
+        *kind = 4;
     if (!m_client)
         return {};
-    QString tag = source.primaryImageTagValue();
-    QString imageId = source.primaryImageItemIdValue();
-    if (tag.isEmpty() && !source.seriesPrimaryImageTag.isEmpty() && !source.seriesId.isEmpty()) {
-        tag = source.seriesPrimaryImageTag;
-        imageId = source.seriesId;
+
+    auto imageUrl = [this, maxHeight](const QString &itemId, const QString &imageType,
+                                      const QString &tag) {
+        if (itemId.isEmpty())
+            return QString();
+        return m_client->imageUrl(itemId, imageType, tag, 0, maxHeight).toString();
+    };
+
+    // 1) 自身 Primary
+    if (!source.primaryImageTag.isEmpty()) {
+        const QString url = imageUrl(source.primaryImageItemIdValue(),
+                                     QStringLiteral("Primary"), source.primaryImageTag);
+        if (!url.isEmpty()) {
+            if (kind)
+                *kind = 0;
+            return url;
+        }
     }
-    if (tag.isEmpty() || imageId.isEmpty())
-        return {};
-    return m_client->imageUrl(imageId, QStringLiteral("Primary"), tag, 0, maxHeight).toString();
+
+    // 2) 剧集/季使用 Series（或 Parent）的 Primary；Emby 有时不给 tag，仍尝试无 tag URL。
+    QString seriesId = source.seriesId;
+    if (seriesId.isEmpty() && source.type == QLatin1String("Season"))
+        seriesId = source.parentId;
+    if (!seriesId.isEmpty()) {
+        const QString url = imageUrl(seriesId, QStringLiteral("Primary"),
+                                     source.seriesPrimaryImageTag);
+        if (!url.isEmpty()) {
+            if (kind)
+                *kind = 1;
+            return url;
+        }
+    }
+
+    // 3) 自身 Thumb（BoxSet 常见）
+    if (!source.thumbImageTag.isEmpty()) {
+        const QString url = imageUrl(source.id, QStringLiteral("Thumb"), source.thumbImageTag);
+        if (!url.isEmpty()) {
+            if (kind)
+                *kind = 2;
+            return url;
+        }
+    }
+
+    // 4) 自身/父级 Backdrop
+    if (!source.backdropImageTags.isEmpty()) {
+        const QString url = imageUrl(source.id, QStringLiteral("Backdrop"),
+                                     source.backdropImageTags.first());
+        if (!url.isEmpty()) {
+            if (kind)
+                *kind = 3;
+            return url;
+        }
+    }
+    if (!source.parentBackdropImageTags.isEmpty()) {
+        const QString backdropId = source.parentBackdropItemId.isEmpty() ? seriesId
+                                                                        : source.parentBackdropItemId;
+        const QString url = imageUrl(backdropId, QStringLiteral("Backdrop"),
+                                     source.parentBackdropImageTags.first());
+        if (!url.isEmpty()) {
+            if (kind)
+                *kind = 3;
+            return url;
+        }
+    }
+
+    return {};
+}
+
+void LibraryData::recordPosterSource(const emby::MediaItem &source, int kind) const
+{
+    if (source.id.isEmpty() || m_posterCounted.contains(source.id))
+        return;
+    m_posterCounted.insert(source.id);
+    ++m_posterStats.items;
+    if (kind != 0)
+        ++m_posterStats.missingPrimary;
+    switch (kind) {
+    case 0:
+        ++m_posterStats.ownPrimary;
+        break;
+    case 1:
+        ++m_posterStats.seriesPrimary;
+        break;
+    case 2:
+        ++m_posterStats.thumb;
+        break;
+    case 3:
+        ++m_posterStats.backdrop;
+        break;
+    default:
+        ++m_posterStats.noImage;
+        break;
+    }
+}
+
+void LibraryData::resetPosterStats()
+{
+    m_posterStats = PosterSourceStats();
+    m_posterCounted.clear();
+}
+
+QString LibraryData::posterStatsSummary() const
+{
+    return m_posterStats.summary();
 }
 
 QString LibraryData::backdropImageUrl(const emby::MediaItem &source) const
@@ -110,10 +223,20 @@ MediaItem LibraryData::toMediaItem(const emby::MediaItem &source) const
     item.overview = source.overview;
     item.communityRating = source.communityRating;
     item.runtimeMinutes = runtimeMinutesFromTicks(source.runTimeTicks);
-    item.posterKey = primaryImageUrl(source, 320);
+    int posterKind = 4;
+    item.posterKey = posterImageUrl(source, 320, &posterKind);
+    recordPosterSource(source, posterKind);
     item.backdropKey = backdropImageUrl(source);
     item.played = source.userData.played;
-    item.progress = qBound(0.0, source.userData.playedPercentage / 100.0, 1.0);
+    double playedPercentage = source.userData.playedPercentage;
+    // 某些 Emby Resume 响应只给 PlaybackPositionTicks、不给 PlayedPercentage；
+    // 用 RunTimeTicks 回算，避免继续观看卡片进度为 0。
+    if (playedPercentage <= 0.0 && source.userData.playbackPositionTicks > 0
+        && source.runTimeTicks > 0) {
+        playedPercentage = 100.0 * static_cast<double>(source.userData.playbackPositionTicks)
+                           / static_cast<double>(source.runTimeTicks);
+    }
+    item.progress = qBound(0.0, playedPercentage / 100.0, 1.0);
     if (item.played && item.progress <= 0.0)
         item.progress = 1.0;
     return item;
@@ -127,10 +250,18 @@ Episode LibraryData::toEpisode(const emby::MediaItem &source) const
     episode.overview = source.overview;
     episode.runtimeMinutes = runtimeMinutesFromTicks(source.runTimeTicks);
     episode.played = source.userData.played;
-    episode.progress = qBound(0.0, source.userData.playedPercentage / 100.0, 1.0);
+    double playedPercentage = source.userData.playedPercentage;
+    if (playedPercentage <= 0.0 && source.userData.playbackPositionTicks > 0
+        && source.runTimeTicks > 0) {
+        playedPercentage = 100.0 * static_cast<double>(source.userData.playbackPositionTicks)
+                           / static_cast<double>(source.runTimeTicks);
+    }
+    episode.progress = qBound(0.0, playedPercentage / 100.0, 1.0);
     if (episode.played && episode.progress <= 0.0)
         episode.progress = 1.0;
-    episode.imageKey = primaryImageUrl(source, 200);
+    int posterKind = 4;
+    episode.imageKey = posterImageUrl(source, 200, &posterKind);
+    recordPosterSource(source, posterKind);
     return episode;
 }
 
@@ -306,7 +437,8 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
         QList<MediaItem> recent;
         bool resumeDone = false;
         bool recentDone = false;
-        QString error;
+        QString resumeError;
+        QString recentError;
         HomeHandler handler;
     };
     auto state = QSharedPointer<HomeState>::create();
@@ -317,19 +449,43 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
             return;
         if (!state->handler)
             return;
+        // 最近添加失败不应把已经拿到的继续观看一起丢掉；只有 resume 失败，
+        // 或 resume 为空且 recent 失败时才把错误交给首页显示。
+        QString error = state->resumeError;
+        if (error.isEmpty() && state->resume.isEmpty())
+            error = state->recentError;
         auto callback = std::move(state->handler);
         state->handler = nullptr;
-        callback(state->resume, state->recent, state->error);
+        callback(state->resume, state->recent, error);
     };
 
+    qInfo() << "resume request: userId" << m_client->profile().userId
+            << "limit" << qMax(1, resumeLimit);
     m_client->fetchResumeItems(qMax(1, resumeLimit), 0,
                                [this, state, finish](const emby::ItemQueryResult &page,
                                                      const emby::ApiError &error) {
-        if (error.isError() && state->error.isEmpty())
-            state->error = friendlyApiError(error);
+        qInfo() << "resume response: userId" << (m_client ? m_client->profile().userId : QString())
+                << "httpStatus" << error.httpStatus
+                << "totalRecordCount" << page.totalRecordCount
+                << "items" << page.items.size()
+                << "error" << error.isError()
+                << "message" << error.message.left(200);
+        if (error.isError())
+            state->resumeError = friendlyApiError(error);
+
         state->resume.reserve(page.items.size());
         for (const emby::MediaItem &source : page.items)
             state->resume.append(toMediaItem(source));
+        qInfo() << "resume parsed:" << state->resume.size()
+                << "error" << state->resumeError;
+        if (!page.items.isEmpty()) {
+            const emby::MediaItem &first = page.items.first();
+            qInfo() << "resume first: id" << first.id << "name" << first.name
+                    << "type" << first.type << "played" << first.userData.played
+                    << "positionTicks" << first.userData.playbackPositionTicks
+                    << "playedPercentage" << first.userData.playedPercentage
+                    << "runTimeTicks" << first.runTimeTicks;
+        }
         state->resumeDone = true;
         finish();
     });
@@ -343,8 +499,11 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
     query.sortOrder = QStringLiteral("Descending");
     m_client->fetchItems(query, [this, state, finish](const emby::ItemQueryResult &page,
                                                       const emby::ApiError &error) {
-        if (error.isError() && state->error.isEmpty())
-            state->error = friendlyApiError(error);
+        if (error.isError()) {
+            state->recentError = friendlyApiError(error);
+            qWarning() << "home recent response error: httpStatus" << error.httpStatus
+                       << "message" << error.message.left(200);
+        }
         state->recent.reserve(page.items.size());
         for (const emby::MediaItem &source : page.items)
             state->recent.append(toMediaItem(source));
@@ -352,6 +511,7 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
         finish();
     });
 }
+
 
 void LibraryData::fetchDetail(const QString &itemId, DetailHandler handler)
 {
@@ -435,7 +595,7 @@ void LibraryData::fetchDetail(const QString &itemId, DetailHandler handler)
         seasonQuery.includeItemTypes = {QStringLiteral("Season")};
         seasonQuery.sortBy = {QStringLiteral("SortName")};
         seasonQuery.fields = {QStringLiteral("Overview"), QStringLiteral("ImageTags"),
-                              QStringLiteral("UserData")};
+                              QStringLiteral("BackdropImageTags"), QStringLiteral("UserData")};
         m_client->fetchItems(seasonQuery, [state, finish](const emby::ItemQueryResult &page,
                                                           const emby::ApiError &error) {
             if (error.isError() && state->error.isEmpty())
@@ -452,8 +612,9 @@ void LibraryData::fetchDetail(const QString &itemId, DetailHandler handler)
         episodeQuery.sortBy = {QStringLiteral("ParentIndexNumber"), QStringLiteral("IndexNumber")};
         episodeQuery.sortOrder = QStringLiteral("Ascending");
         episodeQuery.fields = {QStringLiteral("Overview"), QStringLiteral("RunTimeTicks"),
-                               QStringLiteral("ImageTags"), QStringLiteral("UserData"),
-                               QStringLiteral("ProductionYear"), QStringLiteral("CommunityRating")};
+                               QStringLiteral("ImageTags"), QStringLiteral("BackdropImageTags"),
+                               QStringLiteral("UserData"), QStringLiteral("ProductionYear"),
+                               QStringLiteral("CommunityRating")};
         m_client->fetchItems(episodeQuery, [state, finish](const emby::ItemQueryResult &page,
                                                            const emby::ApiError &error) {
             if (error.isError() && state->error.isEmpty())

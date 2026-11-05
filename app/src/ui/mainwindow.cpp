@@ -1016,6 +1016,8 @@ void MainWindow::onLoggedIn(const emby::ServerProfile &profile, const emby::Serv
     m_tokenStore->saveProfile(profile);
     m_settings->setSession(profile, info);
     m_cache->clear();
+    if (m_data)
+        m_data->resetPosterStats();
 
     // 登录成功即使用真实媒体库；用户随后仍可在设置页手动切回 mock。
     m_mockMode = false;
@@ -1049,6 +1051,8 @@ void MainWindow::logout()
     m_client->setProfile(emby::ServerProfile());
     m_client->abortAll();
     m_cache->clear();
+    if (m_data)
+        m_data->resetPosterStats();
     m_knownItems.clear();
     m_sections.clear();
     m_currentSection = -1;
@@ -1129,6 +1133,16 @@ QStringList MainWindow::sectionNames() const
     for (const LibrarySection &section : m_sections)
         names.append(section.name);
     return names;
+}
+
+QString MainWindow::posterStatsSummary() const
+{
+    QStringList lines;
+    if (m_cache)
+        lines.append(m_cache->stats().summary());
+    if (m_data)
+        lines.append(m_data->posterStatsSummary());
+    return lines.join(QLatin1Char('\n'));
 }
 
 QList<MediaItem> MainWindow::visibleItems() const

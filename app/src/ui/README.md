@@ -19,7 +19,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `detailview.h/.cpp` | 详情页：背景/海报、标题元数据、简介、播放按钮、真实季/集列表 |
 | `playerpage.h/.cpp` | 播放页容器：视频区铺满整页，顶层半透明浮层控制条（自动隐藏/鼠标轮询） |
 | `thumbnailcache.h/.cpp` | 缩略图缓存接口：同步 get + 异步 request + LRU，默认生成离线占位海报 |
-| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：QNetworkAccessManager + Authorization 头异步下载，失败回填占位图 |
+| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：Authorization 异步下载；失败临时占位 + 60s TTL 重试（不永久缓存） |
 | `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（离线占位资源） |
 | `icons.h/.cpp` | 24x24 线性矢量图标集，不依赖系统主题 |
 | `mocklibrary.h/.cpp` | 200 部 mock 媒体库（电影/剧集、季/集、观看进度，确定性） |
@@ -71,10 +71,15 @@ cmake --build /tmp/emby-ui-build2 -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen /tmp/emby-ui-build2/emby-ui-demo --selftest
 QT_QPA_PLATFORM=offscreen /tmp/emby-ui-build2/emby-ui-demo --screenshot app/src/ui/preview
 
-# 真实服务器数据链路（登录 -> Views -> 首页 -> 分页 -> 详情 -> 季/集）
+# 真实服务器数据链路（登录 -> Views -> 首页 -> 分页 -> 详情 -> 季/集 -> 真实海报）
 QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
   EMBY_TEST_USER='<user>' EMBY_TEST_PASSWORD='<pass>' \
   /tmp/emby-ui-build2/emby-ui-demo --live-data
+
+# 海报缺图抽样（Movie/Series/BoxSet 各最多 100 条，输出 Markdown 表）
+QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
+  EMBY_TEST_USER='<user>' EMBY_TEST_PASSWORD='<pass>' \
+  /tmp/emby-ui-build2/emby-ui-demo --live-poster-gaps
 
 # 有桌面环境时直接预览（demo 默认跳过登录）
 /tmp/emby-ui-build2/emby-ui-demo
@@ -210,13 +215,21 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 - 真实图片：`EmbyThumbnailCache` 继承 `ThumbnailCache::loadAsync()`，按 URL key 异步下载；
   delegate 的同步 `get()` + `thumbnailReady` 重绘机制不变。
+- **失败重试（T20）**：失败不写永久 LRU；单独记录失败次数/HTTP 状态/retryAt，默认 60s TTL 后自动重试，
+  成功后才 insert 并清理失败记录。失败日志（itemId、去 token URL、HTTP 状态、错误串）写入 app.log；
+  `posterStatsSummary()` 暴露 requests/success/failures/retries 与来源统计。
+- **海报回退链（T20）**：Primary（自身）→ Series/Parent Primary → Thumb（自身）→ Backdrop（自身/父级）；
+  BoxSet 缺 Primary 时用自身 Thumb；Episode/Season 缺自身图时用 Series/Parent Primary。
 - mock 图片：非 http key 仍走 `postergenerator` 离线占位图。
 - 播放链路（T8）可直接使用 `LibraryData` 已请求的 Fields（Duration/MediaSources 等按需补充），
   或调用 `MainWindow::embyClient()` 自行请求 `/Items/{id}/PlaybackInfo`。
 
+真实海报缺失的采样与结论见 [reports/poster-gaps.md](../../../reports/poster-gaps.md)
+（Movie 95/96 有 Primary、Series 81/81；仅 1 部 Movie 源数据完全无图，其余历史缺图主因是旧版失败后永久缓存占位图）。
+
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **94 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **105 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
@@ -232,13 +245,18 @@ player->setControlsVisible(true);      // 手动显示/隐藏
   - 服务器端 `SearchTerm` 搜索 + 空状态；
   - 真实详情季/集渲染 EpisodeRow；
   - 海报图片请求带 Authorization 且 token 不在 URL；
+  - T20：首次图片 500 不写永久 LRU、TTL 后第二次 200 恢复；Primary/Thumb/BoxSet Thumb/无图/
+    Episode Series Primary 五类回退链断言；
   - 设置页 mock 开关可来回切换数据源。
 - `embyClient()`、`loginStateChanged(bool)`、`MainWindow::visibleItems()` 等 T8 接口可用。
 
 真实 Emby 联调（容器可达、凭据由环境变量传入）`--live-data` 全部 PASS：
-登录 → Views（Movie / 电视节目 / 合集）→ 首页最近添加 24 项 → Movie 库首屏 60/96
-→ 滚动分页 60→96 → 真实详情 → 剧集详情 1 季 28 集。
+登录 → Views（Movie / 电视节目 / 合集）→ 首页最近添加 24 项 → **真实海报下载成功并写入 LRU**
+→ Movie 库首屏 60/96 → 滚动分页 60→96 → 真实详情 → 剧集详情 1 季 28 集。
 凭据仅通过环境变量传入，不写入代码/日志。
+
+`--live-poster-gaps` 抽样结果：Movie 95/96 有 Primary（1 部源数据完全无图）、Series 81/81，
+详细报告见 [reports/poster-gaps.md](../../../reports/poster-gaps.md)。
 
 `app/` 根工程完整构建通过（`emby-pc` 可执行文件链接了 `emby` + `ui` 静态库）。
 
@@ -274,7 +292,8 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 - 顶层 overlay 在 Windows 上需要实测点击穿透/焦点行为（已用 Tool + WindowDoesNotAcceptFocus +
   ShowWithoutActivating 避免抢焦点；若某些系统仍激活窗口，T17 可加 WS_EX_NOACTIVATE）。
 - 自动隐藏基于全局光标轮询，多显示器/高 DPI 下依赖 QCursor 全局坐标；已用主窗口 mapToGlobal 对齐。
-- 真实海报已按 Authorization 异步下载；失败/离线时回退程序生成的抽象占位图。
+- 真实海报已按 Authorization 异步下载；失败时显示临时占位并 TTL 重试，完全无源图时才长期占位。
+- 源数据完全无图的条目（本次采样 1 部 Movie）无法显示真实海报，只能占位。
 - 播放器控制条当前为 Qt 控件版（方案 B 的骨架）；最终采用 mpv OSC（方案 A）时，
   `PlayerPage` 的控制条可切换为隐藏/纯状态显示，视频区仍由 `attachVideoSurface` 挂载。
 - 主窗口暂用系统标题栏；无边框 DWM 方案（P5）后续在 WindowController 层实现。

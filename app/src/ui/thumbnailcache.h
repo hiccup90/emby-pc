@@ -23,10 +23,12 @@ public:
     ~ThumbnailCache() override;
 
     // 同步查询。命中返回图片；未命中返回空 QPixmap（调用方应继续 request）。
-    QPixmap get(const QString &key, const QSize &size);
+    // EmbyThumbnailCache 会重写以返回“失败等待重试”的临时占位图（不写入 LRU）。
+    virtual QPixmap get(const QString &key, const QSize &size);
 
     // 请求异步加载；对同一 key+size 去重。
-    void request(const QString &key, const QSize &size);
+    // EmbyThumbnailCache 会重写以在失败 TTL 内抑制重复请求。
+    virtual void request(const QString &key, const QSize &size);
 
     // 网络层/生成器回填入口（线程安全要求：必须在 UI 线程调用）。
     void insert(const QString &key, const QSize &size, const QPixmap &pixmap);
@@ -34,7 +36,7 @@ public:
     // mock 阶段给占位海报补充标题文字；真实网络图片不需要。
     void setTitleHint(const QString &key, const QString &title);
 
-    void clear();
+    virtual void clear();
     void setCapacity(int entries);
     int cachedCount() const { return m_cache.size(); }
 
@@ -49,8 +51,10 @@ protected:
     // 占位图生成入口（EmbyThumbnailCache 加载失败时复用）。
     virtual QPixmap generate(const QString &key, const QSize &size);
 
-private:
+    // key + size 的稳定 cache key；子类的失败/重试表也复用它。
     static QString cacheKey(const QString &key, const QSize &size);
+
+private:
     void evictIfNeeded();
 
     struct Entry

@@ -3,6 +3,7 @@
 #include "uitypes.h"
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -21,6 +22,20 @@ struct LibrarySection
     QString id;
     QString name;
     QString collectionType; // movies / tvshows / boxsets / ...
+};
+
+// 海报来源统计（T20）：区分客户端回退链与源数据缺图。
+struct PosterSourceStats
+{
+    int items = 0;
+    int ownPrimary = 0;
+    int seriesPrimary = 0;
+    int thumb = 0;
+    int backdrop = 0;
+    int noImage = 0;
+    int missingPrimary = 0;
+
+    QString summary() const;
 };
 
 // UI 数据层：把 emby::MediaItem 转成 ui::MediaItem，负责 Views / Items 分页 /
@@ -47,13 +62,21 @@ public:
     void fetchHome(int resumeLimit, int recentLimit, HomeHandler handler);
     void fetchDetail(const QString &itemId, DetailHandler handler);
 
+    PosterSourceStats posterStats() const { return m_posterStats; }
+    void resetPosterStats();
+    QString posterStatsSummary() const;
+
 private:
+    // kind: 0=own primary, 1=series primary, 2=thumb, 3=backdrop, 4=none
     MediaItem toMediaItem(const emby::MediaItem &source) const;
     Episode toEpisode(const emby::MediaItem &source) const;
-    QString primaryImageUrl(const emby::MediaItem &source, int maxHeight) const;
+    QString posterImageUrl(const emby::MediaItem &source, int maxHeight, int *kind) const;
     QString backdropImageUrl(const emby::MediaItem &source) const;
+    void recordPosterSource(const emby::MediaItem &source, int kind) const;
 
     emby::EmbyClient *m_client = nullptr;
+    mutable PosterSourceStats m_posterStats;
+    mutable QSet<QString> m_posterCounted;
 };
 
 } // namespace ui

@@ -9,6 +9,8 @@
 #include "authutils.h"
 #include "detailview.h"
 #include "embyclient.h"
+#include "embythumbnailcache.h"
+#include "librarydata.h"
 #include "libraryview.h"
 #include "logindialog.h"
 #include "mainwindow.h"
@@ -21,7 +23,9 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QBuffer>
 #include <QHostAddress>
+#include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -89,6 +93,7 @@ public:
     QStringList requestedTargets;
     QStringList imageRequests;
     QString lastImageAuthorization;
+    QHash<QString, int> imageAttempts;
 
 protected:
     void incomingConnection(qintptr socketDescriptor) override
@@ -145,12 +150,24 @@ private:
         }
     }
 
+    static QByteArray tinyPng()
+    {
+        QImage image(2, 2, QImage::Format_RGB32);
+        image.fill(QColor(0x3B, 0x82, 0xF6));
+        QByteArray data;
+        QBuffer buffer(&data);
+        buffer.open(QIODevice::WriteOnly);
+        image.save(&buffer, "PNG");
+        return data;
+    }
+
     void respond(QTcpSocket *socket, const QString &method, const QString &target,
                  const QMap<QString, QString> &headers, const QByteArray &body)
     {
         int status = 200;
         QByteArray reason = "OK";
         QByteArray responseBody = "{}";
+        QByteArray contentType = "application/json";
         const QString path = QUrl(QStringLiteral("http://localhost") + target).path();
 
         if (method == QLatin1String("GET") && path == QLatin1String("/System/Info/Public")) {
@@ -180,12 +197,23 @@ private:
                     R"({"Items":[{"Id":"v-movies","Name":"电影","Type":"CollectionFolder","CollectionType":"movies"},{"Id":"v-tv","Name":"电视节目","Type":"CollectionFolder","CollectionType":"tvshows"}],"TotalRecordCount":2})";
             } else if (method == QLatin1String("GET")
                        && path.startsWith(QLatin1String("/Items/"))
-                       && path.endsWith(QLatin1String("/Images/Primary"))) {
+                       && path.contains(QLatin1String("/Images/"))) {
                 imageRequests.append(target);
                 lastImageAuthorization = authorization;
-                status = 404;
-                reason = "Not Found";
-                responseBody = R"({"Message":"no image"})";
+                const int attempt = ++imageAttempts[path];
+                if (path.contains(QLatin1String("m-none"))) {
+                    status = 404;
+                    reason = "Not Found";
+                    responseBody = R"({"Message":"no image"})";
+                } else if (path.contains(QLatin1String("zretry")) && attempt == 1) {
+                    // 第一次故意 500，第二次 200：验证 EmbyThumbnailCache 的 TTL 重试。
+                    status = 500;
+                    reason = "Internal Server Error";
+                    responseBody = R"({"Message":"transient"})";
+                } else {
+                    contentType = "image/png";
+                    responseBody = tinyPng();
+                }
             } else if (method == QLatin1String("GET")
                        && path == QLatin1String("/Users/u1/Items/Resume")) {
                 responseBody = QStringLiteral(
@@ -201,7 +229,7 @@ private:
                     responseBody = R"({"Items":[{"Id":"sea1","Name":"第 1 季","Type":"Season","IndexNumber":1,"ParentId":"s1"}],"TotalRecordCount":1})";
                 } else if (includeTypes.contains(QLatin1String("Episode"))) {
                     responseBody =
-                        R"({"Items":[{"Id":"e1","Name":"试播集","Type":"Episode","IndexNumber":1,"ParentIndexNumber":1,"SeriesId":"s1","RunTimeTicks":27000000000,"UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"e2","Name":"第二集","Type":"Episode","IndexNumber":2,"ParentIndexNumber":1,"SeriesId":"s1","RunTimeTicks":27000000000,"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":2})";
+                        R"({"Items":[{"Id":"e1","Name":"试播集","Type":"Episode","IndexNumber":1,"ParentIndexNumber":1,"SeriesId":"s1","SeriesPrimaryImageTag":"tagser","RunTimeTicks":27000000000,"UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"e2","Name":"第二集","Type":"Episode","IndexNumber":2,"ParentIndexNumber":1,"SeriesId":"s1","RunTimeTicks":27000000000,"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":2})";
                 } else if (searchTerm == QLatin1String("不存在")) {
                     responseBody = R"({"Items":[],"TotalRecordCount":0})";
                 } else if (parentId == QLatin1String("v-tv")) {
@@ -209,7 +237,7 @@ private:
                         R"({"Items":[{"Id":"s1","Name":"假剧集","Type":"Series","ProductionYear":2024,"CommunityRating":8.5,"ImageTags":{"Primary":"tags1"},"BackdropImageTags":["bds1"],"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":1})";
                 } else {
                     responseBody =
-                        R"({"Items":[{"Id":"m1","Name":"假电影","Type":"Movie","ProductionYear":2023,"CommunityRating":7.8,"RunTimeTicks":54000000000,"ImageTags":{"Primary":"tagm1"},"BackdropImageTags":["bdm1"],"Genres":["科幻"],"Overview":"测试用简介","UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"s1","Name":"假剧集","Type":"Series","ProductionYear":2024,"CommunityRating":8.5,"ImageTags":{"Primary":"tags1"},"BackdropImageTags":["bds1"],"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":2})";
+                        R"({"Items":[{"Id":"m1","Name":"假电影","Type":"Movie","ProductionYear":2023,"CommunityRating":7.8,"RunTimeTicks":54000000000,"ImageTags":{"Primary":"tagm1"},"BackdropImageTags":["bdm1"],"Genres":["科幻"],"Overview":"测试用简介","UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"m-thumb","Name":"只有缩略图的电影","Type":"Movie","ProductionYear":2022,"ImageTags":{"Thumb":"thumb-m"},"UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"b1","Name":"只有缩略图的合集","Type":"BoxSet","ProductionYear":2021,"ImageTags":{"Thumb":"thumb-b"},"UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"m-none","Name":"完全没有图的电影","Type":"Movie","ProductionYear":2020,"UserData":{"Played":false,"PlaybackPositionTicks":0}},{"Id":"s1","Name":"假剧集","Type":"Series","ProductionYear":2024,"CommunityRating":8.5,"ImageTags":{"Primary":"tags1"},"BackdropImageTags":["bds1"],"UserData":{"Played":false,"PlaybackPositionTicks":0}}],"TotalRecordCount":5})";
                 }
             } else if (method == QLatin1String("GET")
                        && path.startsWith(QLatin1String("/Users/u1/Items/"))) {
@@ -229,7 +257,7 @@ private:
         }
 
         QByteArray response = "HTTP/1.1 " + QByteArray::number(status) + " " + reason + "\r\n";
-        response += "Content-Type: application/json\r\n";
+        response += "Content-Type: " + contentType + "\r\n";
         response += "Content-Length: " + QByteArray::number(responseBody.size()) + "\r\n";
         response += "Connection: close\r\n\r\n";
         response += responseBody;
@@ -613,6 +641,34 @@ int runAuthTests(QApplication &app)
     check(statusLabel && !statusLabel->text().contains(loginProfile.accessToken),
           QStringLiteral("状态栏不泄露 token"));
 
+    // T20：图片失败不写永久 LRU；TTL 后自动重试，第二次 200 能恢复。
+    emby::EmbyClient cacheClient;
+    cacheClient.setServer(server.baseUrl(), loginProfile.accessToken);
+    ui::EmbyThumbnailCache cache;
+    cache.setClient(&cacheClient);
+    cache.setRetryTtl(400);
+    const QUrl retryUrl = cacheClient.imageUrl(QStringLiteral("zretry"),
+                                               QStringLiteral("Primary"),
+                                               QStringLiteral("tag-retry"), 0, 300);
+    int cacheReadySignals = 0;
+    QObject::connect(&cache, &ui::ThumbnailCache::thumbnailReady,
+                     [&cacheReadySignals](const QString &, const QSize &) {
+                         ++cacheReadySignals;
+                     });
+    cache.request(retryUrl.toString(), QSize(64, 64));
+    check(waitFor([&cache]() { return cache.stats().failures >= 1; }, 4000),
+          QStringLiteral("图片首次 500 被记录为失败"));
+    check(cache.cachedCount() == 0 && cache.failureCount() == 1,
+          QStringLiteral("图片失败不写入永久 LRU，只记录失败状态"));
+    check(!cache.get(retryUrl.toString(), QSize(64, 64)).isNull(),
+          QStringLiteral("失败期间显示临时占位图（不永久缓存）"));
+    check(waitFor([&cache]() { return cache.stats().successes >= 1; }, 6000),
+          QStringLiteral("TTL 到期自动重试，第二次 200 成功恢复"));
+    check(cache.failureCount() == 0 && cache.cachedCount() == 1
+              && cache.stats().retries >= 1 && cacheReadySignals >= 1,
+          QStringLiteral("重试成功写入缓存并清理失败记录（stats: %1）")
+              .arg(cache.stats().summary()));
+
     // 401
     ui::LoginDialog badLogin(&client);
     badLogin.setInitialValues(server.baseUrl(), QStringLiteral("alice"), QString());
@@ -698,6 +754,34 @@ int runAuthTests(QApplication &app)
         check(waitFor([realLibrary]() { return realLibrary && realLibrary->itemCount() >= 2; }),
               QStringLiteral("清空搜索后恢复真实媒体库"));
 
+        // T20：海报回退链 Primary -> Series -> Thumb -> Backdrop。
+        const QList<ui::MediaItem> mapped =
+            realLibrary ? realLibrary->visibleItems() : QList<ui::MediaItem>();
+        auto mappedById = [&mapped](const QString &id) -> ui::MediaItem {
+            for (const ui::MediaItem &item : mapped) {
+                if (item.id == id)
+                    return item;
+            }
+            return {};
+        };
+        const ui::MediaItem primaryItem = mappedById(QStringLiteral("m1"));
+        const ui::MediaItem thumbItem = mappedById(QStringLiteral("m-thumb"));
+        const ui::MediaItem boxSetItem = mappedById(QStringLiteral("b1"));
+        const ui::MediaItem noneItem = mappedById(QStringLiteral("m-none"));
+        check(primaryItem.posterKey.contains(QStringLiteral("/Images/Primary")),
+              QStringLiteral("有 PrimaryImageTag 的条目使用 Primary"));
+        check(thumbItem.posterKey.contains(QStringLiteral("/Images/Thumb")),
+              QStringLiteral("缺 Primary 但有 Thumb 的条目回退 Thumb"));
+        check(boxSetItem.posterKey.contains(QStringLiteral("/Images/Thumb")),
+              QStringLiteral("BoxSet 缺 Primary 时回退自身 Thumb"));
+        check(noneItem.posterKey.isEmpty(),
+              QStringLiteral("完全没有图片字段的条目不生成假 URL"));
+        check(window.posterStatsSummary().contains(QStringLiteral("no_image"))
+                  && window.posterStatsSummary().contains(QStringLiteral("missing_primary")),
+              QStringLiteral("MainWindow 暴露 poster stats（%1）")
+                  .arg(window.posterStatsSummary().replace(QLatin1Char('\n'),
+                                                           QStringLiteral(" / "))));
+
         const bool detailOpened = window.openDetail(QStringLiteral("s1"));
         auto *realDetail = window.findChild<ui::DetailView *>();
         check(detailOpened && waitFor([realDetail]() {
@@ -709,6 +793,18 @@ int runAuthTests(QApplication &app)
             realDetail ? realDetail->findChildren<QWidget *>(QStringLiteral("EpisodeRow")).size() : 0;
         check(realEpisodeRows >= 2,
               QStringLiteral("真实详情渲染 %1 个 EpisodeRow").arg(realEpisodeRows));
+        QString episodeFallbackKey;
+        if (realDetail && !realDetail->currentItem().seasons.isEmpty()) {
+            for (const ui::Episode &episode : realDetail->currentItem().seasons.first().episodes) {
+                if (episode.number == 1) {
+                    episodeFallbackKey = episode.imageKey;
+                    break;
+                }
+            }
+        }
+        check(episodeFallbackKey.contains(QStringLiteral("/Items/s1/Images/Primary"))
+                  && episodeFallbackKey.contains(QStringLiteral("tagser")),
+              QStringLiteral("Episode 缺自身图时回退 Series Primary"));
         check(waitFor([&server]() { return server.imageRequests.size() > 0; }),
               QStringLiteral("海报/背景图通过带 Authorization 的图片请求加载"));
         check(server.lastImageAuthorization.contains(QStringLiteral("Token=")),
@@ -940,6 +1036,30 @@ int runLiveData(QApplication &app)
     out << "INFO  首页最近添加 " << window.libraryIds().size() << " 项\n";
     check(homeLoaded, QStringLiteral("首页最近添加加载真实 Items"));
 
+    // 真实图片端点：Authorization + 解码 + 缓存写入（T20）。
+    QString posterKey;
+    for (const ui::MediaItem &item : window.visibleItems()) {
+        if (!item.posterKey.isEmpty()) {
+            posterKey = item.posterKey;
+            break;
+        }
+    }
+    check(!posterKey.isEmpty(), QStringLiteral("真实条目生成海报 URL"));
+    if (!posterKey.isEmpty()) {
+        ui::EmbyThumbnailCache posterCache;
+        posterCache.setClient(window.embyClient());
+        posterCache.setRetryTtl(500);
+        const QSize posterSize(160, 240);
+        posterCache.request(posterKey, posterSize);
+        const bool posterDownloaded =
+            waitFor([&posterCache]() { return posterCache.stats().successes >= 1; }, 15000);
+        check(posterDownloaded,
+              QStringLiteral("真实海报下载成功（%1）").arg(posterCache.stats().summary()));
+        check(!posterCache.get(posterKey, posterSize).isNull()
+                  && posterCache.cachedCount() == 1,
+              QStringLiteral("真实海报写入 LRU 并可同步读取"));
+    }
+
     // 媒体库首屏 + 滚动分页
     window.navigateTo(ui::MainWindow::Page::Library);
     auto *library = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
@@ -1010,6 +1130,153 @@ int runLiveData(QApplication &app)
     out.flush();
     window.close();
     return failures == 0 ? 0 : 1;
+}
+
+int runLivePosterGaps(QApplication &app)
+{
+    Q_UNUSED(app);
+    QTextStream out(stdout);
+    const QString url = qEnvironmentVariable("EMBY_TEST_URL");
+    const QString user = qEnvironmentVariable("EMBY_TEST_USER");
+    const QString password = qEnvironmentVariable("EMBY_TEST_PASSWORD");
+    if (url.isEmpty() || user.isEmpty()) {
+        out << "SKIP live poster gaps: set EMBY_TEST_URL / EMBY_TEST_USER / EMBY_TEST_PASSWORD\n";
+        out.flush();
+        return 0;
+    }
+
+    emby::EmbyClient loginClient;
+    loginClient.setRequestTimeout(15000);
+    ui::LoginDialog dialog(&loginClient);
+    dialog.setInitialValues(url, user, QString());
+    if (auto *passwordEdit = dialog.findChild<QLineEdit *>(QStringLiteral("PasswordEdit")))
+        passwordEdit->setText(password);
+    int successCount = 0;
+    emby::ServerProfile profile;
+    QObject::connect(&dialog, &ui::LoginDialog::loginSucceeded,
+                     [&successCount, &profile](const emby::ServerProfile &p) {
+                         ++successCount;
+                         profile = p;
+                     });
+    if (auto *loginButton = dialog.findChild<QPushButton *>(QStringLiteral("LoginSubmitButton")))
+        loginButton->click();
+    if (!waitFor([&successCount]() { return successCount == 1; }, 15000)) {
+        out << "FAIL live poster gaps: login failed\n";
+        out.flush();
+        return 1;
+    }
+
+    emby::EmbyClient client;
+    client.setProfile(profile);
+    client.setRequestTimeout(15000);
+
+    struct Sample
+    {
+        QString type;
+        int total = 0;
+        int primary = 0;
+        int thumb = 0;
+        int backdrop = 0;
+        int seriesPrimary = 0;
+        int anyImage = 0;
+        int none = 0;
+        QStringList missingPrimary;
+        QStringList missingAll;
+    };
+
+    const QStringList types = {QStringLiteral("Movie"), QStringLiteral("Series"),
+                               QStringLiteral("BoxSet")};
+    QList<Sample> samples;
+    for (const QString &type : types) {
+        Sample sample;
+        sample.type = type;
+        samples.append(sample);
+    }
+
+    int pending = samples.size();
+    bool failed = false;
+    QString failText;
+    for (int i = 0; i < samples.size(); ++i) {
+        Sample &sample = samples[i];
+        emby::ItemQuery query;
+        query.recursive = true;
+        query.includeItemTypes = {sample.type};
+        query.limit = 100;
+        query.sortBy = {QStringLiteral("SortName")};
+        query.fields = {QStringLiteral("ImageTags"), QStringLiteral("BackdropImageTags"),
+                        QStringLiteral("PrimaryImageAspectRatio")};
+        client.fetchItems(query, [&sample, &pending, &failed, &failText](
+                                     const emby::ItemQueryResult &result,
+                                     const emby::ApiError &error) {
+            if (error.isError()) {
+                failed = true;
+                failText = error.toString();
+                --pending;
+                return;
+            }
+            sample.total = result.items.size();
+            for (const emby::MediaItem &item : result.items) {
+                const bool hasPrimary = !item.primaryImageTag.isEmpty();
+                const bool hasThumb = !item.thumbImageTag.isEmpty();
+                const bool hasBackdrop = !item.backdropImageTags.isEmpty();
+                if (hasPrimary)
+                    ++sample.primary;
+                if (hasThumb)
+                    ++sample.thumb;
+                if (hasBackdrop)
+                    ++sample.backdrop;
+                if (!item.seriesPrimaryImageTag.isEmpty())
+                    ++sample.seriesPrimary;
+                if (hasPrimary || hasThumb || hasBackdrop)
+                    ++sample.anyImage;
+                else
+                    ++sample.none;
+                if (!hasPrimary)
+                    sample.missingPrimary.append(
+                        QStringLiteral("%1 (%2)").arg(item.name.isEmpty() ? item.id : item.name,
+                                                     item.id));
+                if (!hasPrimary && !hasThumb && !hasBackdrop)
+                    sample.missingAll.append(
+                        QStringLiteral("%1 (%2)").arg(item.name.isEmpty() ? item.id : item.name,
+                                                     item.id));
+            }
+            --pending;
+        });
+    }
+    waitFor([&pending]() { return pending == 0; }, 20000);
+    if (failed) {
+        out << "FAIL live poster gaps: " << failText << "\n";
+        out.flush();
+        return 1;
+    }
+
+    out << "## Emby poster gap sample (up to 100 per type)\n\n";
+    out << "| Type | Total | Primary tag | Thumb tag | Backdrop tag | Series Primary | Any image | No image |\n";
+    out << "|---|---:|---:|---:|---:|---:|---:|---:|\n";
+    for (const Sample &sample : samples) {
+        const auto pct = [](int value, int total) {
+            if (total <= 0)
+                return QStringLiteral("-");
+            return QStringLiteral("%1%").arg(100.0 * value / total, 0, 'f', 1);
+        };
+        out << "| " << sample.type << " | " << sample.total << " | "
+            << sample.primary << " (" << pct(sample.primary, sample.total) << ") | "
+            << sample.thumb << " (" << pct(sample.thumb, sample.total) << ") | "
+            << sample.backdrop << " (" << pct(sample.backdrop, sample.total) << ") | "
+            << sample.seriesPrimary << " (" << pct(sample.seriesPrimary, sample.total) << ") | "
+            << sample.anyImage << " (" << pct(sample.anyImage, sample.total) << ") | "
+            << sample.none << " (" << pct(sample.none, sample.total) << ") |\n";
+    }
+    for (const Sample &sample : samples) {
+        if (!sample.missingAll.isEmpty())
+            out << "\nNo image at all — " << sample.type << ": "
+                << sample.missingAll.join(QStringLiteral("; ")) << "\n";
+        else if (!sample.missingPrimary.isEmpty())
+            out << "\nMissing Primary (has fallback) — " << sample.type << ": "
+                << sample.missingPrimary.join(QStringLiteral("; ")) << "\n";
+    }
+    out.flush();
+    return 0;
 }
 
 int runScreenshots(QApplication &app, const QString &directory)
@@ -1148,6 +1415,9 @@ int main(int argc, char *argv[])
 
     if (args.contains(QStringLiteral("--live-data")))
         return runLiveData(app);
+
+    if (args.contains(QStringLiteral("--live-poster-gaps")))
+        return runLivePosterGaps(app);
 
     const int screenshotIndex = args.indexOf(QStringLiteral("--screenshot"));
     if (screenshotIndex >= 0) {

@@ -82,6 +82,9 @@ public:
     bool isMockMode() const { return m_mockMode; }
     void setMockMode(bool enabled);
 
+    // T20：海报缓存/来源统计，供“帮助 → 导出诊断信息”追加。
+    QString posterStatsSummary() const;
+
     // T16：播放器模式。进入时隐藏侧边栏/顶栏/状态栏，让播放页铺满整个客户区；
     // 退出时恢复原 chrome 与进入前的页面（由 T17 在播放开始/结束时调用）。
     void setPlayerMode(bool enabled);
