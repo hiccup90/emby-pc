@@ -1,12 +1,16 @@
 #pragma once
 
+#include "librarydata.h"
+
 #include <QWidget>
 
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
+class QVBoxLayout;
 
 namespace emby {
 struct ServerProfile;
@@ -36,6 +40,10 @@ public:
     void setHardwareDecoderText(const QString &text);
     void setLibmpvVersionText(const QString &text);
 
+    // T38：媒体库显示/首页顺序设置（sections 来自 MainWindow 的 Views）。
+    void setLibrarySections(const QList<LibrarySection> &sections);
+    QList<LibrarySection> librarySections() const { return m_librarySections; }
+
     // T28：设置项读取 API（T29 播放侧也读 QSettings；这里便于打开设置页时使用）。
     QString subtitleLanguage() const;
     bool autoPlayNext() const;
@@ -57,11 +65,24 @@ signals:
     void clearImageCacheRequested();
     void exportDiagnosticsRequested();
     void copyDiagnosticsRequested();
+    void libraryDisplaySettingsChanged();
 
 private:
+    struct LibraryRow
+    {
+        QWidget *row = nullptr;
+        QCheckBox *sidebarVisible = nullptr;
+        QCheckBox *homeVisible = nullptr;
+        QString id;
+        QString name;
+    };
+
     void buildUi();
     void loadSettings();
     void saveControlValues();
+    void rebuildLibraryRows();
+    void saveLibrarySettings();
+    void moveLibrary(const QString &id, int delta);
     void openLogDirectory();
     void copyDiagnosticsToClipboard();
 
@@ -81,6 +102,13 @@ private:
     QCheckBox *m_rememberVolumeCheck = nullptr;
     QComboBox *m_autoHideCombo = nullptr;
     QLabel *m_hardwareDecoderValue = nullptr;
+
+    QGroupBox *m_libraryGroup = nullptr;
+    QVBoxLayout *m_libraryRowsLayout = nullptr;
+    QLabel *m_libraryEmpty = nullptr;
+    QList<LibrarySection> m_librarySections;
+    QStringList m_libraryOrder;
+    QList<LibraryRow> m_libraryRows;
 
     QLabel *m_cacheUsageValue = nullptr;
     QSpinBox *m_cacheLimitSpin = nullptr;

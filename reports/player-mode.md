@@ -314,7 +314,7 @@ QPushButton::clicked
 
 ### 12.3 自测
 
-- `emby-ui-demo --selftest` **155 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
+- `emby-ui-demo --selftest` **165 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
 - 全屏测试输出可见完整日志：
 ```text
 PlayerPage: FullscreenButton clicked ...

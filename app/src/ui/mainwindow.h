@@ -12,6 +12,7 @@ class QLabel;
 class QLineEdit;
 class QMenuBar;
 class QPushButton;
+class QSplitter;
 class QStackedWidget;
 class QTimer;
 class QWidget;
@@ -101,6 +102,9 @@ public:
     WindowFrame *windowFrame() const { return m_windowFrame; }
     // T28/T29：设置页（T29 可写硬件解码/libmpv 状态并读 QSettings 键）。
     SettingsPage *settingsPage() const { return m_settings; }
+    // T38：侧边栏可拖动分隔器（180–320，默认 224）。
+    QSplitter *mainSplitter() const { return m_splitter; }
+    QList<LibrarySection> librarySections() const { return m_sections; }
 
     QStringList libraryIds() const;
     QStringList sectionNames() const;
@@ -137,6 +141,8 @@ private:
     void applySettings();
     void clearImageCache();
     void updateEpisodeNavigation();
+    void restoreSidebarWidth();
+    void saveSidebarWidth();
 
     // 数据源
     void applyMockMode();
@@ -183,6 +189,7 @@ private:
     QString m_lastUserName;
 
     Sidebar *m_sidebar = nullptr;
+    QSplitter *m_splitter = nullptr;
     QWidget *m_topBar = nullptr;
     QLabel *m_sessionStatus = nullptr;
     QPushButton *m_avatar = nullptr;
@@ -203,6 +210,7 @@ private:
     QHash<QString, MediaItem> m_knownItems;
 
     QList<LibrarySection> m_sections;
+    QList<int> m_sidebarSectionIndexes;
     int m_currentSection = -1;
     int m_libraryStart = 0;
     int m_libraryGeneration = 0;

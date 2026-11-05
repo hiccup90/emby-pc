@@ -10,7 +10,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | 文件 | 职责 |
 |---|---|
 | `mainwindow.h/.cpp` | 主窗口壳：动态侧边栏 + 顶栏搜索 + 页面栈（首页/媒体库/设置/详情/播放），负责真实/mock 数据源切换 |
-| `sidebar.h/.cpp` | 左侧导航：首页 + 来自 /Views 的动态媒体库列表 + 设置 + 服务器状态卡片 |
+| `sidebar.h/.cpp` | 左侧导航：首页 + 来自 /Views 的动态媒体库列表 + 设置 + 服务器状态卡片；T38 可拖动宽度 180–320 |
 | `homeview.h/.cpp` | 首页：继续观看（Resume 横向卡片）+ 最近添加（复用 LibraryView 海报网格） |
 | `libraryview.h/.cpp` | 媒体库页：QListView(IconMode) + PosterDelegate 海报网格、服务端分页/排序/搜索、加载/空/错误状态 |
 | `librarydata.h/.cpp` | UI 数据层：Views / Items 分页 / Home(Resume+最近添加) / 详情(季集) 的 Emby 请求编排与 DTO 映射 |
@@ -27,7 +27,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `logindialog.h/.cpp` | 登录/连接对话框：测试连接、登录、HTTPS 自签开关、中文错误提示 |
 | `tokenstore.h/.cpp` | TokenStore 抽象 + QSettingsTokenStore 临时实现（预留 Windows DPAPI） |
 | `authutils.h/.cpp` | 服务器地址规范化 + ApiError → 中文提示 |
-| `settingspage.h/.cpp` | 设置页（T28）：服务器/账号、播放（字幕/连播/音量/延时/硬件解码）、存储缓存清理、日志目录、关于/诊断 + QSettings 持久化 |
+| `settingspage.h/.cpp` | 设置页（T28）：服务器/账号、播放（字幕/连播/音量/延时/硬件解码）、媒体库显示/排序（T38）、存储缓存清理、日志目录、关于/诊断 + QSettings 持久化 |
 | `theme.h/.cpp` + `style/dark.qss` | 深色主题（Fusion + QPalette + QSS，QSS 编译进 Qt 资源） |
 | `demo_main.cpp` | 独立 demo / headless 自测 / 截图入口（仅 standalone 构建） |
 | `CMakeLists.txt` | 自有构建脚本：`add_library(ui STATIC ...)`；不改 `app/CMakeLists.txt` |
@@ -142,6 +142,13 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
 
 `ui::MainWindow::settingsPage()` 暴露设置页，T29 可回填硬件解码/libmpv 版本；`settingsChanged()` 实时应用设置。
 存储页可显示/清理 `CacheLocation/images`、打开日志目录、导出诊断信息；关于页显示应用/Qt/构建/libmpv 版本并可复制不含 token 的诊断摘要。
+
+## 布局改造（T38）
+
+- 主窗口使用 `QSplitter#MainSplitter`：侧边栏可拖动 180–320（默认 224），宽度持久化 `ui/sidebarWidth`；播放/全屏时隐藏 handle，视频区铺满。
+- `HomeView::setHomeSections()` 按 T37 `HomeSection` 顺序渲染多行（继续观看/最近添加/各库最新）；空 section 隐藏，整页纵向滚动，横向卡片复用现有缩略图缓存。
+- 设置页新增「媒体库」分区：`SettingsSidebarVisibleCheck` / `SettingsHomeVisibleCheck` + 上移下移；写入 `sidebar/hiddenLibraries`、`home/hiddenLibraries`、`home/sectionOrder`，立即刷新侧边栏和首页。
+- mock 模式仍保留旧 resume/recent 两段以兼容旧测试/截图；真实登录后走 T37 多 section。
 
 ## 真实媒体库（T7 / M2-B）
 
@@ -269,7 +276,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **155 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **165 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；

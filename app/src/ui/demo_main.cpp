@@ -10,12 +10,14 @@
 #include "detailview.h"
 #include "embyclient.h"
 #include "embythumbnailcache.h"
+#include "homeview.h"
 #include "librarydata.h"
 #include "libraryview.h"
 #include "logindialog.h"
 #include "mainwindow.h"
 #include "playerpage.h"
 #include "settingspage.h"
+#include "sidebar.h"
 #include "theme.h"
 #include "titlebar.h"
 #include "tokenstore.h"
@@ -48,6 +50,7 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -855,6 +858,185 @@ int runSettingsTests(QApplication &app)
     return failures;
 }
 
+int runLibraryLayoutTests(QApplication &app)
+{
+    QTextStream out(stdout);
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &name) {
+        out << (ok ? "PASS  " : "FAIL  ") << name << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    QTemporaryDir settingsDir;
+    check(settingsDir.isValid(), QStringLiteral("T38 创建布局临时 QSettings"));
+    const QString oldOrganization = QCoreApplication::organizationName();
+    const QString oldApplication = QCoreApplication::applicationName();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("emby-pc-test"));
+    QCoreApplication::setApplicationName(QStringLiteral("ui-layout-test"));
+
+    // 1) HomeView 多 section 顺序/空行隐藏。
+    ui::EmbyThumbnailCache cache;
+    ui::HomeView home(&cache);
+    home.resize(1000, 700);
+    home.show();
+    settle(app, 100);
+    QList<ui::HomeSection> sections;
+    ui::HomeSection resume;
+    resume.kind = ui::HomeSection::Kind::Resume;
+    resume.title = QStringLiteral("继续观看");
+    ui::MediaItem resumeItem;
+    resumeItem.id = QStringLiteral("resume-1");
+    resumeItem.title = QStringLiteral("继续观看 1");
+    resume.items.append(resumeItem);
+    sections.append(resume);
+    ui::HomeSection recent;
+    recent.kind = ui::HomeSection::Kind::Recent;
+    recent.title = QStringLiteral("最近添加");
+    ui::MediaItem recentItem;
+    recentItem.id = QStringLiteral("recent-1");
+    recentItem.title = QStringLiteral("最近添加 1");
+    recent.items.append(recentItem);
+    sections.append(recent);
+    ui::HomeSection emptyLibrary;
+    emptyLibrary.kind = ui::HomeSection::Kind::Library;
+    emptyLibrary.libraryId = QStringLiteral("lib-empty");
+    emptyLibrary.title = QStringLiteral("空库");
+    sections.append(emptyLibrary);
+    ui::HomeSection library;
+    library.kind = ui::HomeSection::Kind::Library;
+    library.libraryId = QStringLiteral("lib-movies");
+    library.title = QStringLiteral("电影最新");
+    ui::MediaItem libraryItem;
+    libraryItem.id = QStringLiteral("movie-1");
+    libraryItem.title = QStringLiteral("电影 1");
+    library.items.append(libraryItem);
+    sections.append(library);
+    home.setHomeSections(sections);
+    settle(app, 120);
+    check(home.sectionCount() == 3 && home.visibleSectionCount() == 3
+              && home.sectionTitles()
+                     == QStringList({QStringLiteral("继续观看"), QStringLiteral("最近添加"),
+                                     QStringLiteral("电影最新")}),
+          QStringLiteral("HomeView 按顺序渲染 3 个非空 section，空库隐藏"));
+    const int homeRowCount = home.findChildren<QWidget *>(QStringLiteral("HomeSectionRow")).size();
+    check(homeRowCount == 3,
+          QStringLiteral("HomeView 生成 3 个 HomeSectionRow（实际 %1）").arg(homeRowCount));
+    home.close();
+
+    // 2) 设置页媒体库显示/排序写 QSettings。
+    ui::SettingsPage page;
+    QList<ui::LibrarySection> libraries;
+    ui::LibrarySection movies;
+    movies.id = QStringLiteral("lib-movies");
+    movies.name = QStringLiteral("电影");
+    movies.collectionType = QStringLiteral("movies");
+    ui::LibrarySection series;
+    series.id = QStringLiteral("lib-series");
+    series.name = QStringLiteral("剧集");
+    series.collectionType = QStringLiteral("tvshows");
+    libraries << movies << series;
+    page.show();
+    settle(app, 80);
+    page.setLibrarySections(libraries);
+    settle(app, 80);
+    auto rows = page.findChildren<QWidget *>(QStringLiteral("SettingsLibraryRow"));
+    check(rows.size() == 2 && page.findChild<QWidget *>(QStringLiteral("SettingsLibraryGroup"))
+                                  ->isVisible(),
+          QStringLiteral("设置页媒体库分区显示 2 行"));
+    int librarySignals = 0;
+    QObject::connect(&page, &ui::SettingsPage::libraryDisplaySettingsChanged,
+                     [&librarySignals]() { ++librarySignals; });
+    if (!rows.isEmpty()) {
+        auto *sidebarCheck = rows.first()->findChild<QCheckBox *>(
+            QStringLiteral("SettingsSidebarVisibleCheck"));
+        auto *homeCheck = rows.first()->findChild<QCheckBox *>(
+            QStringLiteral("SettingsHomeVisibleCheck"));
+        if (sidebarCheck)
+            sidebarCheck->setChecked(false);
+        settle(app, 80);
+        QSettings settings;
+        check(sidebarCheck && homeCheck && !sidebarCheck->isChecked()
+                  && !homeCheck->isEnabled()
+                  && settings.value(QStringLiteral("sidebar/hiddenLibraries")).toStringList()
+                         .contains(QStringLiteral("lib-movies"))
+                  && librarySignals >= 1,
+              QStringLiteral("设置页取消侧边栏显示写入 QSettings 并禁用首页显示"));
+    }
+    auto *down = rows.isEmpty()
+                     ? nullptr
+                     : rows.first()->findChild<QPushButton *>(QStringLiteral("SettingsLibraryDownButton"));
+    if (down)
+        down->click();
+    settle(app, 80);
+    QSettings ordered;
+    check(ordered.value(QStringLiteral("home/sectionOrder")).toStringList().indexOf(
+              QStringLiteral("lib:lib-series"))
+              < ordered.value(QStringLiteral("home/sectionOrder")).toStringList().indexOf(
+                    QStringLiteral("lib:lib-movies")),
+          QStringLiteral("设置页下移调整 home/sectionOrder"));
+
+    // 3) MainWindow QSplitter 宽度恢复与侧边栏数量联动。
+    QSettings settingsReset;
+    settingsReset.remove(QStringLiteral("sidebar/hiddenLibraries"));
+    settingsReset.remove(QStringLiteral("home/hiddenLibraries"));
+    settingsReset.remove(QStringLiteral("home/sectionOrder"));
+    settingsReset.setValue(QStringLiteral("ui/sidebarWidth"), 300);
+    ui::MainWindow window(ui::MainWindow::Options{false});
+    window.resize(1200, 700);
+    window.show();
+    settle(app, 150);
+    auto *splitter = window.mainSplitter();
+    auto *sidebar = window.findChild<QWidget *>(QStringLiteral("Sidebar"));
+    check(splitter && splitter->objectName() == QStringLiteral("MainSplitter")
+              && sidebar && sidebar->minimumWidth() == 180 && sidebar->maximumWidth() == 320
+              && qAbs(sidebar->width() - 300) <= 8,
+          QStringLiteral("MainSplitter 恢复 ui/sidebarWidth=300，范围 180-320"));
+    auto *windowSettings = window.settingsPage();
+    if (windowSettings) {
+        windowSettings->setLibrarySections(window.librarySections());
+        settle(app, 80);
+        const auto settingsRows = window.findChildren<QWidget *>(
+            QStringLiteral("SettingsLibraryRow"));
+        auto *sidebarCheck = settingsRows.isEmpty()
+                                 ? nullptr
+                                 : settingsRows.last()->findChild<QCheckBox *>(
+                                       QStringLiteral("SettingsSidebarVisibleCheck"));
+        auto *realSidebar = window.findChild<ui::Sidebar *>();
+        if (sidebarCheck && realSidebar) {
+            const int before = realSidebar->sections().size();
+            sidebarCheck->setChecked(false);
+            settle(app, 120);
+            const int after = realSidebar->sections().size();
+            check(after == before - 1,
+                  QStringLiteral("设置页隐藏媒体库后侧边栏数量减少（%1→%2 checked=%3）")
+                      .arg(before).arg(after).arg(sidebarCheck->isChecked()));
+        }
+    }
+    if (splitter) {
+        splitter->setSizes({250, qMax(1, splitter->width() - 250)});
+        settle(app, 100);
+    }
+    window.close();
+
+    ui::MainWindow restoredWindow(ui::MainWindow::Options{false});
+    restoredWindow.resize(1200, 700);
+    restoredWindow.show();
+    settle(app, 150);
+    auto *restoredSidebar = restoredWindow.findChild<QWidget *>(QStringLiteral("Sidebar"));
+    check(restoredSidebar && qAbs(restoredSidebar->width() - 250) <= 8,
+          QStringLiteral("ui/sidebarWidth 关闭保存后新窗口恢复（实际 %1）")
+              .arg(restoredSidebar ? restoredSidebar->width() : -1));
+    restoredWindow.close();
+
+    QCoreApplication::setOrganizationName(oldOrganization);
+    QCoreApplication::setApplicationName(oldApplication);
+    return failures;
+}
+
 int runAuthTests(QApplication &app)
 {
     Q_UNUSED(app);
@@ -1171,6 +1353,11 @@ int runAuthTests(QApplication &app)
               QStringLiteral("侧边栏生成 2 个动态媒体库按钮"));
         check(waitFor([&window]() { return window.libraryIds().size() >= 2; }),
               QStringLiteral("首页最近添加来自真实 /Items"));
+        auto *realHome = window.findChild<ui::HomeView *>(QStringLiteral("HomePage"));
+        check(realHome && realHome->sectionCount() >= 2
+                  && realHome->sectionTitles().first() == QStringLiteral("继续观看"),
+              QStringLiteral("真实首页按 HomeSection 渲染多行（%1 行）")
+                  .arg(realHome ? realHome->sectionCount() : 0));
 
         window.navigateTo(ui::MainWindow::Page::Library);
         auto *realLibrary = window.findChild<ui::LibraryView *>(QStringLiteral("LibraryContent"));
@@ -1859,6 +2046,7 @@ int main(int argc, char *argv[])
         failures += runAuthTests(app);
         failures += runWindowStateTests(app);
         failures += runSettingsTests(app);
+        failures += runLibraryLayoutTests(app);
         return failures == 0 ? 0 : 1;
     }
 

@@ -273,6 +273,8 @@ void MainWindow::updateWindowChrome()
         m_titleBar->setVisible(chromeVisible);
     if (QMenuBar *menu = findChild<QMenuBar *>(QString(), Qt::FindDirectChildrenOnly))
         menu->setVisible(chromeVisible);
+    if (m_splitter)
+        m_splitter->setHandleWidth(chromeVisible ? 4 : 0);
     setContentsMargins(0, chromeVisible ? kWindowTitleBarHeight : 0, 0, 0);
     if (m_windowFrame)
         m_windowFrame->setTitleBarHeight(chromeVisible ? kWindowTitleBarHeight : 0);
@@ -413,7 +415,11 @@ void MainWindow::connectSignals()
         if (index <= 0) {
             navigateTo(Page::Home);
         } else if (index <= libraryCount) {
-            selectSection(index - 1);
+            const int fullIndex = index - 1 < m_sidebarSectionIndexes.size()
+                                      ? m_sidebarSectionIndexes.at(index - 1)
+                                      : -1;
+            if (fullIndex >= 0)
+                selectSection(fullIndex);
         } else {
             navigateTo(Page::Settings);
         }
@@ -528,6 +534,15 @@ void MainWindow::connectSignals()
     connect(m_settings, &SettingsPage::logoutRequested, this, &MainWindow::logout);
     connect(m_settings, &SettingsPage::mockModeChanged, this, &MainWindow::setMockMode);
     connect(m_settings, &SettingsPage::settingsChanged, this, &MainWindow::applySettings);
+    connect(m_settings, &SettingsPage::libraryDisplaySettingsChanged, this, [this]() {
+        if (m_data)
+            m_data->clearHomeSectionsCache();
+        rebuildSidebar();
+        if (m_mockMode)
+            loadMockHome();
+        else
+            loadRealHome();
+    });
     connect(m_settings, &SettingsPage::clearImageCacheRequested, this,
             &MainWindow::clearImageCache);
     connect(m_settings, &SettingsPage::exportDiagnosticsRequested, this, [this]() {
@@ -636,22 +651,36 @@ void MainWindow::applyMockMode()
 
 void MainWindow::rebuildSidebar()
 {
+    QSettings settings;
+    const QStringList hidden =
+        settings.value(QStringLiteral("sidebar/hiddenLibraries")).toStringList();
+    m_sidebarSectionIndexes.clear();
     QList<SidebarSection> sidebarSections;
     sidebarSections.reserve(m_sections.size());
-    for (const LibrarySection &section : m_sections) {
+    for (int i = 0; i < m_sections.size(); ++i) {
+        const LibrarySection &section = m_sections.at(i);
+        if (hidden.contains(section.id))
+            continue;
         SidebarSection entry;
         entry.id = section.id;
         entry.name = section.name;
         entry.collectionType = section.collectionType;
         sidebarSections.append(entry);
+        m_sidebarSectionIndexes.append(i);
     }
     m_sidebar->setSections(sidebarSections);
+    if (m_currentSection >= 0 && !m_sidebarSectionIndexes.contains(m_currentSection))
+        m_currentSection = m_sidebarSectionIndexes.isEmpty() ? -1 : m_sidebarSectionIndexes.first();
     if (m_stack->currentIndex() == StackHome)
         m_sidebar->setCurrentIndex(0);
     else if (m_stack->currentIndex() == StackSettings)
-        m_sidebar->setCurrentIndex(m_sections.size() + 1);
-    else if (m_currentSection >= 0)
-        m_sidebar->setCurrentIndex(m_currentSection + 1);
+        m_sidebar->setCurrentIndex(m_sidebar->sections().size() + 1);
+    else if (m_currentSection >= 0) {
+        const int sidebarIndex = m_sidebarSectionIndexes.indexOf(m_currentSection);
+        m_sidebar->setCurrentIndex(sidebarIndex >= 0 ? sidebarIndex + 1 : 0);
+    }
+    if (m_settings)
+        m_settings->setLibrarySections(m_sections);
 }
 
 void MainWindow::refreshServerCard()
@@ -756,19 +785,9 @@ void MainWindow::loadRealHome()
             // 测试/退出时 MainWindow 可能先于网络回调销毁，QPointer 防止悬空。
             if (!self || generation != self->m_homeGeneration)
                 return;
-            QList<MediaItem> resume;
-            QList<MediaItem> recent;
-            for (const HomeSection &section : sections) {
-                if (section.kind == HomeSection::Kind::Resume)
-                    resume = section.items;
-                else if (section.kind == HomeSection::Kind::Recent)
-                    recent = section.items;
-            }
             qInfo() << "MainWindow::loadRealHome callback: generation" << generation
                     << "currentGeneration" << self->m_homeGeneration
                     << "sections" << sections.size()
-                    << "resume" << resume.size()
-                    << "recent" << recent.size()
                     << "error" << error
                     << "homeVisible" << self->m_home->isVisible()
                     << "stackIndex" << self->m_stack->currentIndex();
@@ -777,16 +796,13 @@ void MainWindow::loadRealHome()
                 emit self->dataLoaded(false, error);
                 return;
             }
-            self->m_home->setResumeItems(resume);
-            self->m_home->setRecentItems(recent);
+            self->m_home->setHomeSections(sections);
             self->m_home->setLoading(false);
-            self->m_home->recentView()->setTotalCount(recent.size());
-            self->m_home->recentView()->setHasMore(false);
-            self->rememberItems(resume);
-            self->rememberItems(recent);
+            for (const HomeSection &section : sections)
+                self->rememberItems(section.items);
             emit self->dataLoaded(true, QString());
-            self->statusBar()->showMessage(QStringLiteral("已连接真实媒体库 · 最近添加 %1 项")
-                                               .arg(recent.size()),
+            self->statusBar()->showMessage(QStringLiteral("已连接真实媒体库 · %1 个首页分区")
+                                               .arg(sections.size()),
                                            3000);
         });
 }
@@ -796,7 +812,8 @@ void MainWindow::selectSection(int sectionIndex)
     if (sectionIndex < 0 || sectionIndex >= m_sections.size())
         return;
     m_currentSection = sectionIndex;
-    m_sidebar->setCurrentIndex(sectionIndex + 1);
+    const int sidebarIndex = m_sidebarSectionIndexes.indexOf(sectionIndex);
+    m_sidebar->setCurrentIndex(sidebarIndex >= 0 ? sidebarIndex + 1 : 0);
     m_stack->setCurrentIndex(StackLibrary);
     m_lastContentIndex = StackLibrary;
 
@@ -1434,8 +1451,8 @@ QStringList MainWindow::libraryIds() const
     QStringList ids;
     if (m_stack && m_stack->currentIndex() == StackLibrary)
         ids = m_libraryView->visibleItemIds();
-    else
-        ids = m_home->recentView()->visibleItemIds();
+    else if (m_home)
+        ids = m_home->visibleHomeItemIds();
     return ids;
 }
 
@@ -1479,7 +1496,7 @@ QList<MediaItem> MainWindow::visibleItems() const
     }
     if (m_stack && m_stack->currentIndex() == StackLibrary)
         return m_libraryView->visibleItems();
-    return m_home->recentView()->visibleItems();
+    return m_home ? m_home->visibleHomeItems() : QList<MediaItem>();
 }
 
 int MainWindow::currentStackIndex() const

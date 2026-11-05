@@ -230,7 +230,28 @@ void SettingsPage::buildUi()
                                     QStringLiteral("SettingsDataSourceValue"), ui);
     layout->addWidget(ui);
 
-    // 4) 存储与日志
+    // 4) 媒体库显示与首页顺序（T38）
+    m_libraryGroup = makeGroup(QStringLiteral("媒体库"), content);
+    m_libraryGroup->setObjectName(QStringLiteral("SettingsLibraryGroup"));
+    auto *libraryLayout = qobject_cast<QVBoxLayout *>(m_libraryGroup->layout());
+    auto *libraryHint = new QLabel(
+        QStringLiteral("选择媒体库在侧边栏/首页显示；上移/下移调整首页中媒体库行的顺序。"
+                       "侧边栏隐藏的库不会出现在首页。"),
+        m_libraryGroup);
+    libraryHint->setObjectName(QStringLiteral("SettingsLibraryHint"));
+    libraryHint->setWordWrap(true);
+    libraryLayout->addWidget(libraryHint);
+    m_libraryRowsLayout = new QVBoxLayout();
+    m_libraryRowsLayout->setContentsMargins(0, 6, 0, 0);
+    m_libraryRowsLayout->setSpacing(6);
+    libraryLayout->addLayout(m_libraryRowsLayout);
+    m_libraryEmpty = new QLabel(QStringLiteral("登录后显示服务器媒体库"), m_libraryGroup);
+    m_libraryEmpty->setObjectName(QStringLiteral("EmptyState"));
+    libraryLayout->addWidget(m_libraryEmpty);
+    layout->addWidget(m_libraryGroup);
+    m_libraryGroup->setVisible(false);
+
+    // 5) 存储与日志
     auto *storage = makeGroup(QStringLiteral("存储与日志"), content);
     auto *storageLayout = qobject_cast<QVBoxLayout *>(storage->layout());
     m_cacheUsageValue = addValueRow(storageLayout, QStringLiteral("海报缓存占用"),
@@ -496,6 +517,176 @@ int SettingsPage::autoHideDelayMs() const
 int SettingsPage::cacheImageLimitMB() const
 {
     return m_cacheLimitSpin ? m_cacheLimitSpin->value() : 1024;
+}
+
+void SettingsPage::setLibrarySections(const QList<LibrarySection> &sections)
+{
+    m_librarySections = sections;
+    m_libraryOrder.clear();
+    QSettings settings;
+    const QStringList configured = settings.value(QStringLiteral("home/sectionOrder")).toStringList();
+    for (const QString &token : configured) {
+        if (!token.startsWith(QStringLiteral("lib:")))
+            continue;
+        const QString id = token.mid(4);
+        bool exists = false;
+        for (const LibrarySection &section : m_librarySections) {
+            if (section.id == id) {
+                exists = true;
+                break;
+            }
+        }
+        if (exists && !m_libraryOrder.contains(id))
+            m_libraryOrder.append(id);
+    }
+    for (const LibrarySection &section : m_librarySections) {
+        if (!m_libraryOrder.contains(section.id))
+            m_libraryOrder.append(section.id);
+    }
+    rebuildLibraryRows();
+}
+
+void SettingsPage::rebuildLibraryRows()
+{
+    if (!m_libraryRowsLayout)
+        return;
+    while (QLayoutItem *item = m_libraryRowsLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget()) {
+            widget->hide();
+            widget->deleteLater();
+        }
+        delete item;
+    }
+    m_libraryRows.clear();
+    if (!m_libraryGroup || !m_libraryEmpty)
+        return;
+    m_libraryGroup->setVisible(!m_librarySections.isEmpty());
+    m_libraryEmpty->setVisible(m_librarySections.isEmpty());
+    if (m_librarySections.isEmpty())
+        return;
+
+    QSettings settings;
+    const QStringList hiddenSidebar =
+        settings.value(QStringLiteral("sidebar/hiddenLibraries")).toStringList();
+    const QStringList hiddenHome =
+        settings.value(QStringLiteral("home/hiddenLibraries")).toStringList();
+
+    for (const QString &id : m_libraryOrder) {
+        const LibrarySection *section = nullptr;
+        for (const LibrarySection &candidate : m_librarySections) {
+            if (candidate.id == id) {
+                section = &candidate;
+                break;
+            }
+        }
+        if (!section)
+            continue;
+
+        LibraryRow row;
+        row.id = section->id;
+        row.name = section->name;
+        row.row = new QWidget(m_libraryGroup);
+        row.row->setObjectName(QStringLiteral("SettingsLibraryRow"));
+        row.row->setProperty("libraryId", row.id);
+        auto *layout = new QHBoxLayout(row.row);
+        layout->setContentsMargins(0, 2, 0, 2);
+        layout->setSpacing(8);
+        auto *name = new QLabel(row.name, row.row);
+        name->setObjectName(QStringLiteral("SettingName"));
+        name->setMinimumWidth(120);
+        layout->addWidget(name);
+
+        row.sidebarVisible = new QCheckBox(QStringLiteral("侧边栏显示"), row.row);
+        row.sidebarVisible->setObjectName(QStringLiteral("SettingsSidebarVisibleCheck"));
+        row.sidebarVisible->setChecked(!hiddenSidebar.contains(row.id));
+        row.homeVisible = new QCheckBox(QStringLiteral("首页显示"), row.row);
+        row.homeVisible->setObjectName(QStringLiteral("SettingsHomeVisibleCheck"));
+        row.homeVisible->setChecked(!hiddenHome.contains(row.id));
+        row.homeVisible->setEnabled(row.sidebarVisible->isChecked());
+        row.homeVisible->setToolTip(row.sidebarVisible->isChecked()
+                                        ? QStringLiteral("在首页显示该媒体库最新条目")
+                                        : QStringLiteral("需先勾选侧边栏显示"));
+        layout->addWidget(row.sidebarVisible);
+        layout->addWidget(row.homeVisible);
+        layout->addStretch(1);
+
+        auto *up = new QPushButton(QStringLiteral("↑"), row.row);
+        up->setObjectName(QStringLiteral("SettingsLibraryUpButton"));
+        up->setProperty("role", QStringLiteral("secondary"));
+        up->setFixedSize(28, 26);
+        up->setToolTip(QStringLiteral("上移首页顺序"));
+        auto *down = new QPushButton(QStringLiteral("↓"), row.row);
+        down->setObjectName(QStringLiteral("SettingsLibraryDownButton"));
+        down->setProperty("role", QStringLiteral("secondary"));
+        down->setFixedSize(28, 26);
+        down->setToolTip(QStringLiteral("下移首页顺序"));
+        layout->addWidget(up);
+        layout->addWidget(down);
+
+        const QString rowId = row.id;
+        connect(row.sidebarVisible, &QCheckBox::toggled, this, [this, rowId](bool checked) {
+            for (const LibraryRow &candidate : m_libraryRows) {
+                if (candidate.id != rowId || !candidate.homeVisible)
+                    continue;
+                candidate.homeVisible->setEnabled(checked);
+                candidate.homeVisible->setToolTip(
+                    checked ? QStringLiteral("在首页显示该媒体库最新条目")
+                            : QStringLiteral("需先勾选侧边栏显示"));
+            }
+            saveLibrarySettings();
+        });
+        connect(row.homeVisible, &QCheckBox::toggled, this, [this]() { saveLibrarySettings(); });
+        connect(up, &QPushButton::clicked, this, [this, rowId]() { moveLibrary(rowId, -1); });
+        connect(down, &QPushButton::clicked, this, [this, rowId]() { moveLibrary(rowId, 1); });
+
+        m_libraryRowsLayout->addWidget(row.row);
+        m_libraryRows.append(row);
+    }
+}
+
+void SettingsPage::moveLibrary(const QString &id, int delta)
+{
+    const int index = m_libraryOrder.indexOf(id);
+    const int target = index + delta;
+    if (index < 0 || target < 0 || target >= m_libraryOrder.size())
+        return;
+    m_libraryOrder.move(index, target);
+    rebuildLibraryRows();
+    saveLibrarySettings();
+}
+
+void SettingsPage::saveLibrarySettings()
+{
+    QSettings settings;
+    QStringList sidebarHidden;
+    QStringList homeHidden;
+    for (const LibraryRow &row : m_libraryRows) {
+        if (row.sidebarVisible && !row.sidebarVisible->isChecked())
+            sidebarHidden.append(row.id);
+        if (row.homeVisible && !row.homeVisible->isChecked())
+            homeHidden.append(row.id);
+    }
+    settings.setValue(QStringLiteral("sidebar/hiddenLibraries"), sidebarHidden);
+    settings.setValue(QStringLiteral("home/hiddenLibraries"), homeHidden);
+
+    // 保留 resume/recent 的位置，只重排媒体库行。
+    const QStringList oldOrder =
+        settings.value(QStringLiteral("home/sectionOrder")).toStringList();
+    QStringList order;
+    for (const QString &token : oldOrder) {
+        if ((token == QLatin1String("resume") || token == QLatin1String("recent"))
+            && !order.contains(token)) {
+            order.append(token);
+        }
+    }
+    if (!order.contains(QStringLiteral("resume")))
+        order.prepend(QStringLiteral("resume"));
+    if (!order.contains(QStringLiteral("recent")))
+        order.insert(qMin(1, order.size()), QStringLiteral("recent"));
+    for (const QString &id : m_libraryOrder)
+        order.append(QStringLiteral("lib:") + id);
+    settings.setValue(QStringLiteral("home/sectionOrder"), order);
+    emit libraryDisplaySettingsChanged();
 }
 
 void SettingsPage::refreshCacheUsage()

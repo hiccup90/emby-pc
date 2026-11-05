@@ -729,6 +729,51 @@ QSpinBox::up-button, QSpinBox::down-button {
     background-color: transparent;
 }
 
+/* T38 侧边栏分隔器 / 首页多分栏 / 媒体库设置 */
+QSplitter#MainSplitter::handle {
+    background-color: #1E293B;
+    width: 4px;
+}
+
+QSplitter#MainSplitter::handle:hover {
+    background-color: #3B82F6;
+}
+
+QLabel#HomeSectionTitle {
+    color: #E2E8F0;
+    font-size: 18px;
+    font-weight: 700;
+    padding: 2px 0 4px 0;
+}
+
+QLabel#HomeSectionCardTitle {
+    color: #E2E8F0;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QLabel#HomeSectionCardMeta {
+    color: #64748B;
+    font-size: 11px;
+}
+
+QLabel#SettingsLibraryHint {
+    color: #94A3B8;
+    font-size: 12px;
+    padding: 2px 0 6px 0;
+}
+
+QWidget#SettingsLibraryRow {
+    background-color: #0B1220;
+    border: 1px solid #1E293B;
+    border-radius: 7px;
+    padding: 6px 10px;
+}
+
+QSplitter#MainSplitter::handle:horizontal {
+    width: 4px;
+}
+
 /* ------------------------------ 菜单 / 状态栏 / 滚动条 ------------------------------ */
 
 QMenu {

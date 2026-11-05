@@ -87,7 +87,9 @@ Sidebar::Sidebar(QWidget *parent)
 {
     setObjectName(QStringLiteral("Sidebar"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(224);
+    setMinimumWidth(180);
+    setMaximumWidth(320);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     buildUi();
     rebuildNavigation();
 }

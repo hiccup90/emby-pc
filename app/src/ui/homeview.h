@@ -1,5 +1,6 @@
 #pragma once
 
+#include "librarydata.h"
 #include "uitypes.h"
 
 #include <QWidget>
@@ -8,6 +9,8 @@ class QHBoxLayout;
 class QLabel;
 class QScrollArea;
 class QShowEvent;
+class QStackedWidget;
+class QVBoxLayout;
 
 namespace ui {
 
@@ -24,6 +27,13 @@ public:
 
     void setResumeItems(const QList<MediaItem> &items);
     void setRecentItems(const QList<MediaItem> &items);
+    // T38：按折叠顺序渲染 T37 的多行首页（resume/recent/每库最新）。
+    void setHomeSections(const QList<HomeSection> &sections);
+    int sectionCount() const { return m_sectionRows.size(); }
+    int visibleSectionCount() const;
+    QStringList sectionTitles() const;
+    QList<MediaItem> visibleHomeItems() const;
+    QStringList visibleHomeItemIds() const;
     void setLoading(bool loading, const QString &message = QString());
     void setError(const QString &message);
 
@@ -46,9 +56,23 @@ signals:
     void sortChanged(int mode);
 
 private:
+    struct SectionRow
+    {
+        QWidget *row = nullptr;
+        QScrollArea *scroll = nullptr;
+        QWidget *content = nullptr;
+        QHBoxLayout *layout = nullptr;
+        QList<QWidget *> cards;
+        HomeSection section;
+    };
+
     void clearResume();
     void rebuildResume();
     void resizeResumeContent();
+    void rebuildHomeSections();
+    void clearHomeSections();
+    void resizeHomeSectionRows();
+    void showLegacyPage();
     void refreshThumbnails();
 
     ThumbnailCache *m_cache = nullptr;
@@ -61,6 +85,13 @@ private:
     QLabel *m_resumeTitle = nullptr;
     QList<MediaItem> m_resumeItems;
     QList<QWidget *> m_resumeCards;
+    QStackedWidget *m_viewStack = nullptr;
+    QWidget *m_legacyPage = nullptr;
+    QScrollArea *m_sectionsScroll = nullptr;
+    QWidget *m_sectionsContent = nullptr;
+    QVBoxLayout *m_sectionsLayout = nullptr;
+    QList<SectionRow> m_sectionRows;
+    bool m_usingSections = false;
     bool m_loading = false;
     QString m_error;
     int m_resumeCount = 0;
