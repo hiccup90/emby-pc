@@ -17,6 +17,7 @@
 #include "tokenstore.h"
 
 #include <QApplication>
+#include <QDebug>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -501,6 +502,13 @@ void MainWindow::loadRealHome()
     m_data->fetchHome(12, 24, [this, generation](const QList<MediaItem> &resume,
                                                  const QList<MediaItem> &recent,
                                                  const QString &error) {
+        qInfo() << "MainWindow::loadRealHome callback: generation" << generation
+                << "currentGeneration" << m_homeGeneration
+                << "resume" << resume.size()
+                << "recent" << recent.size()
+                << "error" << error
+                << "homeVisible" << m_home->isVisible()
+                << "stackIndex" << m_stack->currentIndex();
         if (generation != m_homeGeneration)
             return;
         if (!error.isEmpty()) {

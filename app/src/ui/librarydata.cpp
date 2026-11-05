@@ -445,8 +445,13 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
     state->handler = std::move(handler);
 
     auto finish = [this, state]() {
-        if (!state->resumeDone || !state->recentDone)
+        if (!state->resumeDone || !state->recentDone) {
+            qInfo() << "home finish waiting: resumeDone" << state->resumeDone
+                    << "recentDone" << state->recentDone
+                    << "resume" << state->resume.size()
+                    << "recent" << state->recent.size();
             return;
+        }
         if (!state->handler)
             return;
         // 最近添加失败不应把已经拿到的继续观看一起丢掉；只有 resume 失败，
@@ -454,6 +459,11 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
         QString error = state->resumeError;
         if (error.isEmpty() && state->resume.isEmpty())
             error = state->recentError;
+        qInfo() << "home finish: resumeDone" << state->resumeDone
+                << "recentDone" << state->recentDone
+                << "resume" << state->resume.size()
+                << "recent" << state->recent.size()
+                << "error" << error;
         auto callback = std::move(state->handler);
         state->handler = nullptr;
         callback(state->resume, state->recent, error);
@@ -497,8 +507,15 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
     query.limit = qMax(1, recentLimit);
     query.sortBy = {QStringLiteral("DateCreated")};
     query.sortOrder = QStringLiteral("Descending");
+    qInfo() << "home recent request: userId" << m_client->profile().userId
+            << "limit" << qMax(1, recentLimit);
     m_client->fetchItems(query, [this, state, finish](const emby::ItemQueryResult &page,
                                                       const emby::ApiError &error) {
+        qInfo() << "home recent response: httpStatus" << error.httpStatus
+                << "totalRecordCount" << page.totalRecordCount
+                << "items" << page.items.size()
+                << "error" << error.isError()
+                << "message" << error.message.left(200);
         if (error.isError()) {
             state->recentError = friendlyApiError(error);
             qWarning() << "home recent response error: httpStatus" << error.httpStatus
@@ -507,6 +524,8 @@ void LibraryData::fetchHome(int resumeLimit, int recentLimit, HomeHandler handle
         state->recent.reserve(page.items.size());
         for (const emby::MediaItem &source : page.items)
             state->recent.append(toMediaItem(source));
+        qInfo() << "home recent parsed:" << state->recent.size()
+                << "error" << state->recentError;
         state->recentDone = true;
         finish();
     });

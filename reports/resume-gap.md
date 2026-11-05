@@ -7,7 +7,7 @@
 ## 1. 结论
 
 - **直连和反向代理都无法复现「接口返回 0」**：测试账号按客户端完全相同参数请求 `GET /Users/{userId}/Items/Resume`，直连 8096 与 `https://j.<host>:222`（Caddy 反代，上游 8091）均 HTTP 200、TotalRecordCount=1；用 `LibraryData::fetchHome` + 真实 `ui::MainWindow` 跑同样请求，首页 resumeCount=1、dataLoaded=true。
-- 因此 **server 接口、代理、EmbyClient、ItemQueryResult/UserData 解析、HomeView 渲染链路本身都没有问题**；问题更可能在客户端时序（播放结束/返回首页后没有重新拉 Resume，或 Stopped 上报 0 位置）。
+- 因此 **server 接口、代理、EmbyClient、ItemQueryResult/UserData 解析都正常**。T24 进一步定位：`HomeView::rebuildResume()` 在 layout 激活前调 `adjustSize()`，content 尺寸保持 0x0，卡片虽创建但高度被压成 0——这是 UI 空白的直接根因；详见第 7 节。T21 的首页刷新/Stopped 位置修复仍保留（它们解决播放后数据不更新的问题）。
 - 已修 4 个客户端隐患：
   1. **播放结束/退出播放后不刷新首页**：从首页进入播放再返回时，首页仍显示播放前的空 Resume；现在 Stopped 返回后和回到首页时都会重新 fetchHome。
   2. **Stopped 可能上报 0 位置**：mpv stop 后 position 可能归零；现在 stop 前记录最后位置，Stopped 用该值，避免服务器把条目从 Continue Watching 清掉。
@@ -131,3 +131,50 @@ cd /root/github/emby-pc/app
 | `app/src/ui/homeview.cpp` | 空状态文案 |
 | `app/src/mainwindow.cpp/.h` | 最后已知位置；Stopped 用最后位置；首页刷新调度 |
 | `reports/resume-gap.md` | 本报告 |
+## 7. T24 追加：UI 卡片 0 高度根因（2026-11-05）
+
+### 7.1 实机证据
+
+- 用户 app.log（run 41952931196）：resume request 200、totalRecordCount=63、items=12、parsed=12、首条 Episode positionTicks=1.6e9/10.5%，但首页看不到卡片。
+- 说明 LibraryData -> MainWindow 数据已经拿到，问题在 HomeView 展示。
+
+### 7.2 根因
+
+HomeView::rebuildResume() 原来在添加卡片后直接 m_resumeContent->adjustSize()。此时横向 layout 尚未 activate，sizeHint() 还是 0；QScrollArea 的 content widget 保持 QSize(0,0)，卡片虽然创建，但布局分配高度为 0（实测卡片 QRect(0,0 236x0)、hidden=true），所以用户看到空的「继续观看」区域。
+
+静态 12 条假条目的 offscreen 复现：
+
+```text
+HomeView::rebuildResume: items 12 cards 0
+HomeView::rebuildResume: cards 12 emptyVisible false content QSize(0, 0)
+HomeView::rebuildResume: firstCard QRect(0,0 236x30) visible false hidden true
+```
+
+### 7.3 修复
+
+- rebuildResume() 末尾：
+  1. m_resumeLayout->activate() 强制布局计算；
+  2. 用 m_resumeLayout->sizeHint() 设置 m_resumeContent 的固定尺寸（宽度为卡片总宽，高度 190）；
+  3. 再用 QTimer::singleShot(0, ...) 在下一轮事件循环补一次尺寸，覆盖第一次 show/layout 前 sizeHint 仍为 0 的情况。
+- 增加 T24 诊断日志：
+  - LibraryData::fetchHome：recent 请求/响应/解析/finish 等待与完成（resumeDone/recentDone/条数/错误）；
+  - MainWindow::loadRealHome callback：generation/current、resume/recent 条数、error、homeVisible、stackIndex；
+  - HomeView::setResumeItems/rebuildResume/resizeResumeContent：items/cards/emptyVisible/content size/scroll viewport/first card geometry；
+  - diagnostics 增加 HomeView: resumeCount/cards/loading/error、sectionVisible/section geometry/scroll/viewport/content/emptyVisible/emptyText、firstCardVisible/geometry。
+- 未修改 embythumbnailcache/thumbnailcache（T23 范围）；没有对用户真实服务器做播放/重复请求，测试只用静态 12 条假数据。
+
+### 7.4 验证
+
+静态 12 条条目 + offscreen HomeView：
+
+```text
+HomeView::resizeResumeContent: hint QSize(2986, 190) content QSize(2986, 190)
+cards 12
+firstCard geometry QRect(0,0 236x190), visible true
+diagnostic content=2986x190, emptyVisible=0
+exit=0
+```
+
+- LibraryData::fetchHome 的 recent/finish 日志已验证：真实探针一次返回 recent=24、resume=2，home finish 正常触发；用户数据 12 条时同一路径。
+- 构建：Linux Debug 通过；待 Windows CI 重新编译。
+- 实机验证：首页继续观看应出现 12 张横向卡片（首屏至少 3 张），鼠标横向滚动可看其余；若仍空白，导出 diagnostics 会包含 HomeView: resumeCount=... cards=... content=... emptyVisible=...，可直接判断是数据为空还是布局尺寸异常。

@@ -4,11 +4,14 @@
 #include "libraryview.h"
 #include "thumbnailcache.h"
 
+#include <QDebug>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QProgressBar>
 #include <QScrollArea>
+#include <QShowEvent>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <functional>
@@ -123,6 +126,7 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
 
     auto *resumeSection = new QWidget(this);
     resumeSection->setObjectName(QStringLiteral("ResumeSection"));
+    m_resumeSection = resumeSection;
     auto *resumeSectionLayout = new QVBoxLayout(resumeSection);
     resumeSectionLayout->setContentsMargins(30, 18, 30, 4);
     resumeSectionLayout->setSpacing(6);
@@ -137,6 +141,7 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
 
     auto *scroll = new QScrollArea(resumeSection);
     scroll->setObjectName(QStringLiteral("ResumeScroll"));
+    m_resumeScroll = scroll;
     scroll->setWidgetResizable(false);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -187,30 +192,80 @@ void HomeView::clearResume()
 
 void HomeView::setResumeItems(const QList<MediaItem> &items)
 {
+    qInfo() << "HomeView::setResumeItems: count" << items.size()
+            << "oldCount" << m_resumeCount
+            << "loading" << m_loading
+            << "error" << m_error
+            << "sectionVisible" << (m_resumeSection && m_resumeSection->isVisible());
     m_resumeItems = items;
     m_resumeCount = items.size();
     clearResume();
     rebuildResume();
 }
 
+QString HomeView::diagnosticSummary() const
+{
+    QStringList lines;
+    const QRect sectionRect = m_resumeSection ? m_resumeSection->geometry() : QRect();
+    const QRect scrollRect = m_resumeScroll ? m_resumeScroll->geometry() : QRect();
+    const QSize viewportSize = m_resumeScroll && m_resumeScroll->viewport()
+                                   ? m_resumeScroll->viewport()->size() : QSize();
+    lines.append(QStringLiteral("HomeView: resumeCount=%1 cards=%2 loading=%3 error=%4")
+                     .arg(m_resumeCount)
+                     .arg(m_resumeCards.size())
+                     .arg(m_loading)
+                     .arg(m_error));
+    lines.append(QStringLiteral("HomeView: sectionVisible=%1 section=(%2,%3 %4x%5) "
+                                "scrollVisible=%6 scroll=(%7,%8 %9x%10) viewport=%11x%12 "
+                                "content=%13x%14 emptyVisible=%15 emptyText=%16")
+                     .arg(m_resumeSection && m_resumeSection->isVisible())
+                     .arg(sectionRect.x()).arg(sectionRect.y())
+                     .arg(sectionRect.width()).arg(sectionRect.height())
+                     .arg(m_resumeScroll && m_resumeScroll->isVisible())
+                     .arg(scrollRect.x()).arg(scrollRect.y())
+                     .arg(scrollRect.width()).arg(scrollRect.height())
+                     .arg(viewportSize.width()).arg(viewportSize.height())
+                     .arg(m_resumeContent ? m_resumeContent->width() : 0)
+                     .arg(m_resumeContent ? m_resumeContent->height() : 0)
+                     .arg(m_resumeEmpty && m_resumeEmpty->isVisible())
+                     .arg(m_resumeEmpty ? m_resumeEmpty->text() : QString()));
+    if (!m_resumeCards.isEmpty()) {
+        QWidget *card = m_resumeCards.first();
+        lines.append(QStringLiteral("HomeView: firstCardVisible=%1 hidden=%2 geometry=(%3,%4 %5x%6)")
+                         .arg(card->isVisible())
+                         .arg(card->isHidden())
+                         .arg(card->x()).arg(card->y())
+                         .arg(card->width()).arg(card->height()));
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 void HomeView::rebuildResume()
 {
+    qInfo() << "HomeView::rebuildResume: items" << m_resumeItems.size()
+            << "cards" << m_resumeCards.size()
+            << "loading" << m_loading
+            << "error" << m_error
+            << "sectionVisible" << (m_resumeSection && m_resumeSection->isVisible());
     if (m_loading && m_resumeItems.isEmpty()) {
         m_resumeEmpty->setText(QStringLiteral("正在加载继续观看…"));
         m_resumeEmpty->setProperty("state", QStringLiteral("loading"));
         m_resumeEmpty->show();
+        qInfo() << "HomeView::rebuildResume: loading empty state visible";
         return;
     }
     if (!m_error.isEmpty() && m_resumeItems.isEmpty()) {
         m_resumeEmpty->setText(m_error);
         m_resumeEmpty->setProperty("state", QStringLiteral("error"));
         m_resumeEmpty->show();
+        qInfo() << "HomeView::rebuildResume: error empty state visible" << m_error;
         return;
     }
     if (m_resumeItems.isEmpty()) {
         m_resumeEmpty->setText(QStringLiteral("暂无继续观看（可能已看完，或该账号没有未看完条目）"));
         m_resumeEmpty->setProperty("state", QStringLiteral("empty"));
         m_resumeEmpty->show();
+        qInfo() << "HomeView::rebuildResume: empty state visible";
         return;
     }
     m_resumeEmpty->hide();
@@ -225,7 +280,44 @@ void HomeView::rebuildResume()
         m_resumeLayout->insertWidget(index++, card);
         m_resumeCards.append(card);
     }
-    m_resumeContent->adjustSize();
+    // 关键：新增卡片后必须先激活 layout，sizeHint 才会从 0 变成卡片总宽度；
+    // 只调 adjustSize() 在 QScrollArea 里可能仍是 0x0，卡片虽创建但高度被压成 0，
+    // 首页看起来空白。直接用 layout 的 sizeHint 固定 content 尺寸。
+    resizeResumeContent();
+    // 首次 show/layout 前 sizeHint 可能还是 0，下一轮事件循环再定一次尺寸。
+    QTimer::singleShot(0, this, &HomeView::resizeResumeContent);
+    qInfo() << "HomeView::rebuildResume: cards" << m_resumeCards.size()
+            << "emptyVisible" << m_resumeEmpty->isVisible()
+            << "content" << m_resumeContent->size()
+            << "scrollViewport" << (m_resumeScroll && m_resumeScroll->viewport()
+                                         ? m_resumeScroll->viewport()->size() : QSize())
+            << "sectionVisible" << (m_resumeSection && m_resumeSection->isVisible());
+    if (!m_resumeCards.isEmpty()) {
+        QWidget *first = m_resumeCards.first();
+        qInfo() << "HomeView::rebuildResume: firstCard" << first->geometry()
+                << "visible" << first->isVisible() << "hidden" << first->isHidden();
+    }
+}
+
+void HomeView::resizeResumeContent()
+{
+    if (!m_resumeContent || !m_resumeLayout)
+        return;
+    m_resumeLayout->activate();
+    const QSize contentHint = m_resumeLayout->sizeHint();
+    if (contentHint.width() > 0 && contentHint.height() > 0)
+        m_resumeContent->setFixedSize(contentHint);
+    else
+        m_resumeContent->adjustSize();
+    qInfo() << "HomeView::resizeResumeContent: hint" << contentHint
+            << "content" << m_resumeContent->size();
+}
+
+void HomeView::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // 数据可能在首页隐藏时已经加载；显示后补一次 content 尺寸，避免 0 高度。
+    QTimer::singleShot(0, this, &HomeView::resizeResumeContent);
 }
 
 void HomeView::refreshThumbnails()

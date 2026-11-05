@@ -1158,6 +1158,18 @@ QString PlayerController::diagnosticSummary()
             lines.append(line);
     }
 
+    // T24：首页继续观看数据层已到但 UI 空时，诊断要能区分「没收到回调」和
+    // 「卡片创建了但布局/可见性异常」。
+    if (m_window) {
+        if (auto *home = m_window->findChild<ui::HomeView *>()) {
+            const QString homeSummary = home->diagnosticSummary();
+            for (const QString &line : homeSummary.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+                lines.append(line);
+        } else {
+            lines.append(QStringLiteral("HomeView: <not found>"));
+        }
+    }
+
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     lines.append(QStringLiteral("log directory: %1").arg(QDir::toNativeSeparators(dir)));
     lines.append(QStringLiteral("app.log: %1").arg(
