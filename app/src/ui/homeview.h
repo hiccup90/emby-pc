@@ -31,6 +31,7 @@ public:
     void setHomeSections(const QList<HomeSection> &sections);
     int sectionCount() const { return m_sectionRows.size(); }
     int visibleSectionCount() const;
+    int builtSectionCount() const { return m_builtSectionCount; }
     QStringList sectionTitles() const;
     QList<MediaItem> visibleHomeItems() const;
     QStringList visibleHomeItemIds() const;
@@ -64,6 +65,7 @@ private:
         QHBoxLayout *layout = nullptr;
         QList<QWidget *> cards;
         HomeSection section;
+        bool cardsBuilt = false;
     };
 
     void clearResume();
@@ -73,7 +75,10 @@ private:
     void clearHomeSections();
     void resizeHomeSectionRows();
     void showLegacyPage();
+    void buildVisibleSections();
+    void scheduleSectionBuild();
     void refreshThumbnails();
+    void refreshThumbnailsNow();
 
     ThumbnailCache *m_cache = nullptr;
     LibraryView *m_recent = nullptr;
@@ -91,6 +96,10 @@ private:
     QWidget *m_sectionsContent = nullptr;
     QVBoxLayout *m_sectionsLayout = nullptr;
     QList<SectionRow> m_sectionRows;
+    int m_builtSectionCount = 0;
+    int m_thumbnailMisses = 0;
+    QTimer *m_lazyBuildTimer = nullptr;
+    QTimer *m_thumbnailRefreshTimer = nullptr;
     bool m_usingSections = false;
     bool m_loading = false;
     QString m_error;
