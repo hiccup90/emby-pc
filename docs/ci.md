@@ -203,6 +203,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | 2026-11-05 | bf3580c | <https://github.com/hiccup90/emby-pc/actions/runs/41978904742> | emby-pc-win64 / emby-pc-win64.zip（72,266,074 字节，artifact id 13393331425） | **T31+T32**：播放模式 5px 视频边距/黑边/overlay 内缩（T31）、全屏按钮与上下集按钮/队列同步修复（T32）；全步骤通过（4m29s），供用户实机验收 |
 | 2026-11-05 | 6d65e06 | <https://github.com/hiccup90/emby-pc/actions/runs/41981162658> | emby-pc-win64（72,270,708 B，id 13394461333）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,846,383 B，id 13394321833） | **T33/M4-1**：VERSIONINFO/图标（rc.exe 编译通过）、Inno Setup 安装包（48.3MB，<150MB）、VERSIONINFO 校验通过；全步骤通过（5m41s），供用户安装验收 |
 | 2026-11-05 | 8bb825f | <https://github.com/hiccup90/emby-pc/actions/runs/41983403476> | emby-pc-win64（72,285,698 B，id 13395516069）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,863,861 B，id 13394689169） | **T34+T35+T36**：崩溃 dump/异常退出提示（T34）、播放页边缘缩放（T35）、上下集异步队列补全（T36）；全步骤通过（6m11s），供用户实机验收 |
+| 2026-11-05 | 1e35b70 | <https://github.com/hiccup90/emby-pc/actions/runs/41988831288> | emby-pc-win64（72,318,179 B，id 13396999622）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,888,053 B，id 13397516393） | **T38（含 T37 数据层）**：QSplitter 侧边栏 180-320/记忆、首页 4 section 空行隐藏、媒体库显示/排序设置；修复 215f8f9 的 C2065（T38 头文件全量提交）；全步骤通过（5m52s），供用户实机验收 |
 
 包内容（各次一致，54 个条目，解压约 171MB）：
 emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
