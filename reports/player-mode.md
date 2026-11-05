@@ -330,3 +330,43 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 3. 播放剧集第一集：上一集按钮应灰色、tooltip「没有上一集」；最后一集下一集同理；中间集两个可用。
 4. 播放电影：Prev/Next 均应 disabled；点击不应改变播放状态。
 5. 连续点上一集/下一集，检查 app.log 的 `PlayerController::stepEmbyEpisode ... queue=... index=... target=...`，目标 index 应在 0..size-1 内。
+
+## 13. T36 上一集/下一集：不依赖播放起点，存在即可点
+
+> 任务：task-36 · 负责人：build-verifier · 日期：2026-11-05
+> 范围：app/src/mainwindow.h/.cpp（PlayerController）、app/src/ui/playerpage.h/.cpp（沿用 T32 API），本报告。
+
+### 13.1 实现
+
+- `PlayerController::playEmbyItem()` 每次开始 Emby 播放都调用 `requestEpisodeSiblings(itemId)`；如果当前 item 已在队列中（详情页/继续观看/上一集路径），只同步按钮，不发请求。
+- 单集来源（首页卡片、继续观看、单集点播）异步流程：
+  1. `EmbyClient::fetchItem(episodeId)` 取 `type/seriesId/seasonId/parentId`；
+  2. 非 Episode（Movie/Series）→ 两个按钮 disabled；
+  3. Episode → 查 `m_episodeCache`（同一 Series/Season 5 分钟）；
+  4. 缓存未命中：`fetchItems` 查询 `ParentId=seriesId (recursive)` 或 `ParentId=seasonId`，`IncludeItemTypes=Episode`，按季/集号排序，limit 1000；
+  5. `applyEpisodeEntries()` 按当前 itemId 找 index，设置 `setEpisodeNavigationEnabled(index>0, index+1<count)`；
+  6. 缓存结果 5 分钟；切号/清会话时清空缓存。
+- 点击 next/prev 仍走 T32 的 `stepEmbyEpisode/playEpisodeAt`；队列为空时先异步请求并提示「正在获取剧集列表…」，不直接判死。
+- 请求失败时保守允许按钮点击（点击后重试/提示），成功拿到 Movie 类型时禁用。
+- 日志：`PlayerController::requestEpisodeSiblings series/season/item`、`episodeSiblings cache hit`、`episodeSiblings series/season/current/count/index/prev/next`、`episodeSiblings not episode type`。
+
+### 13.2 行为
+
+| 场景 | prev | next |
+|---|---|---|
+| 5 集中间集 | enabled | enabled |
+| 第一集 | disabled | enabled |
+| 最后一集 | enabled | disabled |
+| 电影/本地单文件 | disabled | disabled |
+| 请求失败/未知 | 保守 enabled（点击重试） | 保守 enabled |
+
+### 13.3 缓存
+
+- Key：seriesId；无 seriesId 时 seasonId；TTL 5 分钟。
+- 缓存保存完整 `EpisodeEntry`（含 startPositionTicks），从任意集进入后 next/prev 可续播各自进度。
+
+### 13.4 自测/验收
+
+- Linux app Debug 构建通过；`-Wall -Wextra` 无新增 warning；`emby-ui-demo --selftest` 基线 155 项保持。
+- 假服务器建议用例（Windows/本地 fake Emby）：某 Series 5 集，分别从第 1/3/5 集进入，检查 `setEpisodeNavigationEnabled` 的 prev/next 与 app.log 的 index/count；Movie 进入检查 disabled。
+- Windows 实机：从首页/继续观看直接点某一集，控制条上一集/下一集应按兄弟集列表启用；点下一集直接切到对应 episode id 并上报 Progress/Stopped。

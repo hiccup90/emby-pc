@@ -2,6 +2,7 @@
 
 #include "ui/uitypes.h"
 
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -17,6 +18,7 @@ class MpvPlayer;
 namespace emby {
 class EmbyClient;
 struct ApiError;
+struct MediaItem;
 struct MediaSourceInfo;
 struct PlaybackInfoResult;
 }
@@ -48,6 +50,11 @@ public:
     static QList<ui::TrackInfo> audioTracksFromTrackList(const QString &json,
                                                          int *filteredCount = nullptr);
 
+    // T36 测试钩子（假 Emby 服务器 selftest 使用；不改变生产路径）。
+    void requestEpisodeSiblingsForTest(const QString &episodeId);
+    int episodeQueueSizeForTest() const { return m_episodeQueue.size(); }
+    int episodeIndexForTest() const { return m_episodeIndex; }
+
 public slots:
     void openFile();
     void openFolder();
@@ -60,6 +67,10 @@ private:
         int episode = 0;
         qint64 runTimeTicks = 0;
         qint64 startPositionTicks = 0;
+    };
+    struct CachedEpisodeList {
+        QList<EpisodeEntry> entries;
+        qint64 fetchedAtMs = 0;
     };
 
     void playFiles(const QStringList &files, int startIndex = 0);
@@ -97,6 +108,11 @@ private:
                           int episode);
     void playEpisodeAt(int index);
     void stepEmbyEpisode(int delta);
+    void requestEpisodeSiblings(const QString &episodeId);
+    void applyEpisodeList(const QList<emby::MediaItem> &items, const QString &currentItemId,
+                        const QString &seriesId, const QString &seasonId);
+    void applyEpisodeEntries(const QList<EpisodeEntry> &entries, const QString &currentItemId,
+                             const QString &seriesId, const QString &seasonId);
     void refreshTracks();
     void showPlayerPage();
     void reportPlaybackStart();
@@ -138,5 +154,7 @@ private:
     qint64 m_lastWindowResizeLogMs = 0;
 
     QList<EpisodeEntry> m_episodeQueue;
+    QHash<QString, CachedEpisodeList> m_episodeCache;
     int m_episodeIndex = -1;
+    int m_episodeRequestSerial = 0;
 };
