@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 
+#include "crashhandler.h"
 #include "ui/mainwindow.h"
 #include "ui/playerpage.h"
 
@@ -19,6 +20,7 @@
 #include <QMutexLocker>
 #include <QStandardPaths>
 #include <QSysInfo>
+#include <QTimer>
 #include <QUrl>
 
 #include <cstdio>
@@ -207,6 +209,9 @@ int main(int argc, char *argv[])
         qInfo() << "mpv.log:" << QDir::toNativeSeparators(logDirectory() + QStringLiteral("/mpv.log"));
     }
 
+    // T34：早期崩溃检测/未处理异常过滤器；running.flag 在正常退出时清除。
+    CrashHandler::initialize();
+
     // 正式应用壳：ui::MainWindow（侧边栏 + 页面栈 + mock 媒体库）。
     ui::MainWindow window;
     window.setWindowTitle(QStringLiteral("Emby PC"));
@@ -215,6 +220,7 @@ int main(int argc, char *argv[])
     auto *playerPage = window.findChild<ui::PlayerPage *>();
     if (!playerPage) {
         qCritical() << "ui::PlayerPage not found in ui::MainWindow";
+        CrashHandler::shutdown();
         shutdownFileLogging();
         return 1;
     }
@@ -227,8 +233,22 @@ int main(int argc, char *argv[])
     installHelpMenu(&window);
 
     window.show();
+
+    // 上次异常退出提示：窗口显示后弹一次；GUI 启动只提示一次。
+    if (CrashHandler::previousCrashDetected()) {
+        QTimer::singleShot(0, &window, [&window]() {
+            CrashHandler::showPreviousCrashDialog(&window);
+        });
+    }
+    // M4-2 测试开关：EMBY_PC_TEST_CRASH=1 时故意触发一次未处理异常，
+    // 生成 dump 后重启验证“上次异常退出”提示；正常运行不受影响。
+    if (qEnvironmentVariableIntValue("EMBY_PC_TEST_CRASH") > 0) {
+        QTimer::singleShot(1200, &window, []() { CrashHandler::triggerTestCrash(); });
+    }
+
     const int exitCode = app.exec();
 
+    CrashHandler::shutdown();
     if (logReady) {
         qInfo() << "======== Emby PC 退出，exitCode:" << exitCode << "========";
         shutdownFileLogging();

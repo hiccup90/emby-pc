@@ -51,6 +51,7 @@ set(APP_SOURCES
     src/videohost.cpp src/videohost.h
     src/mpvplayer.cpp src/mpvplayer.h
     src/windowframe.cpp src/windowframe.h
+    src/crashhandler.cpp src/crashhandler.h
 )
 
 # qt_add_executable 而非裸 add_executable：Windows 上会自动接 Qt6::EntryPoint
@@ -67,8 +68,8 @@ endif()
 
 if(WIN32)
     # user32: VideoHost/WindowFrame 的窗口样式与命中测试；dwmapi: DWM 扩展框；
-    # shell32: SHAppBarMessage（任务栏自动隐藏处理）。
-    target_link_libraries(emby-pc PRIVATE user32 dwmapi shell32)
+    # shell32: SHAppBarMessage（任务栏自动隐藏处理）；dbghelp: MiniDumpWriteDump。
+    target_link_libraries(emby-pc PRIVATE user32 dwmapi shell32 dbghelp)
     if(EXISTS "${LIBMPV_DIR}/libmpv-2.dll")
         add_custom_command(TARGET emby-pc POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

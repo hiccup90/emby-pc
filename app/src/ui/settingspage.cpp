@@ -248,12 +248,18 @@ void SettingsPage::buildUi()
     m_openLogButton->setObjectName(QStringLiteral("SettingsOpenLogDirButton"));
     m_openLogButton->setProperty("role", QStringLiteral("secondary"));
     m_openLogButton->setCursor(Qt::PointingHandCursor);
+    auto *openCrashButton = new QPushButton(QStringLiteral("崩溃目录"), storage);
+    openCrashButton->setObjectName(QStringLiteral("SettingsOpenCrashDirButton"));
+    openCrashButton->setProperty("role", QStringLiteral("secondary"));
+    openCrashButton->setCursor(Qt::PointingHandCursor);
+    openCrashButton->setToolTip(QStringLiteral("打开崩溃转储目录（crash-*.dmp/.txt）"));
     m_exportDiagnosticsButton = new QPushButton(QStringLiteral("导出诊断信息…"), storage);
     m_exportDiagnosticsButton->setObjectName(QStringLiteral("SettingsExportDiagnosticsButton"));
     m_exportDiagnosticsButton->setProperty("role", QStringLiteral("secondary"));
     m_exportDiagnosticsButton->setCursor(Qt::PointingHandCursor);
     cacheButtons->addWidget(m_clearCacheButton);
     cacheButtons->addWidget(m_openLogButton);
+    cacheButtons->addWidget(openCrashButton);
     cacheButtons->addWidget(m_exportDiagnosticsButton);
     cacheButtons->addStretch(1);
     storageLayout->addLayout(cacheButtons);
@@ -308,6 +314,15 @@ void SettingsPage::buildUi()
     connect(m_clearCacheButton, &QPushButton::clicked, this,
             &SettingsPage::clearImageCacheRequested);
     connect(m_openLogButton, &QPushButton::clicked, this, &SettingsPage::openLogDirectory);
+    connect(openCrashButton, &QPushButton::clicked, this, []() {
+        const QString base = QStandardPaths::writableLocation(
+            QStandardPaths::AppLocalDataLocation);
+        if (base.isEmpty())
+            return;
+        const QString directory = base + QStringLiteral("/crashes");
+        QDir().mkpath(directory);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+    });
     connect(m_exportDiagnosticsButton, &QPushButton::clicked, this,
             &SettingsPage::exportDiagnosticsRequested);
     connect(m_copyDiagnosticsButton, &QPushButton::clicked, this,
