@@ -38,3 +38,4 @@
 ### 已知限制
 - Windows 实机 P0 验证项 V1（HDR10 不发灰）/ V2（DV P5/P8 不绿）需按 docs/windows-acceptance.md 的 S 组完成，失败不得发布。
 - 未做代码签名，SmartScreen 可能提示未知发布者。
+- token 存储的 Windows DPAPI 分支需 Windows 实机验证（Linux 容器只覆盖回退混淆文件）；ui::QSettingsTokenStore 仍为直接 UI/测试入口的旧明文实现，正式 app 入口统一走 main.cpp 的 SecureUiTokenStore。

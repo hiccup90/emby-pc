@@ -24,6 +24,7 @@
 - [ ] S1 HDR10：不发灰 / 不偏色（对照同机 mpv CLI）
 - [ ] S2 DV P5 / S3 DV P8.1/8.4：不绿屏 / 紫屏
 - [ ] 键盘快捷键（空格 / ←→ / ↑↓ / N P / I / F / Esc）全 PASS
+- [ ] Windows DPAPI token 存储 roundtrip + 旧明文 QSettings 迁移（Linux 容器未覆盖 DPAPI 分支）
 证据：
 
 ## G4 播放内核与降级
