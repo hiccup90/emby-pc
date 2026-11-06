@@ -24,7 +24,7 @@
 - [ ] S1 HDR10：不发灰 / 不偏色（对照同机 mpv CLI）
 - [ ] S2 DV P5 / S3 DV P8.1/8.4：不绿屏 / 紫屏
 - [ ] 键盘快捷键（空格 / ←→ / ↑↓ / N P / I / F / Esc）全 PASS
-- [ ] Windows DPAPI token 存储 roundtrip + 旧明文 QSettings 迁移（Linux 容器未覆盖 DPAPI 分支）
+- [ ] Windows 凭据迁移：注册表 HKCU\Software\emby-pc\emby-pc\auth 下不再有明文 profile（仅 profile.dpapi.v1）；升级 0.1.0→0.1.1 重启后登录态可恢复；reg query 留证（%LOCALAPPDATA%\emby-pc 仅存 app.log/mpv.log，不存 token；Linux 回退密文在 $XDG_CONFIG_HOME/emby-pc/emby-pc/secure/profile.dat 0600）
 证据：
 
 ## G4 播放内核与降级
