@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QElapsedTimer>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -122,24 +123,27 @@ class HomeSectionCard : public QWidget
 {
 public:
     HomeSectionCard(const MediaItem &item, ThumbnailCache *cache, int *misses = nullptr,
-                    int cardWidth = 236, QWidget *parent = nullptr)
+                    int cardWidth = 236, bool posterMode = false, QWidget *parent = nullptr)
         : QWidget(parent)
         , m_cache(cache)
         , m_item(item)
         , m_misses(misses)
+        , m_posterMode(posterMode)
     {
         setObjectName(QStringLiteral("HomeSectionCard"));
         setAttribute(Qt::WA_StyledBackground, true);
         setCursor(Qt::PointingHandCursor);
 
         auto *layout = new QVBoxLayout(this);
-        layout->setContentsMargins(8, 8, 8, 8);
+        layout->setContentsMargins(0, 0, 0, 6);
         layout->setSpacing(5);
 
         m_thumbnail = new QLabel(this);
         m_thumbnail->setObjectName(QStringLiteral("HomeSectionThumbnail"));
         setFixedWidth(cardWidth);
-        m_thumbnail->setFixedSize(cardWidth - 16, qRound((cardWidth - 16) * 9.0 / 16.0));
+        const int imageWidth = qMax(60, cardWidth);
+        m_thumbnail->setFixedSize(imageWidth,
+                                  qRound(imageWidth * (posterMode ? 1.5 : 9.0 / 16.0)));
         m_thumbnail->setScaledContents(true);
         m_thumbnail->setAlignment(Qt::AlignCenter);
         layout->addWidget(m_thumbnail);
@@ -153,7 +157,11 @@ public:
         m_meta = new QLabel(this);
         m_meta->setObjectName(QStringLiteral("HomeSectionCardMeta"));
         m_meta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-        if (item.progress > 0.0) {
+        if (posterMode) {
+            m_meta->setText(item.year > 0 ? QString::number(item.year)
+                                          : (item.isSeries() ? QStringLiteral("剧集")
+                                                              : QStringLiteral("电影")));
+        } else if (item.progress > 0.0) {
             m_meta->setText((item.isSeries() ? QStringLiteral("剧集 · 已看 %1%")
                                                  : QStringLiteral("电影 · 已看 %1%"))
                                 .arg(qRound(qBound(0.0, item.progress, 1.0) * 100.0)));
@@ -162,7 +170,7 @@ public:
         }
         layout->addWidget(m_meta);
 
-        if (item.progress > 0.0) {
+        if (!posterMode && item.progress > 0.0) {
             auto *progress = new QProgressBar(this);
             progress->setObjectName(QStringLiteral("HomeSectionProgress"));
             progress->setRange(0, 100);
@@ -181,7 +189,11 @@ public:
     {
         if (!m_cache)
             return;
-        const QString key = !m_item.backdropKey.isEmpty() ? m_item.backdropKey : m_item.posterKey;
+        const QString key = m_posterMode
+                                ? (!m_item.posterKey.isEmpty() ? m_item.posterKey
+                                                               : m_item.backdropKey)
+                                : (!m_item.backdropKey.isEmpty() ? m_item.backdropKey
+                                                                 : m_item.posterKey);
         if (key.isEmpty())
             return;
         const qreal dpr = devicePixelRatioF();
@@ -215,6 +227,7 @@ private:
     MediaItem m_item;
     int *m_misses = nullptr;
     bool m_missCounted = false;
+    bool m_posterMode = false;
     QLabel *m_thumbnail = nullptr;
     QLabel *m_title = nullptr;
     QLabel *m_meta = nullptr;
@@ -555,7 +568,7 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(6);
         // 占位高度稳定滚动位置：未懒构建时也不会让下方行跳动。
-        row.row->setMinimumHeight(230);
+        row.row->setMinimumHeight(section.kind == HomeSection::Kind::Resume ? 230 : 320);
 
         QString title = section.title;
         if (title.isEmpty()) {
@@ -571,7 +584,21 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
         titleLabel->setObjectName(QStringLiteral("HomeSectionTitle"));
         titleLabel->setProperty("sectionKind", static_cast<int>(section.kind));
         row.titleLabel = titleLabel;
-        rowLayout->addWidget(titleLabel);
+        auto *titleRow = new QHBoxLayout();
+        titleRow->setContentsMargins(0, 0, 0, 0);
+        titleRow->setSpacing(8);
+        titleRow->addWidget(titleLabel);
+        titleRow->addStretch(1);
+        auto *seeAll = new QPushButton(QStringLiteral("查看全部 ›"), row.row);
+        seeAll->setObjectName(QStringLiteral("HomeSectionSeeAll"));
+        seeAll->setProperty("role", QStringLiteral("ghost"));
+        seeAll->setCursor(Qt::PointingHandCursor);
+        seeAll->setFocusPolicy(Qt::StrongFocus);
+        titleRow->addWidget(seeAll);
+        rowLayout->addLayout(titleRow);
+        connect(seeAll, &QPushButton::clicked, this, [this, section]() {
+            emit sectionActivated(static_cast<int>(section.kind), section.libraryId);
+        });
 
         if (section.kind != HomeSection::Kind::Resume) {
             // T40：最近添加/媒体库标题可点击跳整页；行内固定 6–8 张预览，不横向滚动。
@@ -581,7 +608,7 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
             row.preview->setObjectName(QStringLiteral("HomeSectionPreview"));
             row.grid = new QGridLayout(row.preview);
             row.grid->setContentsMargins(0, 0, 0, 0);
-            row.grid->setHorizontalSpacing(14);
+            row.grid->setHorizontalSpacing(16);
             row.grid->setVerticalSpacing(10);
             row.grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
             rowLayout->addWidget(row.preview);
@@ -593,7 +620,7 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
             row.scroll->setFrameShape(QFrame::NoFrame);
             row.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
             row.scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-            row.scroll->setFixedHeight(200);
+            row.scroll->setFixedHeight(218);
             row.content = new QWidget(row.scroll);
             row.content->setObjectName(QStringLiteral("HomeSectionContent"));
             row.layout = new QHBoxLayout(row.content);
@@ -634,11 +661,11 @@ void HomeView::layoutPreviewRow(SectionRow &row)
 {
     if (!row.grid || !row.preview)
         return;
-    const int available = qMax(320, m_sectionsScroll->viewport()->width() - 60);
-    int columns = qBound(6, qMax(1, available / 190), 8);
+    const int available = qMax(240, m_sectionsScroll->viewport()->width() - 64);
+    int columns = qBound(6, qMax(1, available / 160), 8);
     columns = qMin(columns, qMax(1, row.section.items.size()));
-    const int spacing = 14;
-    const int cardWidth = qMax(120, (available - (columns - 1) * spacing) / columns);
+    const int spacing = 16;
+    const int cardWidth = qMax(76, (available - (columns - 1) * spacing) / columns);
 
     for (int i = 0; i < row.cards.size(); ++i) {
         auto *card = static_cast<HomeSectionCard *>(row.cards.at(i));
@@ -650,17 +677,19 @@ void HomeView::layoutPreviewRow(SectionRow &row)
         card->show();
         card->setFixedWidth(cardWidth);
         if (auto *thumb = card->findChild<QLabel *>(QStringLiteral("HomeSectionThumbnail")))
-            thumb->setFixedSize(cardWidth - 16, qRound((cardWidth - 16) * 9.0 / 16.0));
+            thumb->setFixedSize(qMax(60, cardWidth), qRound(qMax(60, cardWidth) * 1.5));
         row.grid->addWidget(card, 0, i);
     }
     for (int i = row.cards.size(); i < columns; ++i) {
         auto *card = new HomeSectionCard(row.section.items.at(i), m_cache,
-                                         &m_thumbnailMisses, cardWidth, row.preview);
+                                         &m_thumbnailMisses, cardWidth, true, row.preview);
         const MediaItem item = row.section.items.at(i);
         card->onClick = [this, item]() { emit itemActivated(item.id); };
         row.grid->addWidget(card, 0, i);
         row.cards.append(card);
     }
+    if (row.row)
+        row.row->setMinimumHeight(qRound(cardWidth * 1.5) + 86);
 }
 
 void HomeView::relayoutPreviewRows()
@@ -697,7 +726,7 @@ void HomeView::buildVisibleSections()
             int cardIndex = 0;
             for (const MediaItem &item : row.section.items) {
                 auto *card = new HomeSectionCard(item, m_cache, &m_thumbnailMisses, 236,
-                                                  row.content);
+                                                  false, row.content);
                 card->onClick = [this, item]() { emit playRequested(item.id); };
                 row.layout->insertWidget(cardIndex++, card);
                 row.cards.append(card);

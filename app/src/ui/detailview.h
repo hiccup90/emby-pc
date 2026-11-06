@@ -49,6 +49,7 @@ private:
     QLabel *m_meta = nullptr;
     QLabel *m_tagline = nullptr;
     QLabel *m_overview = nullptr;
+    QPushButton *m_overviewToggle = nullptr;
     QLabel *m_sectionTitle = nullptr;
     QLabel *m_episodeCount = nullptr;
     QPushButton *m_backButton = nullptr;
@@ -62,6 +63,7 @@ private:
 
     int m_defaultSeason = -1;
     int m_defaultEpisode = -1;
+    bool m_overviewExpanded = true;
 };
 
 } // namespace ui

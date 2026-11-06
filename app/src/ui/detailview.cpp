@@ -228,7 +228,7 @@ void DetailView::buildUi()
     auto *topBar = new QWidget(this);
     topBar->setObjectName(QStringLiteral("DetailTopBar"));
     auto *topLayout = new QHBoxLayout(topBar);
-    topLayout->setContentsMargins(18, 8, 24, 8);
+    topLayout->setContentsMargins(32, 8, 32, 8);
     topLayout->setSpacing(10);
     m_backButton = new QPushButton(icon(Icon::Back, QColor(0xE2, 0xE8, 0xF0), 18),
                                    QStringLiteral("返回"), topBar);
@@ -255,14 +255,14 @@ void DetailView::buildUi()
     contentLayout->setSpacing(0);
 
     m_hero = new BackdropPanel(m_cache, content);
-    m_hero->setFixedHeight(304);
+    m_hero->setFixedHeight(360);
     auto *heroLayout = new QHBoxLayout(m_hero);
-    heroLayout->setContentsMargins(36, 28, 40, 24);
+    heroLayout->setContentsMargins(32, 28, 32, 24);
     heroLayout->setSpacing(28);
 
     m_poster = new QLabel(m_hero);
     m_poster->setObjectName(QStringLiteral("DetailPoster"));
-    m_poster->setFixedSize(168, 252);
+    m_poster->setFixedSize(188, 282);
     m_poster->setAlignment(Qt::AlignCenter);
     heroLayout->addWidget(m_poster, 0, Qt::AlignBottom);
 
@@ -292,7 +292,7 @@ void DetailView::buildUi()
     infoColumn->addWidget(m_tagline);
 
     auto *actions = new QHBoxLayout();
-    actions->setSpacing(10);
+    actions->setSpacing(8);
     m_playButton = new QPushButton(icon(Icon::Play, QColor(0xFF, 0xFF, 0xFF), 18),
                                    QStringLiteral("播放"), m_hero);
     m_playButton->setObjectName(QStringLiteral("DetailPlayButton"));
@@ -321,7 +321,7 @@ void DetailView::buildUi()
     auto *body = new QWidget(content);
     body->setObjectName(QStringLiteral("DetailBody"));
     auto *bodyLayout = new QVBoxLayout(body);
-    bodyLayout->setContentsMargins(36, 24, 40, 48);
+    bodyLayout->setContentsMargins(32, 24, 32, 48);
     bodyLayout->setSpacing(16);
 
     m_chipsRow = new QWidget(body);
@@ -341,6 +341,19 @@ void DetailView::buildUi()
     m_overview->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_overview->setTextInteractionFlags(Qt::TextSelectableByMouse);
     bodyLayout->addWidget(m_overview);
+
+    m_overviewToggle = new QPushButton(QStringLiteral("展开"), body);
+    m_overviewToggle->setObjectName(QStringLiteral("DetailOverviewToggle"));
+    m_overviewToggle->setProperty("role", QStringLiteral("ghost"));
+    m_overviewToggle->setCursor(Qt::PointingHandCursor);
+    m_overviewToggle->hide();
+    bodyLayout->addWidget(m_overviewToggle, 0, Qt::AlignLeft);
+    connect(m_overviewToggle, &QPushButton::clicked, this, [this]() {
+        m_overviewExpanded = !m_overviewExpanded;
+        m_overviewToggle->setText(m_overviewExpanded ? QStringLiteral("收起")
+                                                     : QStringLiteral("展开"));
+        m_overview->setMaximumHeight(m_overviewExpanded ? QWIDGETSIZE_MAX : 66);
+    });
 
     m_episodesSection = new QWidget(body);
     auto *episodesLayout = new QVBoxLayout(m_episodesSection);
@@ -363,7 +376,7 @@ void DetailView::buildUi()
     episodesLayout->addLayout(episodesHeader);
 
     m_episodeLayout = new QVBoxLayout();
-    m_episodeLayout->setSpacing(6);
+    m_episodeLayout->setSpacing(8);
     episodesLayout->addLayout(m_episodeLayout);
     bodyLayout->addWidget(m_episodesSection);
 
@@ -398,6 +411,11 @@ void DetailView::setItem(const MediaItem &item)
     updateHero();
     updateChips();
     m_overview->setText(item.overview);
+    m_overviewExpanded = true;
+    const bool longOverview = item.overview.size() > 140;
+    m_overviewToggle->setVisible(longOverview);
+    m_overviewToggle->setText(QStringLiteral("展开"));
+    m_overview->setMaximumHeight(longOverview ? 66 : QWIDGETSIZE_MAX);
     m_sectionTitle->setText(QStringLiteral("简介"));
 
     m_seasonCombo->blockSignals(true);
@@ -435,7 +453,7 @@ void DetailView::updateHero()
     m_tagline->setText(tagline);
     m_tagline->setVisible(!m_tagline->text().isEmpty());
 
-    const QSize posterSize(168, 252);
+    const QSize posterSize(188, 282);
     const QPixmap poster = m_cache->get(m_item.posterKey, posterSize);
     if (poster.isNull()) {
         m_poster->setPixmap(QPixmap());
@@ -443,7 +461,7 @@ void DetailView::updateHero()
         m_cache->request(m_item.posterKey, posterSize);
     } else {
         m_poster->setText(QString());
-        m_poster->setPixmap(roundedPixmap(poster, posterSize, 9));
+        m_poster->setPixmap(roundedPixmap(poster, posterSize, 10));
         m_poster->setScaledContents(true);
     }
 }

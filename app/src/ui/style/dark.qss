@@ -869,21 +869,21 @@ QDialog#LoginDialog {
 }
 
 QLabel#LoginTitle {
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 700;
     color: #F8FAFC;
 }
 
 QLabel#LoginSubtitle {
-    font-size: 12px;
+    font-size: 13px;
     color: #94A3B8;
 }
 
 QLineEdit[role="formInput"] {
     background-color: #1E293B;
     border: 1px solid #334155;
-    border-radius: 7px;
-    padding: 8px 10px;
+    border-radius: 8px;
+    padding: 8px 12px;
     min-height: 20px;
     color: #CBD5E1;
     selection-background-color: #2563EB;
@@ -1099,3 +1099,30 @@ QCheckBox:focus { color: #F8FAFC; }
 QCheckBox::indicator:focus { border: 2px solid #60A5FA; }
 QListView:focus, QAbstractItemView:focus { border: 2px solid #60A5FA; }
 QScrollArea:focus { border: 1px solid #60A5FA; }
+
+/* T44 首页 qEmby rails */
+QWidget#HomeSectionCard {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+}
+QWidget#HomeSectionCard:hover {
+    background-color: #1E293B;
+    border-color: #334155;
+    border-radius: 8px;
+}
+QPushButton#HomeSectionSeeAll {
+    color: #60A5FA;
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+QPushButton#HomeSectionSeeAll:hover {
+    color: #93C5FD;
+    background-color: rgba(96, 165, 250, 0.10);
+    border-radius: 6px;
+}
+QWidget#HomeSectionRow { background: transparent; }
+QWidget#HomeSectionPreview { background: transparent; }

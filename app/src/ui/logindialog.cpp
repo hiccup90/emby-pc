@@ -23,22 +23,21 @@ LoginDialog::LoginDialog(emby::EmbyClient *client, QWidget *parent)
     setObjectName(QStringLiteral("LoginDialog"));
     setWindowTitle(QStringLiteral("登录 — Emby PC"));
     setModal(true);
-    setMinimumWidth(520);
+    setMinimumWidth(620);
     buildUi();
 }
 
 void LoginDialog::buildUi()
 {
     auto *root = new QVBoxLayout(this);
-    root->setContentsMargins(32, 28, 32, 24);
-    root->setSpacing(10);
+    root->setContentsMargins(36, 32, 36, 28);
+    root->setSpacing(12);
 
     auto *title = new QLabel(QStringLiteral("连接到 Emby 服务器"), this);
     title->setObjectName(QStringLiteral("LoginTitle"));
     root->addWidget(title);
 
-    auto *subtitle = new QLabel(
-        QStringLiteral("输入服务器地址和账号。Token 只保存在本机配置中，不会写入日志或 URL。"), this);
+    auto *subtitle = new QLabel(QStringLiteral("输入服务器地址和账号"), this);
     subtitle->setObjectName(QStringLiteral("LoginSubtitle"));
     subtitle->setWordWrap(true);
     root->addWidget(subtitle);
@@ -47,7 +46,7 @@ void LoginDialog::buildUi()
     auto *form = new QFormLayout();
     form->setContentsMargins(0, 0, 0, 0);
     form->setHorizontalSpacing(16);
-    form->setVerticalSpacing(10);
+    form->setVerticalSpacing(12);
     form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
     m_serverEdit = new QLineEdit(this);
@@ -72,16 +71,19 @@ void LoginDialog::buildUi()
 
     root->addLayout(form);
 
-    m_ignoreSslCheck = new QCheckBox(QStringLiteral("忽略 HTTPS 证书错误（仅用于自签证书）"), this);
+    m_ignoreSslCheck = new QCheckBox(QStringLiteral("信任自签证书"), this);
     m_ignoreSslCheck->setObjectName(QStringLiteral("IgnoreSslCheck"));
+    m_ignoreSslCheck->setToolTip(QStringLiteral("仅在服务器使用自签 HTTPS 证书时勾选"));
     m_ignoreSslCheck->setCursor(Qt::PointingHandCursor);
     root->addWidget(m_ignoreSslCheck);
 
     m_statusLabel = new QLabel(this);
     m_statusLabel->setObjectName(QStringLiteral("LoginStatus"));
     m_statusLabel->setWordWrap(true);
-    m_statusLabel->setMinimumHeight(42);
+    m_statusLabel->setMinimumHeight(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_statusLabel->hide();
     root->addWidget(m_statusLabel);
     setStatus(QString(), QStringLiteral("info"));
 
@@ -136,8 +138,10 @@ void LoginDialog::setInitialValues(const QString &serverUrl, const QString &user
 
 void LoginDialog::setStatus(const QString &text, const QString &state)
 {
+    const bool hasText = !text.trimmed().isEmpty();
     m_statusLabel->setText(text);
     m_statusLabel->setProperty("state", state);
+    m_statusLabel->setVisible(hasText);
     m_statusLabel->style()->unpolish(m_statusLabel);
     m_statusLabel->style()->polish(m_statusLabel);
     m_statusLabel->update();

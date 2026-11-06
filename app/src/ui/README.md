@@ -157,6 +157,13 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
 - 移除演示模式徽标、VideoHost 占位说明、数据源演示文案、Resume 长空状态等；只保留「未连接」「暂无内容」等必要短状态。
 - 截图已更新到 `preview/`；T39 性能优化：section 懒加载、滚动增量、120ms 缩略图刷新防抖、splitter 宽度保存防抖。
 
+## 页面复刻（T44）
+
+- 首页：qEmby 式 section 标题 + 「查看全部 ›」+ 2:3 海报预览（6–8 张自适应）；继续观看保留横向卡片；懒加载/标题跳转保留。
+- 媒体库：32px gutter、2:3 海报网格、hover 边框/评分角标、排序控件。
+- 详情：360px hero + 188×282 海报、28px 标题、长简介展开/收起、季/集列表。
+- 登录：620px 居中卡片、空状态框隐藏、统一表单控件。
+
 ## 真实媒体库（T7 / M2-B）
 
 ### 数据流
@@ -283,7 +290,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **176 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **179 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；

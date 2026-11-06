@@ -93,7 +93,7 @@ MainWindow::MainWindow(const Options &options, QWidget *parent)
     for (int i = 0; i < m_mockLibrary.size(); ++i)
         m_mockIndex.insert(m_mockLibrary.at(i).id, i);
 
-    setWindowTitle(QStringLiteral("Emby PC — 自研客户端"));
+    setWindowTitle(QStringLiteral("Emby PC"));
     setMinimumSize(800, 480);
     resize(1280, 760);
 

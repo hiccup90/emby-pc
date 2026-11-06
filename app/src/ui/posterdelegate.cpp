@@ -10,8 +10,8 @@
 
 namespace ui {
 namespace {
-constexpr int kPosterRadius = 9;
-constexpr int kTextHeight = 58;
+constexpr int kPosterRadius = 8;
+constexpr int kTextHeight = 60;
 } // namespace
 
 PosterDelegate::PosterDelegate(ThumbnailCache *cache, QObject *parent)
@@ -130,10 +130,10 @@ void PosterDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
 
     // 标题
     QFont titleFont = option.font;
-    titleFont.setPixelSize(14);
+    titleFont.setPixelSize(13);
     titleFont.setWeight(QFont::DemiBold);
     painter->setFont(titleFont);
-    painter->setPen(QColor(0xE2, 0xE8, 0xF0));
+    painter->setPen(QColor(0xF8, 0xFA, 0xFC));
     const QFontMetrics titleMetrics(titleFont);
     const QRect titleRect(poster.left(), poster.bottom() + 9, cardWidth, 20);
     painter->drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
@@ -141,7 +141,7 @@ void PosterDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
 
     // 副标题
     QFont subFont = option.font;
-    subFont.setPixelSize(11);
+    subFont.setPixelSize(12);
     painter->setFont(subFont);
     painter->setPen(QColor(0x94, 0xA3, 0xB8));
     const QFontMetrics subMetrics(subFont);

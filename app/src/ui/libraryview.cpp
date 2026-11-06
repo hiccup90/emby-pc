@@ -181,7 +181,7 @@ void LibraryView::buildUi()
     auto *header = new QWidget(this);
     header->setObjectName(QStringLiteral("LibraryHeader"));
     auto *headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(30, 20, 30, 10);
+    headerLayout->setContentsMargins(32, 24, 32, 12);
     headerLayout->setSpacing(12);
 
     m_titleLabel = new QLabel(QStringLiteral("媒体库"), header);
@@ -197,6 +197,7 @@ void LibraryView::buildUi()
     m_sortCombo->addItems({QStringLiteral("最近添加"), QStringLiteral("名称"),
                            QStringLiteral("评分"), QStringLiteral("年份")});
     m_sortCombo->setCursor(Qt::PointingHandCursor);
+    m_sortCombo->setMinimumHeight(36);
     headerLayout->addWidget(m_sortCombo);
 
     root->addWidget(header);
@@ -204,12 +205,12 @@ void LibraryView::buildUi()
     m_hero = new HeroBanner(m_cache, this);
     m_hero->hide();
     auto *heroWrap = new QVBoxLayout();
-    heroWrap->setContentsMargins(30, 0, 30, 18);
+    heroWrap->setContentsMargins(32, 0, 32, 20);
     heroWrap->addWidget(m_hero);
     root->addLayout(heroWrap);
 
     auto *gridWrap = new QVBoxLayout();
-    gridWrap->setContentsMargins(18, 0, 18, 14);
+    gridWrap->setContentsMargins(24, 0, 24, 16);
     gridWrap->setSpacing(0);
 
     m_model = new MediaListModel(this);
@@ -234,7 +235,7 @@ void LibraryView::buildUi()
     m_grid->setMouseTracking(true);
     m_grid->setModel(m_proxy);
     m_grid->setItemDelegate(m_delegate);
-    m_grid->setGridSize(QSize(190, 343));
+    m_grid->setGridSize(QSize(150, 300));
     m_grid->installEventFilter(this);
     m_grid->viewport()->installEventFilter(this);
 
@@ -591,8 +592,8 @@ void LibraryView::updateGridGeometry()
     if (width < 240)
         return;
     // 留 6px 给滚动条/取整误差，否则 1010/202 恰好整除时 QListView 会少算一列
-    const int columns = qMax(1, (width - 6) / 190);
-    const int cellWidth = (width - 6) / columns;
+    const int columns = qMax(1, (width - 8) / 150);
+    const int cellWidth = (width - 8) / columns;
     const QSize cellSize = PosterDelegate::cellSizeForWidth(cellWidth);
     if (m_grid->gridSize() != cellSize)
         m_grid->setGridSize(cellSize);

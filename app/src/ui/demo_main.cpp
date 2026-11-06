@@ -400,6 +400,24 @@ int runSelfTest(QApplication &app)
               && window.findChildren<QWidget *>(QStringLiteral("ResumeCard")).size() > 0,
           QStringLiteral("首页继续观看横向列表已渲染 Resume 卡片"));
 
+    auto *homePage = window.findChild<ui::HomeView *>(QStringLiteral("HomePage"));
+    const int seeAllCount = homePage
+                                ? homePage->findChildren<QPushButton *>(
+                                      QStringLiteral("HomeSectionSeeAll")).size()
+                                : 0;
+    bool hasPosterThumb = false;
+    if (homePage) {
+        for (QLabel *thumb : homePage->findChildren<QLabel *>(
+                                   QStringLiteral("HomeSectionThumbnail"))) {
+            if (thumb->height() > thumb->width()) {
+                hasPosterThumb = true;
+                break;
+            }
+        }
+    }
+    check(seeAllCount > 0 && hasPosterThumb,
+          QStringLiteral("T44 首页 section 含查看全部与 2:3 海报"));
+
     auto *home = window.findChild<ui::LibraryView *>(QStringLiteral("HomeLibrary"));
     check(home != nullptr && home->totalCount() == 200,
           QStringLiteral("首页 LibraryView 显示 200 个 item"));
@@ -497,6 +515,9 @@ int runSelfTest(QApplication &app)
           QStringLiteral("详情页数据与选中 item 一致"));
     const int episodeRows = detail ? detail->findChildren<QWidget *>(QStringLiteral("EpisodeRow")).size() : 0;
     check(episodeRows > 0, QStringLiteral("详情页季/集列表已生成（%1 集）").arg(episodeRows));
+    auto *detailPoster = detail ? detail->findChild<QLabel *>(QStringLiteral("DetailPoster")) : nullptr;
+    check(detailPoster && detailPoster->size() == QSize(188, 282),
+          QStringLiteral("T44 详情海报 188x282"));
 
     // 播放页与信号
     window.openPlayerDemo(firstId, 1, 2);
@@ -1231,6 +1252,8 @@ int runAuthTests(QApplication &app)
     auto *statusLabel = login.findChild<QLabel *>(QStringLiteral("LoginStatus"));
     check(password && testButton && loginButton && statusLabel,
           QStringLiteral("LoginDialog 控件齐全"));
+    check(statusLabel && statusLabel->isHidden(),
+          QStringLiteral("T44 登录空状态框不渲染"));
 
     int loginOkCount = 0;
     emby::ServerProfile loginProfile;
