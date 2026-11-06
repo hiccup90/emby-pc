@@ -7,9 +7,15 @@
     流程：
       1. 按 -Url 下载 shinchiro mpv-dev x86_64 压缩包（.7z 或 .zip）；
       2. 计算并打印 SHA-256（传入 -Sha256 时强制校验，不一致立即失败）；
-      3. 解压出 libmpv-2.dll 与 include\mpv 到 app\libs\libmpv\；
+      3. 解压出 libmpv-2.dll 与 include\mpv 到 app\libs\libmpv\，并按
+         “必需头文件清单”校验头文件是否齐全（缺任何一个直接失败）；
       4. 把本次获取记录（包名/URL/日期/SHA-256）写回 docs\libmpv-source.md 的
          fetch-libmpv 标记区，便于审计与复现。
+
+    注意：当前 shinchiro dev 包只带 client.h / render.h / render_gl.h / stream_cb.h，
+    不包含 render_d3d11.h。该头文件作为仓库自带头文件入库
+    （app\libs\libmpv\include\mpv\render_d3d11.h），脚本重建 include\mpv 时会
+    先备份再还原它（见 $VendoredHeaders）；如果仓库里也没有，脚本直接失败。
 
     发布页：https://github.com/shinchiro/mpv-winbuild-cmake/releases
     常见文件名：mpv-dev-x86_64-<日期>-git-<commit>.7z
@@ -47,6 +53,38 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppDir = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $AppDir "..")).Path
 if ([string]::IsNullOrWhiteSpace($Destination)) { $Destination = Join-Path $AppDir "libs\libmpv" }
+
+# 必需头文件清单：与仓库编译所需的 include\mpv 头文件集合对齐
+#（mpv 的 meson.build install_headers 也是这五个）。
+# render_d3d11.h 供 render API 的 D3D11 后端（MPV_RENDER_API_TYPE_D3D11）使用。
+# 上游增删头文件时需要同步这里，否则 CI/本地会在解压后立刻报错。
+#
+# 注意：当前 mpv-dev-x86_64-20261104 包里实际只带 client.h / render.h /
+# render_gl.h / stream_cb.h，**不含 render_d3d11.h**（已核对包内文件清单）。
+# 所以 render_d3d11.h 作为“仓库自带头文件”入库在 app\libs\libmpv\include\mpv\，
+# 由 git 管理，来源是与 libmpv 同 commit（46787be250）的上游 include/mpv。
+# VendoredHeaders 里的文件允许包内没有，重建 include\mpv 时会先备份再还原。
+$RequiredHeaders = @(
+    "client.h",
+    "render.h",
+    "render_d3d11.h",
+    "render_gl.h",
+    "stream_cb.h"
+)
+$VendoredHeaders = @(
+    "render_d3d11.h"
+)
+
+function Test-RequiredHeaders([string]$HeaderDir, [string]$Context, [switch]$SkipVendored) {
+    $missing = @()
+    foreach ($name in $RequiredHeaders) {
+        if ($SkipVendored -and ($VendoredHeaders -contains $name)) { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path $HeaderDir $name))) { $missing += $name }
+    }
+    if ($missing.Count -gt 0) {
+        throw "$Context 缺少必需头文件：$($missing -join ', ')（目录：$HeaderDir）。请确认下载的是与本仓库 libmpv 版本一致的 mpv-dev 包（见 docs\libmpv-source.md）。"
+    }
+}
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -145,18 +183,57 @@ try {
         }
     }
     if ($null -eq $headerDir) { throw "压缩包内找不到 include\mpv\client.h（mpv 头文件）。" }
+    # 先校压缩包内的头文件（仓库自带的 VendoredHeaders 允许缺席），再动 Destination：
+    # 失败时不会留下被删空的 include\mpv。
+    Test-RequiredHeaders -HeaderDir $headerDir -Context "压缩包内的 include\mpv" -SkipVendored
 
     Write-Step "安装到 $Destination"
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     Copy-Item -Path $dll.FullName -Destination (Join-Path $Destination "libmpv-2.dll") -Force
 
     $destInclude = Join-Path $Destination "include\mpv"
-    if (Test-Path $destInclude) { Remove-Item -Path $destInclude -Recurse -Force }
+
+    # 先备份仓库自带头文件（包里没有的那些），否则下面的 Remove-Item 会把它们删掉。
+    $vendoredBackup = @{}
+    if (Test-Path -LiteralPath $destInclude) {
+        foreach ($name in $VendoredHeaders) {
+            $existing = Join-Path $destInclude $name
+            if (Test-Path -LiteralPath $existing) {
+                $vendoredBackup[$name] = [System.IO.File]::ReadAllBytes($existing)
+            }
+        }
+        Remove-Item -Path $destInclude -Recurse -Force
+    }
     New-Item -ItemType Directory -Path $destInclude -Force | Out-Null
     Copy-Item -Path (Join-Path $headerDir "*") -Destination $destInclude -Recurse -Force
 
+    # 还原仓库自带头文件：包内已提供则用包内版本，否则回写备份。
+    $vendoredKept = @()
+    foreach ($name in $VendoredHeaders) {
+        $target = Join-Path $destInclude $name
+        if (Test-Path -LiteralPath $target) {
+            Write-Host "  头文件 $name 由压缩包提供（使用包内版本）"
+        } elseif ($vendoredBackup.ContainsKey($name)) {
+            [System.IO.File]::WriteAllBytes($target, $vendoredBackup[$name])
+            $vendoredKept += $name
+            Write-Host "  头文件 $name 压缩包内没有，已保留仓库自带版本"
+        }
+    }
+
+    # 安装后再核一次（这次要求全部齐全），防拷贝阶段异常/杀软拦截导致头文件不全。
+    # 若这里报 render_d3d11.h 缺失：删掉了仓库里的 app\libs\libmpv\include\mpv\render_d3d11.h，
+    # 用 git checkout 恢复即可（该头文件与本仓库 libmpv 版本绑定，不要手改）。
+    Test-RequiredHeaders -HeaderDir $destInclude -Context "安装后的 include\mpv"
+
     $packageName = [System.IO.Path]::GetFileNameWithoutExtension($archiveName)
     $fetchDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"
+
+    # 仓库自带头文件不会被压缩包刷新：换 libmpv 版本时它会静止不动，这里只提醒。
+    if ($vendoredKept.Count -gt 0) {
+        $gitMatch = [regex]::Match($archiveName, '-git-([0-9a-f]{7,40})')
+        $commitHint = $(if ($gitMatch.Success) { $gitMatch.Groups[1].Value } else { "（未能从文件名解析 commit）" })
+        Write-Warning ("仓库自带头文件 $($vendoredKept -join ', ') 未由压缩包更新：请确认它们与 libmpv commit $commitHint 的上游 include\mpv 一致（换 libmpv 版本时必须重新获取），并同步 docs\libmpv-source.md。")
+    }
 
     if (-not $SkipDocUpdate) {
         $docPath = Join-Path $RepoRoot "docs\libmpv-source.md"

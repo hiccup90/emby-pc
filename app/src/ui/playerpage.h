@@ -22,7 +22,7 @@ class VideoHostPlaceholder;
 
 // 播放页容器：视频区域 + 控制条。
 // 视频区里的 VideoHostPlaceholder 只是占位，真正嵌入由主窗口/播放器模块通过
-// attachVideoSurface() 传入（Windows 下就是 mpv --wid 的原生子窗口宿主）。
+// attachVideoSurface() 传入（Windows 下是 mpv render API 的 QRhiWidget 视频面）。
 //
 // 本类只发信号，不直接调用 libmpv：playPauseRequested / previousEpisodeRequested /
 // nextEpisodeRequested / seekRequested / subtitleTrackSelected / audioTrackSelected /

@@ -28,7 +28,7 @@ class MainWindow;
 class PlayerPage;
 }
 
-// 播放控制层：把 libmpv（--wid 嵌入 VideoHost）接到 ui::PlayerPage。
+// 播放控制层：把 libmpv（render API → QRhiWidget 的 D3D11 纹理）接到 ui::PlayerPage。
 //
 // 两种来源：
 //  - 本地文件/文件夹（文件菜单）；
@@ -88,6 +88,9 @@ private:
     void updatePositionUi();
     void showStatus(const QString &message, int timeoutMs = 3000);
     void ensurePlayerControlsVisible();
+    // spike/render-d3d11：VideoHost 的 QRhi 就绪后，用同一个 ID3D11Device
+    // 创建 mpv render context；首次播放时 device 可能晚于 ensurePlayer。
+    void handleRenderDeviceReady(quintptr device);
     void preparePlayerOverlays();
     void updatePlayerWindowChrome();
     void scheduleHomeRefresh(int delayMs = 0);

@@ -68,8 +68,30 @@ endif()
 
 if(WIN32)
     # user32: VideoHost/WindowFrame 的窗口样式与命中测试；dwmapi: DWM 扩展框；
-    # shell32: SHAppBarMessage（任务栏自动隐藏处理）；dbghelp: MiniDumpWriteDump。
-    target_link_libraries(emby-pc PRIVATE user32 dwmapi shell32 dbghelp)
+    # shell32: SHAppBarMessage（任务栏自动隐藏处理）；dbghelp: MiniDumpWriteDump；
+    # d3d11/dxgi: spike/render-d3d11 —— render API 的 D3D11 后端需要
+    # ID3D11Device/ID3D11Texture2D 与 DXGI 交换链（CreateSwapChainForHwnd）。
+    target_link_libraries(emby-pc PRIVATE user32 dwmapi shell32 dbghelp d3d11 dxgi)
+
+    # -----------------------------------------------------------------------
+    # spike/render-d3d11 临时依赖，Qt 版本锁定 6.8.x（CI 见 windows-build.yml）。
+    # D3D11 纹理导入（D3D11 纹理 → QRhiTexture，QRhiD3D11NativeHandles 等）
+    # 需要 Qt Gui 的私有头，只有 Qt6::GuiPrivate 提供；私有头不保证跨小版本
+    # 兼容，本地请对齐 6.8.*，不要混用 6.5/6.9。
+    # 找不到时只告警、不中断：骨架与业务代码不依赖它，仅 spike 导入路径需要。
+    # -----------------------------------------------------------------------
+    find_package(Qt6 QUIET COMPONENTS GuiPrivate)
+    if(TARGET Qt6::GuiPrivate)
+        target_link_libraries(emby-pc PRIVATE Qt6::GuiPrivate)
+    else()
+        message(WARNING "Qt6::GuiPrivate 不可用：D3D11 纹理导入（QRhi 私有头）无法编译，请安装 Qt 6.8.x 官方套件。")
+    endif()
+
+    # fetch-libmpv.ps1 会重建 include/mpv（仅保留仓库自带的 render_d3d11.h）：缺这个头时
+    # 在配置阶段就提示，免得等到编译 mpvplayer/videohost 的 D3D11 分支才报错。
+    if(NOT EXISTS "${LIBMPV_DIR}/include/mpv/render_d3d11.h")
+        message(WARNING "libs/libmpv/include/mpv/render_d3d11.h 缺失：render API D3D11 无法编译（从 git 恢复该头文件）。")
+    endif()
     if(EXISTS "${LIBMPV_DIR}/libmpv-2.dll")
         add_custom_command(TARGET emby-pc POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

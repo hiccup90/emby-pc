@@ -1,12 +1,17 @@
 #include "mpvplayer.h"
 
 #include <mpv/client.h>
+#include <mpv/render.h>
+#ifdef Q_OS_WIN
+#include <mpv/render_d3d11.h>
+#endif
 
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QLibrary>
+#include <QMetaObject>
 #include <QRegularExpression>
 #include <QStandardPaths>
 
@@ -28,6 +33,13 @@ struct MpvApi
     decltype(&::mpv_free) freeString = nullptr;
     decltype(&::mpv_terminate_destroy) terminateDestroy = nullptr;
     decltype(&::mpv_error_string) errorString = nullptr;
+    // spike/render-d3d11：render API（libmpv 0.29+；D3D11 后端要较新的构建）。
+    decltype(&::mpv_render_context_create) renderContextCreate = nullptr;
+    decltype(&::mpv_render_context_set_update_callback) renderContextSetUpdateCallback = nullptr;
+    decltype(&::mpv_render_context_update) renderContextUpdate = nullptr;
+    decltype(&::mpv_render_context_render) renderContextRender = nullptr;
+    decltype(&::mpv_render_context_report_swap) renderContextReportSwap = nullptr;
+    decltype(&::mpv_render_context_free) renderContextFree = nullptr;
 };
 
 MpvApi &api()
@@ -39,7 +51,9 @@ MpvApi &api()
 bool loadApi(QString *error)
 {
     MpvApi &a = api();
-    if (a.create)
+    // 不能只看 a.create：老版本 libmpv 可能没有 render API 导出，第一次加载
+    // 会失败但仍解析到 create，第二次调用就会误判为成功。
+    if (a.create && a.renderContextFree)
         return true;
 
     const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/libmpv-2.dll");
@@ -61,10 +75,24 @@ bool loadApi(QString *error)
     a.freeString = reinterpret_cast<decltype(a.freeString)>(a.library.resolve("mpv_free"));
     a.terminateDestroy = reinterpret_cast<decltype(a.terminateDestroy)>(a.library.resolve("mpv_terminate_destroy"));
     a.errorString = reinterpret_cast<decltype(a.errorString)>(a.library.resolve("mpv_error_string"));
+    a.renderContextCreate = reinterpret_cast<decltype(a.renderContextCreate)>(
+        a.library.resolve("mpv_render_context_create"));
+    a.renderContextSetUpdateCallback = reinterpret_cast<decltype(a.renderContextSetUpdateCallback)>(
+        a.library.resolve("mpv_render_context_set_update_callback"));
+    a.renderContextUpdate = reinterpret_cast<decltype(a.renderContextUpdate)>(
+        a.library.resolve("mpv_render_context_update"));
+    a.renderContextRender = reinterpret_cast<decltype(a.renderContextRender)>(
+        a.library.resolve("mpv_render_context_render"));
+    a.renderContextReportSwap = reinterpret_cast<decltype(a.renderContextReportSwap)>(
+        a.library.resolve("mpv_render_context_report_swap"));
+    a.renderContextFree = reinterpret_cast<decltype(a.renderContextFree)>(
+        a.library.resolve("mpv_render_context_free"));
 
     if (!a.create || !a.initialize || !a.setOptionString || !a.setPropertyString
         || !a.getPropertyString || !a.command || !a.observeProperty || !a.waitEvent
-        || !a.freeString || !a.terminateDestroy) {
+        || !a.freeString || !a.terminateDestroy || !a.renderContextCreate
+        || !a.renderContextSetUpdateCallback || !a.renderContextUpdate
+        || !a.renderContextRender || !a.renderContextFree) {
         if (error)
             *error = QObject::tr("libmpv-2.dll 缺少必要的导出符号：%1").arg(path);
         return false;
@@ -86,9 +114,10 @@ const char kInputConf[] =
     "f          script-message app-toggle-fullscreen\n"
     "ESC        script-message app-exit-fullscreen\n"
     // 用中键做探针，避免覆盖 OSC 的左键点击绑定。
-    "MBTN_MID script-message app-mouse-probe\n"
-    // T63/A-P0-06：覆盖 mpv 内置双击 cycle fullscreen，统一走应用全屏状态机。
-    "MBTN_LEFT_DBL script-message app-toggle-fullscreen\n";
+    "MBTN_MID script-message app-mouse-probe\n";
+// spike/render-d3d11：双击不再经 mpv `mouse ... double` 转发，改由 VideoHost
+// 直接把双击交给 Qt（PlayerPage::fullscreenRequested），所以这里删掉了
+// MBTN_LEFT_DBL 绑定，避免“同一手势两套全屏状态机”。
 
 QString writeInputConf()
 {
@@ -188,15 +217,39 @@ MpvPlayer::~MpvPlayer()
 void MpvPlayer::shutdown()
 {
     m_timer.stop();
+    // render context 必须在 mpv core 之前释放（render.h "Context and handle
+    // lifecycle"：core 销毁前没有 free 是未定义行为）。
+    destroyRenderContext();
+    m_renderDevice = 0;
     if (m_mpv) {
         api().terminateDestroy(m_mpv);
         m_mpv = nullptr;
     }
+    m_pendingLoad = false;
+    m_pendingFiles.clear();
+    m_pendingStartIndex = 0;
+    m_updatePosted.store(false);
+    m_renderErrorLogged = false;
+    m_hasVideoFrame = false;
     m_position = 0.0;
     m_duration = 0.0;
     m_paused = false;
     m_title.clear();
     m_httpHeaderLines.clear();
+}
+
+void MpvPlayer::destroyRenderContext()
+{
+    if (!m_renderContext)
+        return;
+    // 先摘掉 update callback，避免 free 期间还有回调排队到 GUI 线程。
+    if (api().renderContextSetUpdateCallback) {
+        api().renderContextSetUpdateCallback(m_renderContext, nullptr, nullptr);
+    }
+    api().renderContextFree(m_renderContext);
+    m_renderContext = nullptr;
+    m_hasVideoFrame = false;
+    m_updatePosted.store(false);
 }
 
 bool MpvPlayer::clearHttpHeaderFields()
@@ -209,20 +262,22 @@ bool MpvPlayer::clearHttpHeaderFields()
     return rc >= 0;
 }
 
-bool MpvPlayer::reinitialize(quintptr windowId, const QStringList &httpHeaderLines,
+bool MpvPlayer::reinitialize(quintptr renderDevice, const QStringList &httpHeaderLines,
                              QString *error)
 {
-    qInfo() << "mpv reinitialize: headers" << httpHeaderLines.size();
+    qInfo() << "mpv reinitialize: headers" << httpHeaderLines.size()
+            << "renderDevice" << renderDevice;
     shutdown();
-    return initialize(windowId, httpHeaderLines, error);
+    return initialize(renderDevice, httpHeaderLines, error);
 }
 
-bool MpvPlayer::initialize(quintptr windowId, QString *error)
+bool MpvPlayer::initialize(quintptr renderDevice, QString *error)
 {
-    return initialize(windowId, QStringList(), error);
+    return initialize(renderDevice, QStringList(), error);
 }
 
-bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines, QString *error)
+bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderLines,
+                           QString *error)
 {
     if (m_mpv)
         shutdown();
@@ -241,17 +296,19 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
         return false;
     }
 
-    // ---- 嵌入窗口 ----
-    // 注意：setOption 的 name 参数必须是稳定的 C 字符串，不要传临时 QByteArray 的指针。
-    setOption("wid", QString::number(windowId));
-
-    // ---- 视频输出 ----
-    setOption("vo", QStringLiteral("gpu-next"));
+    // ---- 视频输出（render API）----
+    // spike/render-d3d11：不再设置 wid / force-window / input-vo-keyboard /
+    // input-cursor。视频由 libmpv 的 libmpv VO 渲染进 Qt 的 D3D11 纹理。
+    setOption("vo", QStringLiteral("libmpv"));
 #ifdef Q_OS_WIN
     setOption("gpu-api", QStringLiteral("d3d11"));
     setOption("gpu-context", QStringLiteral("d3d11"));
     setOption("hwdec", m_hwdecMode.isEmpty() ? QStringLiteral("d3d11va") : m_hwdecMode);
 #endif
+    // render API 在 GUI 线程调用 mpv_render_context_render；默认 50ms 的
+    // target-time 等待会卡住 UI（render.h MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME /
+    // "video-timing-offset"）。这里置 0，由 Qt 的合成/paint 节流。
+    setOption("video-timing-offset", QStringLiteral("0"));
     // HDR/DV 片源统一 tone-map 到 SDR（不发灰）
     setOption("target-colorspace-hint", QStringLiteral("no"));
     setOption("target-trc", QStringLiteral("srgb"));
@@ -274,8 +331,6 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
     setOption("osc", oscEnabled ? QStringLiteral("yes") : QStringLiteral("no"));
     setOption("osd-bar", QStringLiteral("no"));
     setOption("input-default-bindings", QStringLiteral("yes"));
-    setOption("input-vo-keyboard", QStringLiteral("yes"));
-    setOption("input-cursor", QStringLiteral("yes"));
     setOption("input-conf", writeInputConf());
     if (oscEnabled)
         setOption("script-opts", QStringLiteral("osc-hidetimeout=1800,osc-boxalpha=170"));
@@ -283,11 +338,11 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
     // ---- 隔离用户配置 / 缓存 ----
     setOption("config", QStringLiteral("no"));
     setOption("load-scripts", QStringLiteral("yes"));
-    qInfo() << "mpv options: wid=" << windowId << "osc=" << oscEnabled
-            << "load-scripts=yes input-vo-keyboard=yes input-cursor=yes";
+    qInfo() << "mpv options: vo=libmpv render-api=d3d11 osc=" << oscEnabled
+            << "renderDevice=" << renderDevice
+            << "load-scripts=yes video-timing-offset=0";
     setOption("keep-open", QStringLiteral("yes"));
     setOption("idle", QStringLiteral("yes"));
-    setOption("force-window", QStringLiteral("yes"));
     setOption("terminal", QStringLiteral("no"));
 
     // ---- Emby 直连 HTTP 头（T8）----
@@ -352,8 +407,156 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
                                 getPropertyString("gpu-api"));
 
     m_httpHeaderLines = httpHeaderLines;
+
+    // render context 必须赶在任何 loadfile（VO 初始化）之前创建：
+    // render.h 明确“Video initialization will fail if the render context was not
+    // initialized yet”。device 为 0 时先挂起，等 VideoHost 的 QRhi 初始化。
+    if (renderDevice != 0) {
+        if (!createRenderContext(renderDevice, error)) {
+            shutdown();
+            return false;
+        }
+    } else {
+        qInfo() << "mpv render context deferred: QRhi D3D11 device not ready yet";
+    }
+
     m_timer.start();
     return true;
+}
+
+bool MpvPlayer::createRenderContext(quintptr renderDevice, QString *error)
+{
+#ifdef Q_OS_WIN
+    if (!m_mpv || !api().renderContextCreate) {
+        if (error)
+            *error = QObject::tr("mpv render context 不可用（mpv 未初始化）");
+        return false;
+    }
+    if (!renderDevice) {
+        if (error)
+            *error = QObject::tr("QRhi 尚未提供 ID3D11Device");
+        return false;
+    }
+    if (m_renderContext) {
+        if (m_renderDevice == renderDevice)
+            return true;
+        // 设备变了：旧 context 只能销毁重建（同一 mpv core 同时只允许 1 个）。
+        qWarning() << "mpv render context device changed" << m_renderDevice << "->"
+                   << renderDevice;
+        destroyRenderContext();
+    }
+
+    // MPV_RENDER_API_TYPE_D3D11 的 data 是 char*；用可写数组避免 const 转换。
+    char apiType[] = MPV_RENDER_API_TYPE_D3D11;
+    mpv_d3d11_init_params initParams{};
+    initParams.device = reinterpret_cast<void *>(renderDevice);
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_API_TYPE, apiType},
+        {MPV_RENDER_PARAM_D3D11_INIT_PARAMS, &initParams},
+        {MPV_RENDER_PARAM_INVALID, nullptr},
+    };
+
+    mpv_render_context *context = nullptr;
+    const int result = api().renderContextCreate(&context, m_mpv, params);
+    if (result < 0 || !context) {
+        const char *text = api().errorString ? api().errorString(result) : nullptr;
+        if (error) {
+            *error = QObject::tr("mpv_render_context_create(D3D11) 失败：%1")
+                         .arg(QString::fromUtf8(text ? text : "unknown error"));
+        }
+        qWarning() << "mpv render context create failed rc=" << result
+                   << (text ? text : "unknown error");
+        return false;
+    }
+
+    m_renderContext = context;
+    m_renderDevice = renderDevice;
+    m_renderErrorLogged = false;
+    // 回调在 mpv 线程触发；里面不能调任何 mpv API，只做队列投递。
+    api().renderContextSetUpdateCallback(m_renderContext, &MpvPlayer::renderUpdateCallback, this);
+    qInfo() << "mpv render context created: api=d3d11 device=" << Qt::hex << renderDevice;
+    flushPendingLoad();
+    return true;
+#else
+    Q_UNUSED(renderDevice);
+    if (error)
+        *error = QObject::tr("D3D11 render API 仅在 Windows 可用");
+    return false;
+#endif
+}
+
+bool MpvPlayer::attachRenderDevice(quintptr renderDevice, QString *error)
+{
+    if (!m_mpv) {
+        if (error)
+            *error = QObject::tr("mpv 尚未初始化");
+        return false;
+    }
+    return createRenderContext(renderDevice, error);
+}
+
+void MpvPlayer::renderUpdateCallback(void *callbackContext)
+{
+    auto *self = static_cast<MpvPlayer *>(callbackContext);
+    if (!self)
+        return;
+    // 合并高频回调：只排一个 GUI 线程事件；不阻塞 mpv 线程。
+    bool expected = false;
+    if (!self->m_updatePosted.compare_exchange_strong(expected, true))
+        return;
+    QMetaObject::invokeMethod(self, "handleRenderUpdate", Qt::QueuedConnection);
+}
+
+void MpvPlayer::handleRenderUpdate()
+{
+    m_updatePosted.store(false);
+    emit frameUpdate();
+}
+
+bool MpvPlayer::renderFrame(void *texture, bool forceRedraw)
+{
+#ifdef Q_OS_WIN
+    if (!m_mpv || !m_renderContext || !texture)
+        return false;
+
+    // update() 不阻塞，只处理 queued 请求并返回 MPV_RENDER_UPDATE_FRAME bit。
+    // 没有新帧且不是纹理重建时，保留上一帧的纹理内容，不重复 blit。
+    const uint64_t flags = api().renderContextUpdate(m_renderContext);
+    const bool newFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
+    if (!newFrame && !forceRedraw)
+        return false;
+    if (!newFrame && !m_hasVideoFrame)
+        return false; // 纹理刚建、还没出过帧：让 VideoHost 用 QRhi 清黑
+
+    mpv_d3d11_fbo fbo{};
+    fbo.tex = texture;
+    int blockForTargetTime = 0; // 不要在 Qt GUI 线程上等 target time
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_D3D11_FBO, &fbo},
+        {MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &blockForTargetTime},
+        {MPV_RENDER_PARAM_INVALID, nullptr},
+    };
+    const int result = api().renderContextRender(m_renderContext, params);
+    if (result < 0) {
+        if (!m_renderErrorLogged) {
+            m_renderErrorLogged = true;
+            const char *text = api().errorString ? api().errorString(result) : nullptr;
+            qWarning() << "mpv_render_context_render(D3D11) failed rc=" << result
+                       << (text ? text : "unknown error");
+        }
+        return false;
+    }
+    if (newFrame)
+        m_hasVideoFrame = true;
+    // 有意不调 mpv_render_context_report_swap()：render.h 说明它是 optional，
+    // 而且我们的“present”发生在 Qt backingstore 合成时（本函数之后、同一帧内），
+    // 在这里报 flip 时间并不准确；不一致地调用反而会让 mpv 的时序判断变差。
+    return true;
+#else
+    Q_UNUSED(texture);
+    Q_UNUSED(forceRedraw);
+    return false;
+#endif
 }
 
 bool MpvPlayer::setOption(const char *name, const QString &value)
@@ -412,6 +615,39 @@ void MpvPlayer::loadPlaylist(const QStringList &files, int startIndex)
     if (!m_mpv || files.isEmpty())
         return;
 
+    // render context 未就绪（例如首次播放时 PlayerPage 还没 paint，QRhi 的
+    // ID3D11Device 尚不可用）时不能 loadfile：vo=libmpv 的 preinit 会因为没有
+    // render context 直接失败。先挂起，等 attachRenderDevice() 后原样执行。
+    if (!m_renderContext) {
+        m_pendingLoad = true;
+        m_pendingFiles = files;
+        m_pendingStartIndex = startIndex;
+        qInfo() << "mpv loadfile deferred until render context is ready: files"
+                << files.size() << "startIndex" << startIndex;
+        return;
+    }
+
+    loadPlaylistNow(files, startIndex);
+}
+
+void MpvPlayer::flushPendingLoad()
+{
+    if (!m_pendingLoad || !m_renderContext)
+        return;
+    m_pendingLoad = false;
+    const QStringList files = m_pendingFiles;
+    const int startIndex = m_pendingStartIndex;
+    m_pendingFiles.clear();
+    m_pendingStartIndex = 0;
+    qInfo() << "mpv loadfile flush after render context ready: files" << files.size()
+            << "startIndex" << startIndex;
+    loadPlaylistNow(files, startIndex);
+}
+
+void MpvPlayer::loadPlaylistNow(const QStringList &files, int startIndex)
+{
+    // 新片源的第一帧到达前不要把上一部的末帧当成“可重画帧”贴到新纹理上。
+    m_hasVideoFrame = false;
     bool ok = command({QStringLiteral("loadfile"), files.first(), QStringLiteral("replace")});
     if (!ok) {
         emit errorOccurred(QStringLiteral("mpv loadfile failed: %1").arg(files.first()));
@@ -475,6 +711,11 @@ void MpvPlayer::toggleStats()
 
 void MpvPlayer::stop()
 {
+    // stop 语义就是“不要再开始”：丢掉尚未执行的挂起 loadfile。
+    m_pendingLoad = false;
+    m_pendingFiles.clear();
+    m_pendingStartIndex = 0;
+    m_hasVideoFrame = false;
     command({QStringLiteral("stop")});
 }
 

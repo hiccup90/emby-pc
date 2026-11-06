@@ -210,8 +210,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     m_videoHost->hide();
     m_player = new MpvPlayer(this);
 
-    // T22：mpv 子窗口加 WS_EX_TRANSPARENT，鼠标事件穿透到 VideoHost（Qt）；
-    // 这里把 Qt 鼠标信号转成 mpv `mouse` 命令，OSC/点击视频才有输入。
+    // spike/render-d3d11：VideoHost 是 QRhiWidget，mpv 直接渲染进它的合成纹理；
+    // 鼠标事件仍转成 mpv `mouse` 命令（OSC/脚本绑定），双击改由 Qt 触发全屏。
     connect(m_videoHost, &VideoHost::mouseMoved, this, [this](const QPoint &position) {
         if (m_player->isReady())
             m_player->command({QStringLiteral("mouse"), QString::number(position.x()),
@@ -221,6 +221,15 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             [this](int button, const QPoint &position, bool doubleClick) {
                 if (!m_player->isReady())
                     return;
+                if (doubleClick && button == 0) {
+                    // 双击全屏由 Qt 侧发起：复用 PlayerPage::fullscreenRequested
+                    // （不新增全屏信号），mpv 的 MBTN_LEFT_DBL 绑定已删除。
+                    if (m_playerPage) {
+                        QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested",
+                                                  Qt::DirectConnection);
+                    }
+                    return;
+                }
                 QStringList args = {QStringLiteral("mouse"), QString::number(position.x()),
                                     QString::number(position.y()), QString::number(button)};
                 if (doubleClick)
@@ -235,8 +244,21 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                                        QString::number(position.y()),
                                        QString::number(button)});
             });
-    // T22：点击视频后 VideoHost 会把焦点还给 Qt 主窗口；键盘继续走 Qt 的
-    // eventFilter（mpvKeyNameFromEvent → keypress），不再有 native key 路径。
+
+    // mpv 每帧渲染到 VideoHost 当前正在合成的 D3D11 纹理。返回 false 时
+    // VideoHost 才会用 QRhi 清黑（render context 尚未就绪/渲染失败）。
+    m_videoHost->setFrameRenderer([this](void *texture, bool forceRedraw) {
+        if (!m_player || !m_player->isReady())
+            return false;
+        return m_player->renderFrame(texture, forceRedraw);
+    });
+    connect(m_player, &MpvPlayer::frameUpdate, m_videoHost, &VideoHost::requestFrame);
+    // 队列连接：不在 QRhiWidget::initialize()/paint 里同步创建 mpv render context。
+    connect(m_videoHost, &VideoHost::d3d11DeviceReady, this,
+            &PlayerController::handleRenderDeviceReady, Qt::QueuedConnection);
+
+    // 键盘继续走 Qt 的 eventFilter（mpvKeyNameFromEvent → keypress），render API
+    // 下没有 VO 窗口，不需要再激活/回焦 mpv 子窗口。
     preparePlayerOverlays();
 
     // T48：Emby 播放 8 秒无 file-loaded 视为失败，自动尝试备选 URL。
@@ -573,6 +595,14 @@ PlayerController::~PlayerController()
     // MainWindow closeEvent 路径也会调用，reportPlaybackStopped() 自身有 m_reporting 防重。
     if (m_reporting)
         reportPlaybackStopped(true);
+
+    // spike/render-d3d11：先摘掉 VideoHost 的渲染回调（std::function 捕获 this，
+    // 不会随 QObject 自动断开），再释放 mpv。MpvPlayer::shutdown() 内部保证
+    // mpv_render_context_free() 在 mpv_terminate_destroy() 之前。
+    if (m_videoHost)
+        m_videoHost->setFrameRenderer(VideoHost::FrameRenderer());
+    if (m_player)
+        m_player->shutdown();
 }
 
 void PlayerController::applyPlayerSettings()
@@ -677,7 +707,7 @@ bool PlayerController::eventFilter(QObject *watched, QEvent *event)
             reportPlaybackStopped(true);
     }
 
-    // 键盘转发：mpv 子窗口在 --wid 下收不到输入，Qt 主窗口把按键转成
+    // 键盘转发：render API 下视频没有独立的 VO 窗口，Qt 主窗口把按键转成
     // mpv `keypress`，空格/方向键/F/n/p/i 等 input.conf 绑定才会生效。
     // Esc/F11 留给 Qt 自己的快捷键；Ctrl/Alt 组合也不转发。
     // T63/A-P1-20：同时安装在 QApplication 和 MainWindow 上的过滤器会对同一
@@ -859,20 +889,35 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
 
 bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
 {
+    // spike/render-d3d11：Qt 的 QRhi 可能还没初始化（首次播放时 PlayerPage 还
+    // 没 paint），此时 renderDevice=0，MpvPlayer 会先把 loadfile 挂起，等
+    // VideoHost::d3d11DeviceReady → handleRenderDeviceReady 再建 context。
+    const quintptr renderDevice = m_videoHost ? m_videoHost->d3d11Device() : 0;
     if (m_player->isReady()) {
         // T63/A-P0-02：运行时 http-header-fields setter 会把完整 token 写进 mpv.log。
         // 只在 header 变化时销毁重建（新实例在 log-file 生效前注入 header）。
         if (m_player->httpHeaderLines() != httpHeaderLines) {
-            qInfo() << "mpv headers changed; reinitializing before load (no runtime token setter)";
+            qInfo() << "mpv headers changed; reinitializing before load (no runtime token setter)"
+                    << "renderDevice=" << renderDevice;
             m_player->setHardwareDecoderMode(hwdecMpvValue(m_hwdecMode));
             QString error;
-            if (!m_player->reinitialize(m_videoHost->nativeWindow(), httpHeaderLines, &error)) {
+            if (!m_player->reinitialize(renderDevice, httpHeaderLines, &error)) {
                 QMessageBox::critical(m_window, tr("播放内核初始化失败"), error);
                 return false;
             }
             applyMpvSettings();
             updateHardwareInfo();
             logMpvState(QStringLiteral("reinitialized-http-headers"));
+        }
+        // 重试路径：上一次 render context 创建失败/设备后到时，这里补一次 attach。
+        // （设备已缓存但 context 不在时，不会再有 d3d11DeviceReady 信号。）
+        if (!m_player->hasRenderContext() && renderDevice != 0) {
+            QString attachError;
+            if (!m_player->attachRenderDevice(renderDevice, &attachError)) {
+                QMessageBox::critical(m_window, tr("播放内核初始化失败"), attachError);
+                return false;
+            }
+            logMpvState(QStringLiteral("render-context-attached"));
         }
         return true;
     }
@@ -886,7 +931,7 @@ bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
     }
 
     QString error;
-    if (!m_player->initialize(m_videoHost->nativeWindow(), httpHeaderLines, &error)) {
+    if (!m_player->initialize(renderDevice, httpHeaderLines, &error)) {
         QMessageBox::critical(m_window, tr("播放内核初始化失败"), error);
         m_playerPage->releaseVideoSurface();
         m_videoHost->setParent(m_playerPage);
@@ -899,6 +944,41 @@ bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
     updateHardwareInfo();
     logMpvState(QStringLiteral("initialized"));
     return true;
+}
+
+void PlayerController::handleRenderDeviceReady(quintptr device)
+{
+    if (!device)
+        return;
+    if (!m_player || !m_player->isReady()) {
+        // 首次播放时 device 常常先于 ensurePlayer；VideoHost 已缓存，
+        // 下次 initialize(renderDevice, ...) 直接用。
+        qInfo() << "PlayerController: QRhi D3D11 device ready before mpv init; device"
+                << Qt::hex << device;
+        return;
+    }
+    if (m_player->hasRenderContext() && m_player->renderDevice() == device)
+        return;
+
+    QString error;
+    if (!m_player->attachRenderDevice(device, &error)) {
+        qWarning() << "PlayerController: attach D3D11 render device failed" << error;
+        // 正在起播（已有 item/本地文件/候选）才走失败弹窗；否则只提示。
+        const bool playbackStarting =
+            !m_playbackFileLoaded
+            && (!m_embyItemId.isEmpty() || m_localPlayback || !m_playbackCandidates.isEmpty());
+        if (playbackStarting)
+            handlePlaybackFailure(tr("D3D11 渲染上下文创建失败：%1").arg(error));
+        else
+            showStatus(tr("D3D11 渲染上下文创建失败：%1").arg(error), 8000);
+        return;
+    }
+
+    qInfo() << "PlayerController: mpv D3D11 render context ready; device" << Qt::hex << device
+            << "hwdec" << m_player->hardwareDecoderMode();
+    logMpvState(QStringLiteral("render-context-ready"));
+    if (m_videoHost)
+        m_videoHost->requestFrame();
 }
 
 void PlayerController::onDetailPlayRequested(const QString &itemId, int season, int episode)
@@ -1787,8 +1867,8 @@ void PlayerController::logMpvState(const QString &reason)
         QStringLiteral("mpv-version"), QStringLiteral("vo"), QStringLiteral("gpu-api"),
         QStringLiteral("gpu-context"), QStringLiteral("hwdec"),
         QStringLiteral("hwdec-current"), QStringLiteral("options/osc"),
-        QStringLiteral("options/load-scripts"), QStringLiteral("options/input-vo-keyboard"),
-        QStringLiteral("options/input-cursor"), QStringLiteral("options/wid"),
+        QStringLiteral("options/load-scripts"), QStringLiteral("options/vo"),
+        QStringLiteral("options/video-timing-offset"), QStringLiteral("video-params"),
         QStringLiteral("options/script-opts"), QStringLiteral("script-list")
     };
     QStringList values;
@@ -1857,8 +1937,8 @@ QString PlayerController::diagnosticSummary()
             QStringLiteral("mpv-version"), QStringLiteral("vo"), QStringLiteral("gpu-api"),
             QStringLiteral("gpu-context"), QStringLiteral("hwdec"),
             QStringLiteral("hwdec-current"), QStringLiteral("options/osc"),
-            QStringLiteral("options/load-scripts"), QStringLiteral("options/input-vo-keyboard"),
-            QStringLiteral("options/input-cursor"), QStringLiteral("options/wid"),
+            QStringLiteral("options/load-scripts"), QStringLiteral("options/vo"),
+            QStringLiteral("options/video-timing-offset"), QStringLiteral("video-params"),
             QStringLiteral("options/script-opts"), QStringLiteral("script-list")
         };
         for (const QString &key : keys) {
