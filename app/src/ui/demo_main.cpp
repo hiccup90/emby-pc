@@ -589,8 +589,9 @@ int runSelfTest(QApplication &app)
     auto hostRect = [&window]() {
         return QRect(window.mapToGlobal(QPoint(0, 0)), window.size());
     };
-    // T31：播放模式视频区四周留 5px 顶层可缩放边缘，overlay 同步内缩。
-    const int playerInset = 5;
+    // T56：播放模式不再留 5px 黑边，overlay 直接铺满客户区；边缘缩放由
+    // VideoHost/PlayerPage 6px 命中区负责。
+    const int playerInset = 0;
     QRect host = hostRect();
     check(player->topOverlay()->geometry().topLeft()
               == host.topLeft() + QPoint(12 + playerInset, 10 + playerInset)
@@ -790,9 +791,29 @@ int runSelfTest(QApplication &app)
     player->releaseVideoSurface();
     delete surface;
 
-    // 播放页返回
+    // T57：播放器缩到最小 320x180 后返回，恢复 800x480 + 标题栏按钮可见。
+    window.resize(320, 180);
+    settle(app, 120);
     player->findChild<QPushButton *>(QStringLiteral("PlayerBackButton"))->click();
-    settle(app, 220);
+    settle(app, 260);
+    const auto titleButtonRect = [&window](const QString &name) {
+        QPushButton *button = window.titleBar()
+                                  ? window.titleBar()->findChild<QPushButton *>(name)
+                                  : nullptr;
+        return button ? QRect(button->mapTo(&window, QPoint(0, 0)), button->size()) : QRect();
+    };
+    const QRect closeRect = titleButtonRect(QStringLiteral("TitleBarCloseButton"));
+    const QRect minRect = titleButtonRect(QStringLiteral("TitleBarMinimizeButton"));
+    const QRect maxRect = titleButtonRect(QStringLiteral("TitleBarMaximizeButton"));
+    check(titleBar && titleBar->isVisible() && titleBar->width() == window.width()
+              && window.width() >= 800 && window.height() >= 480
+              && window.rect().contains(closeRect)
+              && window.rect().contains(minRect)
+              && window.rect().contains(maxRect),
+          QStringLiteral("T57 小窗口退出播放模式恢复标题栏三按钮（close=%1,%2）")
+              .arg(closeRect.x()).arg(closeRect.y()));
+    window.resize(1280, 760);
+    settle(app, 180);
     auto *restoredSplitter = window.mainSplitter();
     auto *restoredSidebar = window.findChild<QWidget *>(QStringLiteral("Sidebar"));
     const int restoredSidebarWidth = restoredSplitter->sizes().value(0);
@@ -843,8 +864,8 @@ int runSelfTest(QApplication &app)
         docked.setPlayerModeActive(true);
         settle(app, 80);
         check(docked.controlsVisible()
-                  && docked.topOverlay()->geometry().top() == 5
-                  && docked.bottomOverlay()->geometry().bottom() + 1 == docked.height() - 5,
+                  && docked.topOverlay()->geometry().top() == 0
+                  && docked.bottomOverlay()->geometry().bottom() + 1 == docked.height(),
               QStringLiteral("页面内兜底浮层贴住播放页顶部/底部"));
         docked.setPlayerModeActive(false);
     }

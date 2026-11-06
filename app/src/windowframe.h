@@ -68,6 +68,7 @@ private:
     void installNativeStyles();
     void applyDwmFrame();
     void applyWindowCornerPreference();
+    void applyDwmBorderColor();
     void updateDpi();
     QRect maximizedWorkArea() const;
     bool handleNativeMessage(void *message, qintptr *result);

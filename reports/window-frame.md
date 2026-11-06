@@ -256,3 +256,14 @@ failures 0
 - 日志：`WindowFrame: DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE) DWMCP_DONOTROUND hr=... succeeded=...`。
 - 不改变 T31/T35 边缘 5px、T46 拖动、T52 最小尺寸；圆角关闭后视频四角可完全铺满。
 - Linux 构建通过；Windows 实机确认四角直角，Win10 日志 `succeeded=false` 属预期。
+
+## 14. T56 去播放黑边 + DWM 1px 边框
+
+> 任务：task-56 · 负责人：build-verifier · 日期：2026-11-06
+
+- `DwmExtendFrameIntoClientArea` 的 MARGINS 从 1 改为 0，避免 Win11 的 1px 扩展框；
+- 新增 `WindowFrame::applyDwmBorderColor()`：
+  `DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR(34), DWMWA_COLOR_NONE(0xFFFFFFFE))`，
+  日志 `WindowFrame: DwmSetWindowAttribute(DWMWA_BORDER_COLOR) ... hr=... succeeded=...`；
+  `applyDwmFrame()` 统一调用，保留 T54 的直角。
+- Win10/旧 SDK 不支持时仅记录 hr，不影响窗口；DWM 阴影可能随 1px 扩展框一起去掉，属预期取舍。

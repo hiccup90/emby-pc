@@ -426,3 +426,16 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - 保留：自动隐藏、T51 扩展命中、T53 纯图标 tooltip、T46 拖动/全屏、T47 sidebar 恢复。
 - 回归：新增 4 条断言——顶栏/控制条非 translucent、grab 像素 alpha=255、控制条四角按钮命中 4/4；总计 **189 项 ALL PASS**。
 - 截图：`preview/05-player.png`、`10-player-960x600.png`、`12/13` 更新为不透明控件条。
+
+## 15. T56 播放画面全铺满（去掉 5px 黑边）
+
+> 任务：task-56 · 负责人：build-verifier · 日期：2026-11-06
+
+- `applyVideoMargins()` 在播放模式/全屏统一 `setContentsMargins(0,0,0,0)`，不再保留 T31 的 5px。
+- 顶层/页面内 overlay 同步去掉 margin：顶栏距左上 12/10，控制条贴底铺满；全屏无边框。
+- 边缘缩放改为 `VideoHost/PlayerPage` 的 **6px 命中区**：`m_surface/m_surfaceStack` 已安装
+  `PlayerPage` 事件过滤器，左键在边缘先走 `startSystemResize`，其余继续 T46 空白区拖动/mpv 点击。
+- `kPlayerResizeHit` 取代 layout 用的 `kPlayerResizeMargin`；全屏命中为空（不缩放）。
+- 单测：video area == page rect（无 5px）、1/5px 命中、6px 不命中、四角命中、全屏禁用、普通模式铺满；
+  共 7 项 PASS；`emby-ui-demo --selftest` 190 PASS。
+- 实机确认：播放四边/四角可缩放且无黑边；全屏无边框。

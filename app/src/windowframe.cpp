@@ -259,23 +259,34 @@ void WindowFrame::applyWindowCornerPreference()
             << "succeeded=" << SUCCEEDED(hr);
 }
 
+void WindowFrame::applyDwmBorderColor()
+{
+    if (!m_hwnd)
+        return;
+    HWND hwnd = reinterpret_cast<HWND>(m_hwnd);
+    const DWORD borderColor = DWMWA_COLOR_NONE;
+    const HRESULT hr = ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &borderColor,
+                                               sizeof(borderColor));
+    qInfo() << "WindowFrame: DwmSetWindowAttribute(DWMWA_BORDER_COLOR)"
+            << "DWMWA_COLOR_NONE" << "hr=" << Qt::hex
+            << static_cast<qulonglong>(hr) << Qt::dec << "succeeded=" << SUCCEEDED(hr);
+}
+
 void WindowFrame::applyDwmFrame()
 {
     if (!m_hwnd)
         return;
     applyWindowCornerPreference();
     HWND hwnd = reinterpret_cast<HWND>(m_hwnd);
-    // 1px 仅用于 DWM 外框/阴影，不是 resize 热区；避免可见黑边/桌面透出。
-    MARGINS margins{1, 1, 1, 1};
+    // T56：不再扩展 1px DWM 边框；播放画面直接铺满客户区。
+    MARGINS margins{0, 0, 0, 0};
     const HRESULT hr = ::DwmExtendFrameIntoClientArea(hwnd, &margins);
     if (FAILED(hr))
         qWarning() << "WindowFrame: DwmExtendFrameIntoClientArea failed" << Qt::hex
                    << static_cast<qulonglong>(hr);
 
-    // Win11：不要额外画彩色边框；保留 DWM 默认阴影/圆角。
-    const DWORD borderColor = DWMWA_COLOR_NONE;
-    ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &borderColor,
-                            sizeof(borderColor));
+    // T54 已去掉 Win11 圆角；T56 再去掉 DWM 1px 边框颜色。
+    applyDwmBorderColor();
 }
 
 void WindowFrame::updateDpi()

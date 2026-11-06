@@ -32,7 +32,8 @@ namespace {
 
 // T31：播放模式下视频子 HWND 不能贴死顶层客户区，否则 Windows 的 WM_NCHITTEST
 // 会落在 mpv 子窗口上，WindowFrame 的四边/四角缩放命中失效。留 5px 给顶层窗口。
-constexpr int kPlayerResizeMargin = 5;
+// T56：边距去掉后，边缘缩放命中区仍保留 6px；布局 margin 不再使用它。
+constexpr int kPlayerResizeHit = 6;
 
 QString formatTimeValue(qint64 milliseconds)
 {
@@ -464,7 +465,7 @@ Qt::Edges PlayerPage::edgeResizeEdgesAt(const QPoint &position) const
         return {};
     if (!rect().contains(position))
         return {};
-    const int margin = kPlayerResizeMargin;
+    const int margin = kPlayerResizeHit;
     Qt::Edges edges;
     if (position.x() < margin)
         edges |= Qt::LeftEdge;
@@ -763,8 +764,8 @@ void PlayerPage::applyVideoMargins()
     auto *layout = qobject_cast<QVBoxLayout *>(this->layout());
     if (!layout)
         return;
-    const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
-    layout->setContentsMargins(margin, margin, margin, margin);
+    // T56：播放模式/全屏都不再留黑边；边缘缩放由 VideoHost/PlayerPage 的 6px 命中区负责。
+    layout->setContentsMargins(0, 0, 0, 0);
     if (m_topLevelOverlay && m_playerModeActive)
         syncOverlayGeometry();
     else if (!m_topLevelOverlay)
@@ -792,17 +793,16 @@ void PlayerPage::syncOverlayGeometry()
     if (!host.isValid() || host.isEmpty())
         return;
 
-    const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
+    // T56：画面全铺满，overlay 也不再按 5px 黑边内缩。
     const int topHeight = 76;
-    const int maxTopWidth = qMax(200, host.width() - 24 - 2 * margin);
+    const int maxTopWidth = qMax(200, host.width() - 24);
     const int topWidth = qMin(qMax(260, m_topBar->sizeHint().width()), maxTopWidth);
-    m_topBar->setGeometry(host.left() + 12 + margin, host.top() + 10 + margin, topWidth, topHeight);
+    m_topBar->setGeometry(host.left() + 12, host.top() + 10, topWidth, topHeight);
 
-    // T31：底部 overlay 同步内缩，避免盖住窗口底边的可缩放边缘；全屏 margin=0。
     const int controlHeight = 108;
-    m_controlBar->setGeometry(host.left() + margin,
-                              host.top() + host.height() - controlHeight - margin,
-                              qMax(0, host.width() - 2 * margin), controlHeight);
+    m_controlBar->setGeometry(host.left(),
+                              host.top() + host.height() - controlHeight,
+                              qMax(0, host.width()), controlHeight);
 
     if (m_overlaysVisible) {
         m_topBar->raise();
@@ -814,12 +814,10 @@ void PlayerPage::updateDockedOverlayGeometry()
 {
     if (!m_topBar || !m_controlBar)
         return;
-    const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
     const int topHeight = qBound(58, height() / 9, 84);
     const int controlHeight = qBound(108, height() / 7, 124);
-    m_topBar->setGeometry(margin, margin, qMax(0, width() - 2 * margin), topHeight);
-    m_controlBar->setGeometry(margin, height() - controlHeight - margin,
-                              qMax(0, width() - 2 * margin), controlHeight);
+    m_topBar->setGeometry(0, 0, width(), topHeight);
+    m_controlBar->setGeometry(0, height() - controlHeight, width(), controlHeight);
     if (m_overlaysVisible) {
         m_topBar->raise();
         m_controlBar->raise();
