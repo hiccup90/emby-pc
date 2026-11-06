@@ -582,6 +582,29 @@ QUrl EmbyClient::directStreamUrl(const QString &itemId,
     return url;
 }
 
+QUrl EmbyClient::resolveMediaUrl(const QString &rawUrl) const
+{
+    const QString raw = rawUrl.trimmed();
+    if (raw.isEmpty())
+        return {};
+    QUrl url(raw);
+    if (url.scheme().isEmpty()) {
+        const QUrlQuery originalQuery(url);
+        const QString path = url.path();
+        url = buildUrl(path.startsWith(QLatin1Char('/')) ? path : QStringLiteral("/") + path);
+        if (!originalQuery.isEmpty())
+            url.setQuery(originalQuery);
+    }
+    if (!url.isValid())
+        return {};
+    QUrlQuery query(url);
+    bool changed = false;
+    removeTokenQueryItems(query, &changed);
+    if (changed)
+        url.setQuery(query);
+    return url;
+}
+
 QUrl EmbyClient::imageUrl(const QString &itemId, const QString &imageType,
                            const QString &imageTag, int maxWidth, int maxHeight) const
 {
@@ -604,8 +627,20 @@ QUrl EmbyClient::imageUrl(const QString &itemId, const QString &imageType,
 
 QUrl EmbyClient::playbackUrl(const QString &itemId, const MediaSourceInfo &source) const
 {
-    if (source.supportsDirectPlay && !source.id.isEmpty())
-        return directStreamUrl(itemId, source.id);
+    // T48：SupportsDirectPlay 时优先使用服务器给的 DirectStreamUrl（实体文件通常是
+    // /videos/{id}/original.mp4?DeviceId=...&MediaSourceId=...&PlaySessionId=...）。
+    // 以前无条件用自拼 static URL，实体库因此可能失败而 strm 正常。
+    // resolveMediaUrl 会解析相对路径并只去掉 token query，保留 DeviceId/MediaSourceId/
+    // PlaySessionId。
+    if (source.supportsDirectPlay) {
+        if (!source.directStreamUrl.trimmed().isEmpty()) {
+            const QUrl serverUrl = resolveMediaUrl(source.directStreamUrl);
+            if (!serverUrl.isEmpty() && serverUrl.isValid())
+                return serverUrl;
+        }
+        if (!source.id.isEmpty())
+            return directStreamUrl(itemId, source.id);
+    }
 
     const QString negotiated =
         !source.directStreamUrl.isEmpty() ? source.directStreamUrl : source.transcodingUrl;

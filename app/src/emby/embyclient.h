@@ -144,6 +144,9 @@ public:
     /// Server-provided URLs are resolved against the base URL; token query
     /// parameters (api_key, X-Emby-Token) are stripped from them.
     QUrl playbackUrl(const QString &itemId, const MediaSourceInfo &source) const;
+    /// T48：把 PlaybackInfo 返回的原始 DirectStreamUrl/TranscodingUrl 解析为绝对 URL，
+    /// 并去除 query 中的 token；供直连失败后的备选 URL 使用。
+    QUrl resolveMediaUrl(const QString &rawUrl) const;
 
     /// Headers for fetching media: "Authorization: MediaBrowser ...".
     QList<QPair<QString, QString>> streamHeaders() const;

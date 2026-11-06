@@ -34,6 +34,7 @@
 #include <QMetaObject>
 #include <QMessageBox>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
@@ -194,6 +195,13 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // eventFilter（mpvKeyNameFromEvent → keypress），不再有 native key 路径。
     preparePlayerOverlays();
 
+    // T48：Emby 播放 8 秒无 file-loaded 视为失败，自动尝试备选 URL。
+    m_playbackWatchdog = new QTimer(this);
+    m_playbackWatchdog->setSingleShot(true);
+    m_playbackWatchdog->setInterval(8000);
+    connect(m_playbackWatchdog, &QTimer::timeout, this,
+            &PlayerController::handlePlaybackTimeout);
+
     m_progressTimer = new QTimer(this);
     m_progressTimer->setInterval(10000); // T29：按规格 10 秒；pause/seek/切轨仍立即上报
     connect(m_progressTimer, &QTimer::timeout, this, [this]() {
@@ -236,6 +244,9 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             m_playerPage->setEpisodeInfo(title, m_currentSubtitle);
     });
     connect(m_player, &MpvPlayer::fileLoaded, this, [this]() {
+        m_playbackFileLoaded = true;
+        if (m_playbackWatchdog)
+            m_playbackWatchdog->stop();
         m_playerPage->setPlaying(true);
         ensurePlayerControlsVisible();
         if (m_pendingSeekSeconds > 0.0) {
@@ -250,6 +261,17 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         QTimer::singleShot(700, this, &PlayerController::refreshTracks);
     });
     connect(m_player, &MpvPlayer::endReached, this, [this]() {
+        const bool hadLoaded = m_playbackFileLoaded;
+        if (m_playbackWatchdog)
+            m_playbackWatchdog->stop();
+        if (!hadLoaded && !m_embyItemId.isEmpty() && !m_playbackCandidates.isEmpty()) {
+            // 首次直连失败时 mpv 可能先 ERROR 再 END_FILE；不要把失败当成正常结束去切集。
+            qWarning() << "PlayerController::endReached without file-loaded item"
+                       << m_embyItemId << "candidate" << m_playbackCandidateIndex + 1
+                       << "/" << m_playbackCandidates.size();
+            return;
+        }
+        m_playbackFileLoaded = false;
         if (!m_embyItemId.isEmpty() && m_reporting) {
             reportPlaybackStopped();
             if (m_autoNextEpisode && m_episodeIndex >= 0
@@ -262,6 +284,15 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         m_playerPage->setPlaying(false);
     });
     connect(m_player, &MpvPlayer::errorOccurred, this, [this](const QString &message) {
+        qWarning() << "PlayerController::mpv error" << message
+                   << "item" << m_embyItemId << "url"
+                   << sanitizedPlaybackUrl(m_currentPlaybackUrl)
+                   << "fileLoaded" << m_playbackFileLoaded;
+        if (!m_embyItemId.isEmpty() && !m_playbackFileLoaded
+            && !m_playbackCandidates.isEmpty()) {
+            tryNextPlaybackCandidate(QStringLiteral("mpv error: %1").arg(message));
+            return;
+        }
         showStatus(message, 5000);
     });
     // 全屏状态由 ui::MainWindow 统一维护（m_fullscreen/chrome/stack）。mpv 内的
@@ -656,6 +687,13 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
 
     if (!ensurePlayer())
         return;
+    if (m_playbackWatchdog)
+        m_playbackWatchdog->stop();
+    m_playbackCandidates.clear();
+    m_playbackCandidateIndex = 0;
+    m_currentPlaybackUrl.clear();
+    m_playbackFileLoaded = false;
+    m_playbackFailurePrompted = false;
     m_lastKnownPositionSeconds = 0.0;
 
     const QFileInfo firstInfo(files.first());
@@ -1036,16 +1074,60 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
         return;
     }
 
-    const QUrl url = m_emby->playbackUrl(itemId, *source);
-    if (!url.isValid() || url.isEmpty()) {
-        showStatus(tr("无法构造播放地址"), 4000);
-        return;
-    }
-
     const QString playMethod = source->supportsDirectPlay
                                    ? QStringLiteral("DirectPlay")
                                    : (source->supportsDirectStream ? QStringLiteral("DirectStream")
                                                                    : QStringLiteral("Transcode"));
+
+    // T48：候选 URL。直连优先服务器 DirectStreamUrl（playbackUrl 内已优先），
+    // 再补自拼 static 和服务器原始 URL；首次失败自动切下一个。
+    QList<QUrl> candidateUrls;
+    auto addCandidate = [&candidateUrls](const QUrl &url) {
+        if (!url.isValid() || url.isEmpty())
+            return;
+        const QString text = url.toString();
+        for (const QUrl &existing : candidateUrls) {
+            if (existing.toString() == text)
+                return;
+        }
+        candidateUrls.append(url);
+    };
+    addCandidate(m_emby->playbackUrl(itemId, *source));
+    addCandidate(m_emby->directStreamUrl(itemId, source->id));
+    addCandidate(m_emby->resolveMediaUrl(source->directStreamUrl));
+    addCandidate(m_emby->resolveMediaUrl(source->transcodingUrl));
+
+    QStringList candidates;
+    for (const QUrl &candidate : candidateUrls)
+        candidates.append(candidate.toString());
+    if (candidates.isEmpty()) {
+        qWarning() << "PlaybackInfo: no URL item=" << itemId << "method=" << playMethod
+                   << "sourceId=" << source->id;
+        showStatus(tr("无法构造播放地址"), 4000);
+        handlePlaybackFailure(QStringLiteral("no candidate URL"));
+        return;
+    }
+
+    const emby::MediaStream *video = source->videoStream();
+    const emby::MediaStream *audio = source->audioStream();
+    qInfo() << "PlaybackInfo: item" << itemId << "title" << title << "method" << playMethod
+            << "supportsDirectPlay" << source->supportsDirectPlay
+            << "supportsDirectStream" << source->supportsDirectStream
+            << "supportsTranscoding" << source->supportsTranscoding
+            << "mediaSourceId" << source->id
+            << "hasDirectStreamUrl" << !source->directStreamUrl.isEmpty()
+            << "hasTranscodingUrl" << !source->transcodingUrl.isEmpty()
+            << "url" << sanitizedPlaybackUrl(candidates.first())
+            << "runTimeTicks" << source->runTimeTicks << "container" << source->container
+            << "videoCodec" << (video ? video->codec : QString())
+            << "videoSize" << (video ? QSize(video->width, video->height) : QSize())
+            << "audioCodec" << (audio ? audio->codec : QString())
+            << "audioChannels" << (audio ? audio->channels : 0)
+            << "candidates" << candidates.size();
+    for (int i = 0; i < candidates.size(); ++i) {
+        qInfo() << "PlaybackInfo: candidate" << i << "/" << candidates.size()
+                << sanitizedPlaybackUrl(candidates.at(i));
+    }
 
     if (m_reporting)
         reportPlaybackStopped();
@@ -1067,7 +1149,11 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
         m_playerPage->setPosition(0, source->runTimeTicks / 10000);
     m_lastKnownPositionSeconds = 0.0;
     m_pendingSeekSeconds = startPositionTicks > 0 ? secondsFromTicks(startPositionTicks) : 0.0;
-    m_player->loadPlaylist({url.toString()}, 0);
+    m_playbackCandidates = candidates;
+    m_playbackCandidateIndex = 0;
+    m_playbackFileLoaded = false;
+    m_playbackFailurePrompted = false;
+    startPlaybackCandidate(0);
 
     showPlayerPage();
     m_playerPage->setEpisodeInfo(title.isEmpty() ? itemId : title, m_currentSubtitle);
@@ -1078,6 +1164,92 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
     m_window->setWindowTitle(QStringLiteral("Emby PC — %1").arg(title.isEmpty() ? itemId : title));
     reportPlaybackStart();
     showStatus(tr("开始播放：%1").arg(playMethod), 2500);
+}
+
+QString PlayerController::sanitizedPlaybackUrl(const QString &urlString) const
+{
+    QUrl url(urlString);
+    if (!url.isValid() || url.isEmpty())
+        return {};
+    QString result = url.scheme() + QStringLiteral("://") + url.host();
+    if (url.port() > 0)
+        result += QStringLiteral(":") + QString::number(url.port());
+    result += url.path();
+    return result;
+}
+
+void PlayerController::startPlaybackCandidate(int index)
+{
+    if (!m_player || index < 0 || index >= m_playbackCandidates.size())
+        return;
+    m_playbackCandidateIndex = index;
+    m_currentPlaybackUrl = m_playbackCandidates.at(index);
+    m_playbackFileLoaded = false;
+    qInfo() << "PlayerController::playback candidate start" << index + 1 << "/"
+            << m_playbackCandidates.size() << "url"
+            << sanitizedPlaybackUrl(m_currentPlaybackUrl);
+    m_player->loadPlaylist({m_currentPlaybackUrl}, 0);
+    if (m_playbackWatchdog)
+        m_playbackWatchdog->start(8000);
+}
+
+void PlayerController::tryNextPlaybackCandidate(const QString &reason)
+{
+    if (m_playbackFileLoaded)
+        return;
+    if (m_playbackWatchdog)
+        m_playbackWatchdog->stop();
+    if (m_playbackCandidateIndex + 1 < m_playbackCandidates.size()) {
+        qWarning() << "PlayerController::playback candidate failed" << reason
+                   << "retry next" << m_playbackCandidateIndex + 2 << "/"
+                   << m_playbackCandidates.size();
+        startPlaybackCandidate(m_playbackCandidateIndex + 1);
+        return;
+    }
+    handlePlaybackFailure(reason);
+}
+
+void PlayerController::handlePlaybackTimeout()
+{
+    if (m_playbackFileLoaded || m_embyItemId.isEmpty())
+        return;
+    qWarning() << "PlayerController::playback watchdog 8s no file-loaded item"
+               << m_embyItemId << "url"
+               << sanitizedPlaybackUrl(m_currentPlaybackUrl);
+    tryNextPlaybackCandidate(QStringLiteral("8s timeout without file-loaded"));
+}
+
+void PlayerController::handlePlaybackFailure(const QString &reason)
+{
+    if (m_playbackFileLoaded)
+        return;
+    if (m_playbackWatchdog)
+        m_playbackWatchdog->stop();
+
+    QString mpvError = m_player ? m_player->getPropertyString("error") : QString();
+    static const QRegularExpression tokenPattern(
+        QStringLiteral("(?i)((?:api_key|X-Emby-Token|Token|Authorization)\\s*[=:]\\s*)[^&,\\s]+"));
+    mpvError.replace(tokenPattern, QStringLiteral("\\1<redacted>"));
+    qWarning() << "PlayerController::playback FAILED reason" << reason
+               << "item" << m_embyItemId << "mediaSourceId" << m_mediaSourceId
+               << "method" << m_playMethod << "candidate"
+               << m_playbackCandidateIndex + 1 << "/" << m_playbackCandidates.size()
+               << "url" << sanitizedPlaybackUrl(m_currentPlaybackUrl)
+               << "mpvError" << mpvError
+               << "httpStatus" << (m_player ? m_player->getPropertyString("http-status") : QString());
+
+    if (m_playbackFailurePrompted)
+        return;
+    m_playbackFailurePrompted = true;
+    showStatus(tr("播放失败，已记录诊断，请导出 app.log/mpv.log"), 8000);
+    if (qEnvironmentVariableIntValue("EMBY_PC_TEST_NO_DIALOG") > 0)
+        return;
+    auto *box = new QMessageBox(
+        QMessageBox::Warning, tr("播放失败"),
+        tr("播放失败，已记录诊断。\n请到设置页导出 app.log / mpv.log 反馈。"),
+        QMessageBox::Ok, m_window);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->open();
 }
 
 void PlayerController::showPlayerPage()
@@ -1583,6 +1755,13 @@ void PlayerController::clearEmbySession()
     m_episodeCache.clear();
     ++m_episodeRequestSerial;
     m_episodeIndex = -1;
+    if (m_playbackWatchdog)
+        m_playbackWatchdog->stop();
+    m_playbackCandidates.clear();
+    m_playbackCandidateIndex = 0;
+    m_currentPlaybackUrl.clear();
+    m_playbackFileLoaded = false;
+    m_playbackFailurePrompted = false;
     if (m_playerPage)
         m_playerPage->setEpisodeNavigationEnabled(false, false);
     m_pendingSeekSeconds = 0.0;

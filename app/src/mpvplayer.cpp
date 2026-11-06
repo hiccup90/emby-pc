@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QLibrary>
+#include <QRegularExpression>
 #include <QStandardPaths>
 
 #include <vector>
@@ -111,6 +112,23 @@ QString escapeMpvListValue(const QString &value)
         escaped.append(character);
     }
     return escaped;
+}
+
+// T48：日志脱敏。mpv 的 log-message 可能带 http 请求头/URL token，
+// 写 app.log 前统一去掉 Authorization/api_key/X-Emby-Token 的值。
+QString redactSensitiveLog(const QString &text)
+{
+    QString redacted = text;
+    static const QRegularExpression auth(
+        QStringLiteral("(?i)(Authorization\\s*:\\s*)[^\\r\\n]+"));
+    redacted.replace(auth, QStringLiteral("\\1<redacted>"));
+    static const QRegularExpression bearer(
+        QStringLiteral("(?i)(Bearer\\s+)[A-Za-z0-9._~+/=-]+"));
+    redacted.replace(bearer, QStringLiteral("\\1<redacted>"));
+    static const QRegularExpression tokens(
+        QStringLiteral("(?i)((?:api_key|X-Emby-Token|X-MediaBrowser-Token|Token)\\s*[=:]\\s*)[^&,\\s;]+"));
+    redacted.replace(tokens, QStringLiteral("\\1<redacted>"));
+    return redacted;
 }
 
 // mpv.log 与 app.log 同目录（QStandardPaths::AppLocalDataLocation），
@@ -418,9 +436,29 @@ void MpvPlayer::handleEvent(mpv_event *event)
     case MPV_EVENT_FILE_LOADED:
         emit fileLoaded();
         break;
-    case MPV_EVENT_END_FILE:
+    case MPV_EVENT_END_FILE: {
+        auto *end = static_cast<mpv_event_end_file *>(event->data);
+        if (end && end->reason == MPV_END_FILE_REASON_ERROR && end->error < 0) {
+            const char *text = api().errorString ? api().errorString(end->error) : nullptr;
+            emit errorOccurred(QStringLiteral("mpv end-file error: %1")
+                                   .arg(QString::fromUtf8(text ? text : "unknown")));
+        }
         emit endReached();
         break;
+    }
+    case MPV_EVENT_LOG_MESSAGE: {
+        auto *message = static_cast<mpv_event_log_message *>(event->data);
+        if (!message || !message->level || !message->text)
+            break;
+        const QString level = QString::fromUtf8(message->level);
+        if (level == QLatin1String("error") || level == QLatin1String("fatal")) {
+            const QString prefix = message->prefix ? QString::fromUtf8(message->prefix) : QString();
+            const QString text = redactSensitiveLog(QString::fromUtf8(message->text).trimmed());
+            qWarning() << "mpv log" << prefix << level << text;
+            emit errorOccurred(QStringLiteral("mpv: %1").arg(text));
+        }
+        break;
+    }
     case MPV_EVENT_CLIENT_MESSAGE: {
         auto *message = static_cast<mpv_event_client_message *>(event->data);
         if (!message || message->num_args <= 0 || !message->args || !message->args[0])

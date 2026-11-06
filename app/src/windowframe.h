@@ -49,6 +49,10 @@ public:
     void beginSystemMove();
     void beginSystemResize(Qt::Edges edges);
 
+    // T46 测试：与 WM_NCHITTEST 相同的边缘判定；最大化/全屏返回空。
+    static Qt::Edges edgeHitTestForTest(const QSize &clientSize, const QPoint &point,
+                                        int dpi, bool maximized);
+
 signals:
     void maximizedChanged(bool maximized);
 

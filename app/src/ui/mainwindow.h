@@ -138,11 +138,16 @@ private:
     void updateWindowChrome();
     void restoreWindowState();
     void saveWindowState();
+    void rememberFullscreenWindowState();
+    void restoreWindowedStateFromFullscreen();
     void applySettings();
     void clearImageCache();
     void updateEpisodeNavigation();
     void restoreSidebarWidth();
     void saveSidebarWidth();
+    // T47：全屏/播放模式隐藏 sidebar 前保存 splitter/sidebar 布局，退出后恢复。
+    void rememberSidebarLayoutForRestore();
+    void restoreSidebarLayoutAfterChrome();
 
     // 数据源
     void applyMockMode();
@@ -213,6 +218,9 @@ private:
 
     QList<LibrarySection> m_sections;
     QList<int> m_sidebarSectionIndexes;
+    QList<int> m_sidebarSizesBeforeHide;
+    int m_sidebarWidthBeforeHide = 0;
+    bool m_sidebarLayoutRemembered = false;
     int m_currentSection = -1;
     int m_libraryStart = 0;
     int m_libraryGeneration = 0;
@@ -229,6 +237,8 @@ private:
     int m_fullscreenReturnIndex = StackHome;
     int m_playerReturnIndex = StackHome;
     bool m_fullscreen = false;
+    bool m_fullscreenWasMaximized = false;
+    QRect m_fullscreenNormalGeometry;
     bool m_playerMode = false;
 
     QList<TrackInfo> m_subtitleTracks;

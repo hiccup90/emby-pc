@@ -466,6 +466,39 @@ int runSelfTest(QApplication &app)
     window.navigateTo(ui::MainWindow::Page::Home);
     settle(app, 80);
 
+    // T47：窗口缩放后首页预览列宽/滚动范围跟随，不整页重建。
+    auto *sectionsScroll = homePage ? homePage->findChild<QScrollArea *>(
+                                          QStringLiteral("HomeSectionsScroll"))
+                                    : nullptr;
+    int posterWidthAt1280 = 0;
+    if (homePage) {
+        for (QLabel *thumb : homePage->findChildren<QLabel *>(
+                                   QStringLiteral("HomeSectionThumbnail"))) {
+            if (thumb->height() > thumb->width()) {
+                posterWidthAt1280 = thumb->width();
+                break;
+            }
+        }
+    }
+    window.resize(960, 600);
+    settle(app, 280);
+    int posterWidthAt960 = 0;
+    if (homePage) {
+        for (QLabel *thumb : homePage->findChildren<QLabel *>(
+                                   QStringLiteral("HomeSectionThumbnail"))) {
+            if (thumb->height() > thumb->width()) {
+                posterWidthAt960 = thumb->width();
+                break;
+            }
+        }
+    }
+    check(sectionsScroll && posterWidthAt1280 > 0 && posterWidthAt960 > 0
+              && posterWidthAt960 < posterWidthAt1280
+              && sectionsScroll->verticalScrollBar()->maximum() > 0,
+          QStringLiteral("T47 首页 resize 更新海报列宽/滚动范围"));
+    window.resize(1280, 760);
+    settle(app, 200);
+
     // 滚动 200 项到底部，测量绘制耗时
     if (grid) {
         QElapsedTimer timer;
@@ -520,6 +553,7 @@ int runSelfTest(QApplication &app)
           QStringLiteral("T44 详情海报 188x282"));
 
     // 播放页与信号
+    const int sidebarWidthBeforePlayer = window.mainSplitter()->sizes().value(0);
     window.openPlayerDemo(firstId, 1, 2);
     check(window.currentStackIndex() == 4, QStringLiteral("播放页 stack=4"));
     auto *player = window.findChild<ui::PlayerPage *>();
@@ -689,6 +723,17 @@ int runSelfTest(QApplication &app)
 
     // 播放页返回
     player->findChild<QPushButton *>(QStringLiteral("PlayerBackButton"))->click();
+    settle(app, 220);
+    auto *restoredSplitter = window.mainSplitter();
+    auto *restoredSidebar = window.findChild<QWidget *>(QStringLiteral("Sidebar"));
+    const int restoredSidebarWidth = restoredSplitter->sizes().value(0);
+    check(!window.isFullScreen() && !window.isMaximized()
+              && restoredSidebar && restoredSidebar->isVisible()
+              && restoredSidebarWidth >= 180 && restoredSidebarWidth <= 320
+              && qAbs(restoredSidebarWidth - sidebarWidthBeforePlayer) <= 2,
+          QStringLiteral("T47 全屏/播放模式退出恢复 splitter/sidebar 宽度（%1→%2）")
+              .arg(sidebarWidthBeforePlayer)
+              .arg(restoredSidebarWidth));
     check(window.currentStackIndex() == 3,
           QStringLiteral("播放页返回详情页（stack=3，实际 %1）").arg(window.currentStackIndex()));
 

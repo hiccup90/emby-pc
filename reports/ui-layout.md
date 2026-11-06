@@ -88,3 +88,12 @@
 - `emby-ui-demo --selftest`：**173 项 ALL PASS**。
 - T40 新增覆盖：无 QMenuBar、最近添加标题点击跳转（stack=1）、非继续观看行 6–8 预览且无横向滚动、点击标题发出 sectionActivated、无演示徽标/VideoHost 说明文字。
 - T39 性能测试仍保留：懒加载 built< total、5×18 首屏 182ms、resize 不重建、滚动增量到 5/5。
+
+## 11. T47 回归修复：全屏退出侧边栏 / 首页缩放滚动
+
+- 全屏/播放模式进入前保存 `QSplitter::sizes()` 与 `Sidebar::width()`；退出后先等窗口状态恢复，再 `show()` sidebar，按 180–320 clamp 原宽度、`setSizes()`、`layout()->activate()`，并在 0ms/60ms 校正一次，避免 QSplitter 把 sidebar 分到 0。
+- T46 恢复窗口状态为 `showNormal + WindowNoState`（即使全屏前最大化也回普通窗口），解决最大化状态无边缘缩放光标；T47 在该恢复点后接 sidebar 恢复。
+- 窗口 resize 时 clamp sidebar 宽度到 180–320；内容列自适应，不重建。
+- HomeView resize：debounce 后仅 relayout 已建预览卡、重新激活 section/content 布局、更新滚动范围并增量补建可见 section；不整页重建。
+- 回归测试：全屏/播放模式退出 `splitter/sidebar` 宽度恢复（240→240）；窗口 1280→960 时首页海报宽度变小、垂直滚动范围 >0。
+- 验证：`emby-ui-demo --selftest` **183 项 ALL PASS**；干净目录 Release 构建 exit 0；0 warning。

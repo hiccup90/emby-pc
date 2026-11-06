@@ -76,6 +76,12 @@ public:
     // T35：播放模式边缘 5px 的 Qt 层缩放命中。返回空表示不在边缘/全屏。
     Qt::Edges edgeResizeEdgesAt(const QPoint &position) const;
 
+    // T46：空白区左键拖动判定；移动超过 4px 才触发 startSystemMove。
+    static bool windowDragThresholdExceeded(const QPoint &pressGlobal,
+                                            const QPoint &currentGlobal);
+    bool windowDragStartedForTest() const { return m_dragStarted; }
+    void refreshOverlayGeometry();
+
     // true：浮层是独立顶层窗口（默认）；false：EMBY_PC_PLAYER_OVERLAY=0 的页面内兜底。
     bool usesTopLevelOverlay() const { return m_topLevelOverlay; }
     bool overlaysVisible() const { return m_overlaysVisible; }
@@ -110,6 +116,9 @@ private:
     void ensureHostWindow();
     void applyVideoMargins();
     bool tryStartEdgeResize(const QPoint &globalPosition);
+    bool handleWindowDragPress(const QPoint &globalPosition);
+    bool handleWindowDragMove(const QPoint &globalPosition, const char *source);
+    void resetWindowDrag();
     void syncOverlayGeometry();
     void updateDockedOverlayGeometry();
     void showOverlays();
@@ -163,6 +172,11 @@ private:
     QElapsedTimer m_lastInteraction;
     bool m_hasTestCursor = false;
     QPoint m_testCursorPos;
+
+    // T46：播放模式无标题栏拖动状态。
+    QPoint m_dragPressGlobal;
+    bool m_dragPressed = false;
+    bool m_dragStarted = false;
 };
 
 } // namespace ui

@@ -189,6 +189,25 @@ void WindowFrame::beginSystemResize(Qt::Edges edges)
         handle->startSystemResize(edges);
 }
 
+Qt::Edges WindowFrame::edgeHitTestForTest(const QSize &clientSize, const QPoint &point,
+                                          int dpi, bool maximized)
+{
+    if (maximized || clientSize.isEmpty())
+        return {};
+    const qreal scale = qMax(1, dpi) / 96.0;
+    const int border = qMax(6, qRound(8.0 * scale));
+    Qt::Edges edges;
+    if (point.x() < border)
+        edges |= Qt::LeftEdge;
+    if (point.x() >= clientSize.width() - border)
+        edges |= Qt::RightEdge;
+    if (point.y() < border)
+        edges |= Qt::TopEdge;
+    if (point.y() >= clientSize.height() - border)
+        edges |= Qt::BottomEdge;
+    return edges;
+}
+
 #ifdef Q_OS_WIN
 
 void WindowFrame::installNativeStyles()
@@ -349,12 +368,21 @@ bool WindowFrame::handleNativeMessage(void *message, qintptr *result)
         const qreal scale = dpi / 96.0;
         const int border = qMax(6, qRound(8.0 * scale));
         const bool maximized = ::IsZoomed(hwnd) != FALSE;
+        if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_HITTEST")
+            || qEnvironmentVariableIsSet("EMBY_PC_DEBUG_GEOMETRY")) {
+            qInfo() << "WindowFrame: WM_NCHITTEST point" << QPoint(point.x, point.y)
+                    << "client" << QSize(width, height) << "state"
+                    << int(m_window->windowState()) << "maximized" << maximized
+                    << "fullscreen" << m_window->isFullScreen() << "border" << border;
+        }
 
-        if (!maximized) {
-            const bool left = point.x < border;
-            const bool right = point.x >= width - border;
-            const bool top = point.y < border;
-            const bool bottom = point.y >= height - border;
+        const Qt::Edges edgeHit = edgeHitTestForTest(QSize(width, height), QPoint(point.x, point.y),
+                                                       dpi, maximized);
+        if (edgeHit) {
+            const bool left = edgeHit.testFlag(Qt::LeftEdge);
+            const bool right = edgeHit.testFlag(Qt::RightEdge);
+            const bool top = edgeHit.testFlag(Qt::TopEdge);
+            const bool bottom = edgeHit.testFlag(Qt::BottomEdge);
             if (left && top) { *result = HTTOPLEFT; return true; }
             if (right && top) { *result = HTTOPRIGHT; return true; }
             if (left && bottom) { *result = HTBOTTOMLEFT; return true; }

@@ -30,6 +30,7 @@
 #include <QStandardPaths>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QPushButton>
@@ -330,6 +331,18 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
     if (m_titleBar && titleBarVisible())
         syncTitleBarGeometry();
+    // T47：窗口缩放时 sidebar 保持 180–320 的宽度；内容列自适应，不把 sidebar 拉成 0/超宽。
+    if (m_splitter && m_sidebar && !m_sidebar->isHidden() && !m_sidebarLayoutRemembered
+        && m_splitter->count() >= 2) {
+        const int current = m_sidebar->width();
+        const int clamped = qBound(tokens::SidebarMinWidth, current, tokens::SidebarMaxWidth);
+        if (clamped != current) {
+            const int total = qMax(clamped + 1, m_splitter->width());
+            m_splitter->setSizes({clamped, qMax(1, total - clamped)});
+            if (m_splitter->layout())
+                m_splitter->layout()->activate();
+        }
+    }
 }
 
 void MainWindow::restoreSidebarWidth()
@@ -359,6 +372,54 @@ void MainWindow::saveSidebarWidth()
         return;
     QSettings settings;
     settings.setValue(QStringLiteral("ui/sidebarWidth"), m_sidebar->width());
+}
+
+void MainWindow::rememberSidebarLayoutForRestore()
+{
+    if (!m_splitter || m_splitter->count() < 2 || !m_sidebar)
+        return;
+    if (m_sidebarLayoutRemembered || m_sidebar->isHidden())
+        return;
+    m_sidebarSizesBeforeHide = m_splitter->sizes();
+    m_sidebarWidthBeforeHide = m_sidebar->width();
+    m_sidebarLayoutRemembered = true;
+    qInfo() << "MainWindow: remember sidebar layout width=" << m_sidebarWidthBeforeHide
+            << "splitter=" << m_sidebarSizesBeforeHide;
+}
+
+void MainWindow::restoreSidebarLayoutAfterChrome()
+{
+    if (!m_sidebarLayoutRemembered || !m_splitter || m_splitter->count() < 2 || !m_sidebar)
+        return;
+    m_sidebarLayoutRemembered = false;
+    if (m_sidebarSaveTimer)
+        m_sidebarSaveTimer->stop();
+
+    m_sidebar->show();
+    const int width = qBound(tokens::SidebarMinWidth,
+                             m_sidebarWidthBeforeHide > 0 ? m_sidebarWidthBeforeHide
+                                                          : tokens::SidebarDefaultWidth,
+                             tokens::SidebarMaxWidth);
+    // 退出全屏后 splitter 可能仍按全屏尺寸/隐藏状态分配，先把 sidebar 固定回原宽，
+    // 再在下一次事件循环重新按当前窗口宽度校正；不重建内容。
+    const auto applyWidth = [this, width]() {
+        if (!m_splitter || m_splitter->count() < 2 || !m_sidebar || m_sidebar->isHidden())
+            return;
+        const int total = qMax(width + 1, m_splitter->width());
+        m_splitter->setSizes({width, qMax(1, total - width)});
+        if (m_splitter->layout())
+            m_splitter->layout()->activate();
+        m_splitter->updateGeometry();
+        m_sidebar->updateGeometry();
+        if (m_player)
+            m_player->refreshOverlayGeometry();
+    };
+    applyWidth();
+    QTimer::singleShot(0, this, applyWidth);
+    QTimer::singleShot(60, this, applyWidth);
+    qInfo() << "MainWindow: restore sidebar layout width=" << width
+            << "splitterWidth=" << m_splitter->width()
+            << "sizes=" << m_splitter->sizes();
 }
 
 void MainWindow::applySettings()
@@ -1230,6 +1291,7 @@ void MainWindow::setPlayerMode(bool enabled)
         if (!m_playerMode) {
             m_playerReturnIndex = m_stack->currentIndex();
             m_playerMode = true;
+            rememberSidebarLayoutForRestore();
         }
         m_sidebar->hide();
         m_topBar->hide();
@@ -1243,11 +1305,16 @@ void MainWindow::setPlayerMode(bool enabled)
 
     if (!m_playerMode)
         return;
-    if (m_fullscreen) {
-        // T17 可能在全屏播放中直接结束播放：先退出全屏，才能恢复窗口 chrome。
-        showNormal();
+    if (m_fullscreen || isFullScreen()) {
+        // T46：全屏退出统一走 restoreWindowedStateFromFullscreen，先恢复窗口状态/chrome，
+        // 再刷新播放页 overlay，避免残留全屏尺寸的浮层或黑边。
         m_fullscreen = false;
+        restoreWindowedStateFromFullscreen();
         m_player->setFullscreen(false);
+        QTimer::singleShot(0, this, [this]() {
+            if (m_player)
+                m_player->refreshOverlayGeometry();
+        });
     }
     m_playerMode = false;
     m_player->setPlayerModeActive(false);
@@ -1259,7 +1326,35 @@ void MainWindow::setPlayerMode(bool enabled)
                                    static_cast<int>(StackPlayer));
     m_stack->setCurrentIndex(returnIndex);
     m_player->setFullscreen(m_fullscreen);
+    restoreSidebarLayoutAfterChrome();
     emit playerModeChanged(false);
+}
+
+void MainWindow::rememberFullscreenWindowState()
+{
+    m_fullscreenWasMaximized = isMaximized();
+    m_fullscreenNormalGeometry = m_fullscreenWasMaximized ? normalGeometry() : geometry();
+    qInfo() << "MainWindow::rememberFullscreenWindowState maximized="
+            << m_fullscreenWasMaximized << "normalGeometry=" << m_fullscreenNormalGeometry
+            << "geometry=" << geometry() << "windowState=" << int(windowState());
+}
+
+void MainWindow::restoreWindowedStateFromFullscreen()
+{
+    const bool wasMaximized = m_fullscreenWasMaximized;
+    const QRect normal = m_fullscreenNormalGeometry;
+    // T46/lead：全屏退出后必须回到普通窗口状态；否则最大化状态没有边缘缩放
+    // 热区/光标，主页看起来“根本不能缩放”。先 showNormal，再强制 NoState。
+    m_fullscreenWasMaximized = false;
+    showNormal();
+    setWindowState(Qt::WindowNoState);
+    if (normal.isValid())
+        setGeometry(normal);
+    qInfo() << "MainWindow::restoreWindowedStateFromFullscreen wasMaximized=" << wasMaximized
+            << "restoredNormal=" << normal << "normalGeometry=" << normalGeometry()
+            << "isFullScreen=" << isFullScreen() << "isMaximized=" << isMaximized()
+            << "geometry=" << geometry() << "windowState=" << int(windowState());
+    // T47：sidebar/splitter 恢复调用点（窗口状态已恢复后）。
 }
 
 void MainWindow::toggleFullscreen()
@@ -1267,9 +1362,9 @@ void MainWindow::toggleFullscreen()
     qInfo() << "MainWindow::toggleFullscreen enter isFullScreen=" << isFullScreen()
             << "m_fullscreen=" << m_fullscreen << "m_playerMode=" << m_playerMode
             << "geometry=" << geometry();
-    if (m_fullscreen) {
-        showNormal();
+    if (m_fullscreen || isFullScreen()) {
         m_fullscreen = false;
+        restoreWindowedStateFromFullscreen();
         m_player->setFullscreen(false);
         if (!m_playerMode) {
             m_player->setPlayerModeActive(false);
@@ -1278,12 +1373,22 @@ void MainWindow::toggleFullscreen()
             statusBar()->show();
             updateWindowChrome();
             m_stack->setCurrentIndex(m_fullscreenReturnIndex);
+            restoreSidebarLayoutAfterChrome();
+        } else {
+            updateWindowChrome();
         }
+        QTimer::singleShot(0, this, [this]() {
+            if (m_player)
+                m_player->refreshOverlayGeometry();
+        });
         qInfo() << "MainWindow::toggleFullscreen leave-fullscreen isFullScreen=" << isFullScreen()
-                << "m_fullscreen=" << m_fullscreen << "geometry=" << geometry();
+                << "m_fullscreen=" << m_fullscreen << "geometry=" << geometry()
+                << "windowState=" << int(windowState());
         return;
     }
 
+    rememberFullscreenWindowState();
+    rememberSidebarLayoutForRestore();
     m_fullscreenReturnIndex = m_stack->currentIndex();
     m_fullscreen = true;
     m_sidebar->hide();
@@ -1292,8 +1397,12 @@ void MainWindow::toggleFullscreen()
     updateWindowChrome();
     m_stack->setCurrentIndex(StackPlayer);
     m_player->setPlayerModeActive(true);
-    m_player->setFullscreen(true);
     showFullScreen();
+    m_player->setFullscreen(true);
+    QTimer::singleShot(0, this, [this]() {
+        if (m_player)
+            m_player->refreshOverlayGeometry();
+    });
     qInfo() << "MainWindow::toggleFullscreen enter-fullscreen isFullScreen=" << isFullScreen()
             << "m_fullscreen=" << m_fullscreen << "geometry=" << geometry();
 }

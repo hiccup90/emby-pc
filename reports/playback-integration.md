@@ -116,3 +116,53 @@ QT_QPA_PLATFORM=offscreen timeout 5 ./app/build-linux/emby-pc
 4. 剧集连续播放到一集结束，确认自动下一集并重新上报 Playing。
 5. 播放中返回详情页/按 Esc，确认停止播放并上报 Stopped（活动会话消失）。
 6. 若出现 401，确认弹出重新登录且 token 不在 URL/日志中。
+
+## T48 实体视频无法播放诊断与直连兜底
+
+> 任务：task-48 · 负责人：build-verifier · 日期：2026-11-06
+
+### 1. DirectPlay 优先服务器 DirectStreamUrl
+
+实测实体库 PlaybackInfo 返回：
+`SupportsDirectPlay=true, DirectStreamUrl=/videos/{id}/original.mp4?DeviceId=...&MediaSourceId=...&PlaySessionId=...`；
+旧逻辑无条件自拼 `/Videos/{id}/stream?static=true`。现改为：
+1) `supportsDirectPlay && DirectStreamUrl 非空` → `resolveMediaUrl()` 解析；
+2) 保留 DeviceId/MediaSourceId/PlaySessionId，去掉 api_key/X-Emby-Token；
+3) 为空才回退自拼 static URL；
+4) 候选顺序：playbackUrl → 自拼 directStream → 原始 DirectStreamUrl → TranscodingUrl；
+5) 首次 8 秒无 file-loaded / mpv error 自动试下一个，全部失败弹一次性提示。
+
+验证（无需 mpv）：
+```text
+PASS server DirectStreamUrl path preferred
+PASS DeviceId preserved
+PASS MediaSourceId preserved
+PASS PlaySessionId preserved
+PASS api_key stripped
+PASS self static fallback
+PASS transcoding URL resolved/token stripped
+failures 0
+```
+
+### 2. PlaybackInfo 脱敏日志
+
+- 每个播放记录：method、supportsDirectPlay/Stream/Transcoding、mediaSourceId、
+  hasDirectStreamUrl/TranscodingUrl、最终 URL scheme+host+path（不含 query）、
+  runTimeTicks、container、video codec/尺寸、audio codec/channels、candidates 数量。
+- 每个候选记录序号与脱敏 URL。
+
+### 3. 失败诊断
+
+- mpv 加载后启动 8 秒 watchdog；`file-loaded` 停止。
+- 超时或 `errorOccurred`/`MPV_EVENT_END_FILE` error：记录 item、mediaSourceId、method、
+  candidate、脱敏 URL、mpv `error`/`http-status`。
+- 全部候选失败：`showStatus` + 非模态一次性 QMessageBox：「播放失败，已记录诊断，请导出 app.log/mpv.log」；
+  `EMBY_PC_TEST_NO_DIALOG=1` 可在自动测试中跳过弹窗。
+- mpv 日志：`msg-level=all=v` 保留 HTTP 细节；`MPV_EVENT_LOG_MESSAGE` 的 error/fatal 文本经
+  `redactSensitiveLog()` 去掉 Authorization/api_key/Token 后再写 app.log。
+
+### 4. 待实机
+
+- 实体库 1050415：日志应出现 server DirectStreamUrl 候选、file-loaded；若失败自动 retry 自拼 URL，
+  最终日志包含 mpv error/http-status。
+- 失败时一次性提示，导出 app.log/mpv.log；日志中无 token/Authorization。

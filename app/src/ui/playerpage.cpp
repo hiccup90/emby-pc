@@ -193,6 +193,7 @@ void PlayerPage::createOverlayWindows()
         return overlay;
     };
     m_topBar = makeOverlay(QStringLiteral("PlayerTopBar"));
+    m_topBar->installEventFilter(this); // T46：顶层/页内顶栏空白区拖动窗口
     m_controlBar = makeOverlay(QStringLiteral("PlayerControlBar"));
 }
 
@@ -396,6 +397,47 @@ bool PlayerPage::tryStartEdgeResize(const QPoint &globalPosition)
     return true;
 }
 
+bool PlayerPage::windowDragThresholdExceeded(const QPoint &pressGlobal,
+                                                   const QPoint &currentGlobal)
+{
+    return (currentGlobal - pressGlobal).manhattanLength() > 4;
+}
+
+bool PlayerPage::handleWindowDragPress(const QPoint &globalPosition)
+{
+    if (!m_playerModeActive || m_fullscreen)
+        return false;
+    m_dragPressGlobal = globalPosition;
+    m_dragPressed = true;
+    m_dragStarted = false;
+    return true;
+}
+
+bool PlayerPage::handleWindowDragMove(const QPoint &globalPosition, const char *source)
+{
+    if (!m_dragPressed || m_dragStarted || !m_playerModeActive || m_fullscreen)
+        return false;
+    if (!windowDragThresholdExceeded(m_dragPressGlobal, globalPosition))
+        return false;
+
+    m_dragStarted = true;
+    QWindow *handle = window() ? window()->windowHandle() : nullptr;
+    const bool started = handle && handle->startSystemMove();
+    qInfo() << "PlayerPage::windowDrag source=" << source
+            << "press" << m_dragPressGlobal << "current" << globalPosition
+            << "distance" << (globalPosition - m_dragPressGlobal).manhattanLength()
+            << "startSystemMove" << started;
+    if (!started)
+        qWarning() << "PlayerPage::windowDrag startSystemMove failed source=" << source;
+    return true;
+}
+
+void PlayerPage::resetWindowDrag()
+{
+    m_dragPressed = false;
+    m_dragStarted = false;
+}
+
 void PlayerPage::mouseMoveEvent(QMouseEvent *event)
 {
     const Qt::Edges edges = edgeResizeEdgesAt(event->position().toPoint());
@@ -496,14 +538,25 @@ void PlayerPage::hideEvent(QHideEvent *event)
 
 bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == m_surface || watched == m_surfaceStack) {
+    if (watched == m_surface || watched == m_surfaceStack || watched == m_topBar) {
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->button() == Qt::LeftButton
-                && tryStartEdgeResize(mouseEvent->globalPosition().toPoint())) {
-                mouseEvent->accept();
-                return true;
+            if (mouseEvent->button() == Qt::LeftButton) {
+                if (watched != m_topBar
+                    && tryStartEdgeResize(mouseEvent->globalPosition().toPoint())) {
+                    mouseEvent->accept();
+                    return true;
+                }
+                handleWindowDragPress(mouseEvent->globalPosition().toPoint());
             }
+        } else if (event->type() == QEvent::MouseMove) {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->buttons() & Qt::LeftButton)
+                handleWindowDragMove(mouseEvent->globalPosition().toPoint(),
+                                     watched == m_topBar ? "topBar" : "video");
+        } else if (event->type() == QEvent::MouseButtonRelease
+                   || event->type() == QEvent::MouseButtonDblClick) {
+            resetWindowDrag();
         }
     }
 
@@ -577,6 +630,13 @@ void PlayerPage::applyVideoMargins()
         syncOverlayGeometry();
     else if (!m_topLevelOverlay)
         updateDockedOverlayGeometry();
+}
+
+void PlayerPage::refreshOverlayGeometry()
+{
+    applyVideoMargins();
+    if (m_playerModeActive)
+        syncOverlayGeometry();
 }
 
 void PlayerPage::syncOverlayGeometry()

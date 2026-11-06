@@ -195,3 +195,11 @@ failures 0
 
 - Linux app Debug 构建通过；`-Wall -Wextra` 无新增 warning。
 - 实机日志将出现 `PlayerPage::edgeResize`；若 `startSystemResize` 返回 false，可据此判断 Qt/WindowFrame 状态。
+
+## 10. T46 边缘命中测试与调试日志
+
+- 新增 `WindowFrame::edgeHitTestForTest(clientSize, point, dpi, maximized)`，
+  `WM_NCHITTEST` 的边缘分支直接使用同一函数，offscreen 可断言边缘/中心/最大化行为。
+- `EMBY_PC_DEBUG_HITTEST=1`（或 `EMBY_PC_DEBUG_GEOMETRY=1`）时输出：
+  `WindowFrame: WM_NCHITTEST point=... client=... state=... maximized=... fullscreen=... border=...`。
+- 单测：x=2 命中 LeftEdge、中心无边缘、最大化无边缘；配合 T46 全屏退出 NoState 断言。

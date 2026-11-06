@@ -101,6 +101,11 @@ private:
     void handlePlaybackInfo(const QString &itemId, const QString &title, int season, int episode,
                             qint64 startPositionTicks, const emby::PlaybackInfoResult &info,
                             const emby::ApiError &error);
+    void startPlaybackCandidate(int index);
+    void tryNextPlaybackCandidate(const QString &reason);
+    void handlePlaybackTimeout();
+    void handlePlaybackFailure(const QString &reason);
+    QString sanitizedPlaybackUrl(const QString &urlString) const;
     void startEmbyPlayback(const QString &itemId, const QString &title,
                            const emby::MediaSourceInfo &source, const QString &playSessionId,
                            qint64 startPositionTicks);
@@ -127,6 +132,12 @@ private:
     MpvPlayer *m_player = nullptr;
     emby::EmbyClient *m_emby = nullptr;
     QTimer *m_progressTimer = nullptr;
+    QTimer *m_playbackWatchdog = nullptr;
+    QStringList m_playbackCandidates;
+    int m_playbackCandidateIndex = 0;
+    QString m_currentPlaybackUrl;
+    bool m_playbackFileLoaded = false;
+    bool m_playbackFailurePrompted = false;
 
     QString m_currentSubtitle;
     bool m_surfaceAttached = false;

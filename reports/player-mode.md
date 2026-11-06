@@ -314,7 +314,7 @@ QPushButton::clicked
 
 ### 12.3 自测
 
-- `emby-ui-demo --selftest` **181 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
+- `emby-ui-demo --selftest` **183 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
 - 全屏测试输出可见完整日志：
 ```text
 PlayerPage: FullscreenButton clicked ...
@@ -370,3 +370,32 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - Linux app Debug 构建通过；`-Wall -Wextra` 无新增 warning；`emby-ui-demo --selftest` 基线 155 项保持。
 - 假服务器建议用例（Windows/本地 fake Emby）：某 Series 5 集，分别从第 1/3/5 集进入，检查 `setEpisodeNavigationEnabled` 的 prev/next 与 app.log 的 index/count；Movie 进入检查 disabled。
 - Windows 实机：从首页/继续观看直接点某一集，控制条上一集/下一集应按兄弟集列表启用；点下一集直接切到对应 episode id 并上报 Progress/Stopped。
+
+## 14. T46 播放模式拖动窗口 + 全屏退出复位
+
+> 任务：task-46 · 负责人：build-verifier · 日期：2026-11-06
+
+### 14.1 播放模式拖动
+
+- `VideoHost`/`VideoArea` 与顶部浮层空白区左键按下后，移动超过 4px 调用
+  `window()->windowHandle()->startSystemMove()`；单击/双击仍走原 mpv 点击路径。
+- 5px 边缘缩放优先：命中边缘时仍走 T35 `startSystemResize`，不会误触拖动。
+- 全屏状态禁用拖动。日志：
+  `PlayerPage::windowDrag source=video/topBar press=... current=... distance=... startSystemMove=...`。
+- 单测：4px 不触发、5px 触发、全屏禁用、对角距离；offscreen 共 22 项 PASS。
+
+### 14.2 全屏退出状态
+
+- 进入全屏前记录 `normalGeometry`/wasMaximized；退出时：
+  `showNormal()` → `setWindowState(Qt::WindowNoState)` → 恢复窗口几何；
+  **即使进入前是最大化，也回普通窗口**，避免最大化状态没有边缘缩放光标。
+- `setPlayerMode(false)` 的全屏退出分支与 `toggleFullscreen()` 共用
+  `restoreWindowedStateFromFullscreen()`。
+- 退出后 `QTimer::singleShot(0)` 调 `PlayerPage::refreshOverlayGeometry()`，刷新顶层浮层几何。
+- 日志：`restoreWindowedStateFromFullscreen ... normalGeometry=... isMaximized=false windowState=0`。
+- 单测断言：退出全屏 `isFullScreen=false`、`windowState()==NoState`、`isMaximized()=false`、恢复尺寸。
+
+### 14.3 待实机
+
+- 播放模式视频中央/顶部栏空白处拖动；日志应出现 startSystemMove true。
+- 全屏退出后主页四边/四角缩放光标；日志 windowState=0。

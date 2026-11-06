@@ -505,8 +505,11 @@ void HomeView::showEvent(QShowEvent *event)
     // 数据可能在首页隐藏时已经加载；显示后补一次 content 尺寸，避免 0 高度。
     QTimer::singleShot(0, this, &HomeView::resizeResumeContent);
     QTimer::singleShot(0, this, &HomeView::resizeHomeSectionRows);
-    if (m_usingSections)
+    if (m_usingSections) {
         scheduleSectionBuild();
+        if (m_previewLayoutTimer)
+            m_previewLayoutTimer->start();
+    }
 }
 
 void HomeView::refreshThumbnails()
@@ -700,6 +703,30 @@ void HomeView::relayoutPreviewRows()
         if (row.cardsBuilt && row.grid)
             layoutPreviewRow(row);
     }
+    // T47：窗口 resize 后重新激活 section 布局，更新 content 的 sizeHint/滚动范围；
+    // 不重建卡片，只做增量布局与可见 section 补建。
+    if (m_sectionsLayout)
+        m_sectionsLayout->activate();
+    if (m_sectionsContent) {
+        m_sectionsContent->updateGeometry();
+        m_sectionsContent->adjustSize();
+    }
+    if (m_sectionsScroll) {
+        if (QWidget *viewport = m_sectionsScroll->widget())
+            viewport->updateGeometry();
+        m_sectionsScroll->verticalScrollBar()->update();
+    }
+    buildVisibleSections();
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_usingSections)
+            return;
+        if (m_sectionsLayout)
+            m_sectionsLayout->activate();
+        if (m_sectionsContent)
+            m_sectionsContent->adjustSize();
+        if (m_sectionsScroll)
+            m_sectionsScroll->verticalScrollBar()->update();
+    });
 }
 
 void HomeView::buildVisibleSections()
@@ -832,6 +859,12 @@ void HomeView::resizeHomeSectionRows()
         const QSize hint = row.layout->sizeHint();
         if (hint.width() > 0 && hint.height() > 0)
             row.content->setFixedSize(hint);
+    }
+    if (m_sectionsLayout)
+        m_sectionsLayout->activate();
+    if (m_sectionsContent) {
+        m_sectionsContent->updateGeometry();
+        m_sectionsContent->adjustSize();
     }
 }
 
