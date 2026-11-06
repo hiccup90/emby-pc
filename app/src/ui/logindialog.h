@@ -47,6 +47,7 @@ private:
     QLineEdit *m_userEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
     QCheckBox *m_ignoreSslCheck = nullptr;
+    QCheckBox *m_showPasswordCheck = nullptr;
     QLabel *m_statusLabel = nullptr;
     QPushButton *m_testButton = nullptr;
     QPushButton *m_loginButton = nullptr;

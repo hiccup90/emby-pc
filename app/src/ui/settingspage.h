@@ -47,6 +47,7 @@ public:
     // T28：设置项读取 API（T29 播放侧也读 QSettings；这里便于打开设置页时使用）。
     QString subtitleLanguage() const;
     bool autoPlayNext() const;
+    bool autoResume() const;
     bool rememberVolume() const;
     int autoHideDelayMs() const;
     int cacheImageLimitMB() const;
@@ -99,6 +100,7 @@ private:
 
     QComboBox *m_subtitleCombo = nullptr;
     QCheckBox *m_autoPlayNextCheck = nullptr;
+    QCheckBox *m_autoResumeCheck = nullptr;
     QCheckBox *m_rememberVolumeCheck = nullptr;
     QComboBox *m_autoHideCombo = nullptr;
     QLabel *m_hardwareDecoderValue = nullptr;

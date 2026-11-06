@@ -86,3 +86,9 @@ in-flight 标记，delegate 每次重绘都会再次请求同一 URL，QNAM 队�
   本地磁盘缓存写盘后，新 cache 命中磁盘不发起网络请求；图片 URL 带 api_key、Authorization 保留。
 - 实机只需正常打开一次媒体库观察 app.log 的 `poster stats`；不要循环播放/反复刷新触发上游风控。
   若仍有缺失，查看 `poster load failed` 的 itemId/HTTP 状态并导出诊断信息附上 poster stats。
+
+## T64 图片鉴权更新
+
+- 图片请求不再把 `api_key` 查询参数拼到 URL；只使用 `Authorization: MediaBrowser Token=...` 头。
+- 旧 URL 中如已有 `api_key` 会在请求前剥离；日志/诊断仍对历史 URL 做 `api_key` 脱敏（仅为兼容旧日志，不属于请求构造）。
+- 图片 URL 不在代理/CDN/缓存 key 中泄漏 token；demo 断言改为 `lastImageApiKey.isEmpty()` 且 URL 不含 token。

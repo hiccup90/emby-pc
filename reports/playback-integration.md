@@ -208,3 +208,22 @@ failures 0
 
 - 实体库 1050415：Authorization 头应注入 mpv，不再 401；日志无 token。
 - 若仍 401，检查 app.log `mpv option http-header-fields set=true` 与 mpv.log HTTP 状态。
+
+## T63/B1-A 播放内核 & 控制器 P0 批修
+
+> 任务：task-63 · 负责人：build-verifier · 日期：2026-11-06
+
+- **A-P0-02**：移除运行时 http-header-fields token setter；header 变化走重新初始化（在 log-file 前注入）；
+  `msg-level=info` 默认、启动 mpv.log 脱敏、>32MB 轮转、诊断包导出前脱敏；本地/退出登录清空 header。
+- **A-P0-05**：n/p → `script-message app-next-episode/app-prev-episode` → Controller `stepEmbyEpisode(±1)`；
+  本地 playlist-next/prev 保留。
+- **A-P0-06**：`MBTN_LEFT_DBL → app-toggle-fullscreen`，统一应用全屏状态机。
+- **A-P0-07**：统一 `adjustedResumeTicks`；>=95% 或 autoResume=false 从头；设置键 `player/autoResume`。
+- **A-P0-08**：候选 ≤3、重试 ≤2；T64 PlaybackErrorDialog（错误码/重试/返回/导出）；本地文件同样处理；
+  fatal-only error 触发候选；watchdog 首次 15s/后续 8s。
+- **A-P0-09**：closeEvent/aboutToQuit/析构有界等待 Stopped（1.5s），只上报一次；位置用最后已知值。
+- **A-P0-10**：hwdecMode auto/prefer/off；d3d11va→auto-safe→no 降级；状态栏+mpv OSD 提示。
+- **P1**：Qt 键转发只保留 QApplication 一层，消除双触发。
+
+验证：Linux Debug build exit 0；0 warning；selftest 201 PASS；N/P/双击绑定 4 项 PASS；续播 6 项 PASS；
+启动 mpv.log 脱敏 token hits=0。真实 Emby 401/停止位置与 Windows 硬解降级待实机。

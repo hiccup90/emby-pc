@@ -80,13 +80,15 @@ const char kInputConf[] =
     "Shift+RIGHT seek 1\n"
     "UP         add volume 5\n"
     "DOWN       add volume -5\n"
-    "n          playlist-next\n"
-    "p          playlist-prev\n"
+    "n          script-message app-next-episode\n"
+    "p          script-message app-prev-episode\n"
     "i          script-binding stats/display-stats-toggle\n"
     "f          script-message app-toggle-fullscreen\n"
     "ESC        script-message app-exit-fullscreen\n"
     // 用中键做探针，避免覆盖 OSC 的左键点击绑定。
-    "MBTN_MID script-message app-mouse-probe\n";
+    "MBTN_MID script-message app-mouse-probe\n"
+    // T63/A-P0-06：覆盖 mpv 内置双击 cycle fullscreen，统一走应用全屏状态机。
+    "MBTN_LEFT_DBL script-message app-toggle-fullscreen\n";
 
 QString writeInputConf()
 {
@@ -141,11 +143,39 @@ QString mpvLogFilePath()
     return base + QStringLiteral("/mpv.log");
 }
 
+// T63/A-P0-02：上次运行/旧版 verbose 日志可能已含 token；启动时原地脱敏。
+void sanitizeExistingMpvLog()
+{
+    const QString path = mpvLogFilePath();
+    QFileInfo info(path);
+    if (!info.exists() || info.size() <= 0 || info.size() > 64 * 1024 * 1024)
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    const QString original = QString::fromUtf8(file.readAll());
+    file.close();
+    const QString redacted = redactSensitiveLog(original);
+    if (redacted == original)
+        return;
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        file.write(redacted.toUtf8());
+        file.close();
+        qInfo() << "mpv.log sanitized on startup";
+    }
+}
+
 } // namespace
+
+QString MpvPlayer::inputConfForTest()
+{
+    return QString::fromUtf8(kInputConf);
+}
 
 MpvPlayer::MpvPlayer(QObject *parent)
     : QObject(parent)
 {
+    sanitizeExistingMpvLog();
     m_timer.setInterval(30);
     connect(&m_timer, &QTimer::timeout, this, &MpvPlayer::pollEvents);
 }
@@ -166,15 +196,16 @@ void MpvPlayer::shutdown()
     m_duration = 0.0;
     m_paused = false;
     m_title.clear();
+    m_httpHeaderLines.clear();
 }
 
-bool MpvPlayer::setHttpHeaderFields(const QString &fields)
+bool MpvPlayer::clearHttpHeaderFields()
 {
     if (!m_mpv)
         return false;
-    const QByteArray utf8 = fields.toUtf8();
-    const int rc = api().setPropertyString(m_mpv, "http-header-fields", utf8.constData());
-    qInfo() << "mpv set http-header-fields rc=" << rc << "headersBytes=" << utf8.size();
+    const int rc = api().setPropertyString(m_mpv, "http-header-fields", "");
+    m_httpHeaderLines.clear();
+    qInfo() << "mpv clear http-header-fields rc=" << rc;
     return rc >= 0;
 }
 
@@ -219,7 +250,7 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
 #ifdef Q_OS_WIN
     setOption("gpu-api", QStringLiteral("d3d11"));
     setOption("gpu-context", QStringLiteral("d3d11"));
-    setOption("hwdec", QStringLiteral("d3d11va"));
+    setOption("hwdec", m_hwdecMode.isEmpty() ? QStringLiteral("d3d11va") : m_hwdecMode);
 #endif
     // HDR/DV 片源统一 tone-map 到 SDR（不发灰）
     setOption("target-colorspace-hint", QStringLiteral("no"));
@@ -283,8 +314,15 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
 
     // ---- 文件日志（T9 验收支撑）----
     // log-file 必须在 mpv_initialize() 之前设置；每次启动会截断旧 mpv.log。
-    setOption("log-file", mpvLogFilePath());
-    setOption("msg-level", QStringLiteral("all=v"));
+    // T63/A-P0-02：默认 info，不再把 header setter/HTTP 细节写进发行日志；
+    // 排障时用 EMBY_PC_MPV_VERBOSE=1 临时开 all=v。
+    const QString logPath = mpvLogFilePath();
+    const QFileInfo logInfo(logPath);
+    if (logInfo.exists() && logInfo.size() > 32 * 1024 * 1024)
+        QFile::remove(logPath);
+    setOption("log-file", logPath);
+    const bool verboseLog = qEnvironmentVariableIntValue("EMBY_PC_MPV_VERBOSE") > 0;
+    setOption("msg-level", verboseLog ? QStringLiteral("all=v") : QStringLiteral("info"));
     setOption("cache", QStringLiteral("yes"));
     setOption("demuxer-max-bytes", QStringLiteral("512MiB"));
 
@@ -313,6 +351,7 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
                                 getPropertyString("vo"),
                                 getPropertyString("gpu-api"));
 
+    m_httpHeaderLines = httpHeaderLines;
     m_timer.start();
     return true;
 }
@@ -373,13 +412,23 @@ void MpvPlayer::loadPlaylist(const QStringList &files, int startIndex)
     if (!m_mpv || files.isEmpty())
         return;
 
-    command({QStringLiteral("loadfile"), files.first(), QStringLiteral("replace")});
-    for (int i = 1; i < files.size(); ++i)
-        command({QStringLiteral("loadfile"), files.at(i), QStringLiteral("append")});
+    bool ok = command({QStringLiteral("loadfile"), files.first(), QStringLiteral("replace")});
+    if (!ok) {
+        emit errorOccurred(QStringLiteral("mpv loadfile failed: %1").arg(files.first()));
+        return;
+    }
+    for (int i = 1; i < files.size(); ++i) {
+        if (!command({QStringLiteral("loadfile"), files.at(i), QStringLiteral("append")})) {
+            emit errorOccurred(QStringLiteral("mpv append failed: %1").arg(files.at(i)));
+            return;
+        }
+    }
 
     const int index = qBound(0, startIndex, files.size() - 1);
-    if (index > 0)
-        setPropertyString("playlist-pos", QString::number(index));
+    if (index > 0 && !setPropertyString("playlist-pos", QString::number(index))) {
+        emit errorOccurred(QStringLiteral("mpv playlist-pos failed: %1").arg(index));
+        return;
+    }
 
     setPropertyString("pause", QStringLiteral("no"));
 }
@@ -495,7 +544,8 @@ void MpvPlayer::handleEvent(mpv_event *event)
             const QString prefix = message->prefix ? QString::fromUtf8(message->prefix) : QString();
             const QString text = redactSensitiveLog(QString::fromUtf8(message->text).trimmed());
             qWarning() << "mpv log" << prefix << level << text;
-            emit errorOccurred(QStringLiteral("mpv: %1").arg(text));
+            // T63/A-P1-21：普通 error 日志（解码器/音频警告等）不触发候选切换；
+            // 只有 END_FILE reason=ERROR 作为 fatal 错误 emit errorOccurred。
         }
         break;
     }
@@ -508,6 +558,10 @@ void MpvPlayer::handleEvent(mpv_event *event)
             emit toggleFullscreenRequested();
         else if (name == QLatin1String("app-exit-fullscreen"))
             emit exitFullscreenRequested();
+        else if (name == QLatin1String("app-next-episode"))
+            emit nextEpisodeRequested();
+        else if (name == QLatin1String("app-prev-episode"))
+            emit previousEpisodeRequested();
         else if (name == QLatin1String("app-mouse-probe"))
             qInfo() << "mpv mouse probe: MBTN_MID received in embedded window";
         break;

@@ -1,4 +1,4 @@
-# 决策清单 v3（HDR/DV 片源正确解码，输出 SDR）
+# 决策清单 v4（HDR/DV 片源正确解码，输出 SDR；Qt 控制条）
 
 > 需求已确认：
 > * 杜比视界：**不要求原生点亮**，只要**不绿屏、颜色正确**；
@@ -96,7 +96,7 @@ input-default-bindings=yes
 - **DV P7 片源不多** → 用 mpv 0.41 稳定版即可（P5/P8 已够）；0.42 dev 暂不需要。
 
 **待确认：**
-1. **播放控制条 A（mpv OSC）还是 B（Qt 覆盖窗口）** —— 预览见 `mockups/preview.html`（含两张 SVG/PNG 与功能对照表）。
+1. ~~播放控制条 A（mpv OSC）还是 B（Qt 覆盖窗口）~~ → **已决策（2026-11-06）：B，保留 Qt 控制条**，见 §5。
 2. 目标显示器分辨率/刷新率（决定默认缩放；24p 片源在 60Hz 屏上用 `video-sync=audio` 即可）。
 
 ---
@@ -107,3 +107,19 @@ input-default-bindings=yes
 - Qt Widgets 窗口 + `QWidget::winId()` 作为 mpv `--wid` 宿主；
 - 本地文件播放 + 硬解 + ASS 字幕 + OSC；
 - 用 HDR10 / DV P5 / DV P8 / ASS 特效字幕四个样本验收"不绿、不发灰、字幕正常"。
+
+---
+
+## 5. 控制条方案决策（2026-11-06，v4）
+
+**决策：保留 Qt 控制条（方案 B），不启用 mpv OSC（方案 A）。**
+
+理由：
+1. 当前配置输出 SDR（target-trc=srgb、target-prim=bt.709），Qt 覆盖窗口不会出现 HDR 色差风险；
+2. Qt 控制条已实现并经 T45（分段 Seek/布局）、T51（命中/拖动后恢复）、T53（纯图标+tooltip）、T55（不透明命中区）修复，播放/暂停、上下集、进度、音量、字幕/音轨菜单、统计、全屏均有实现；
+3. 不依赖 libmpv 发行包是否带 osc.lua，跨版本/跨发行包更稳；mpv OSC 仅保留 EMBY_PC_MPV_OSC=1 调试开关。
+
+落地：
+- docs/windows-acceptance.md 的 O-01~O-08 已改为 Qt 控制条验收（O-05 音量滑杆为 P1）；
+- reports/playback-integration.md 中“隐藏 Qt 控制条、由 OSC 提供控制”的过时描述以后续修订为准；
+- docs/requirements.md PLY-07 的“mpv OSC”文字由 planner 在下一版需求同步（本批不改需求文档）。

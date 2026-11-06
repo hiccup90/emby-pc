@@ -85,6 +85,7 @@ public:
     // true：浮层是独立顶层窗口（默认）；false：EMBY_PC_PLAYER_OVERLAY=0 的页面内兜底。
     bool usesTopLevelOverlay() const { return m_topLevelOverlay; }
     bool overlaysVisible() const { return m_overlaysVisible; }
+    bool compactLayout() const { return m_compactLayout; }
     QWidget *topOverlay() const { return m_topBar; }
     QWidget *bottomOverlay() const { return m_controlBar; }
 
@@ -130,6 +131,7 @@ private:
     void startAutoHideTimer();
     void stopAutoHideTimer();
     void showTrackMenu(QPushButton *button, const QList<TrackInfo> &tracks, bool audio);
+    void showCompactMenu(QPushButton *button);
     void updateResponsiveControls();
 
     QWidget *m_topBar = nullptr;
@@ -149,8 +151,11 @@ private:
     QPushButton *m_audioButton = nullptr;
     QPushButton *m_statsButton = nullptr;
     QPushButton *m_fullscreenButton = nullptr;
+    QPushButton *m_moreButton = nullptr;
+    QLabel *m_volumeIcon = nullptr;
     QSlider *m_seekSlider = nullptr;
     QSlider *m_volumeSlider = nullptr;
+    bool m_compactLayout = false;
 
     QList<TrackInfo> m_subtitleTracks;
     QList<TrackInfo> m_audioTracks;

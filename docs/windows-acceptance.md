@@ -1,7 +1,7 @@
 # Emby PC · Windows 实机验收清单
 
 > 文档：docs/windows-acceptance.md · 版本 v1.0 · 2026-11-04 · 维护：release-engineer（T9）
-> 适用构建：0.1.0（M1 播放内核 + M2 早期 UI），Windows 10/11 x64
+> 适用构建：0.1.1-rc（M1 播放内核 + M2/M3 UI + Qt 控制条），Windows 10/11 x64
 > 用途：用户在 Windows 实机上按步骤验收「播放内核 + 日志 + 打包产物」；每条都有操作、预期和记录方式。
 > 判定规则：**所有 P0 条目 PASS 才算通过**；FAIL 必须附「截图 + app.log + mpv.log + 发生时间」。
 
@@ -37,7 +37,7 @@
 **方式 A：用现成发布包（推荐给验收人）**
 
 1. 拿到 `dist\emby-pc-<版本>-win64.zip`。
-2. 解压到不含中文和空格的路径，例如 `D:\Test\emby-pc-0.1.0-win64\`。
+2. 解压到不含中文和空格的路径，例如 `D:\Test\emby-pc-0.1.1-win64\`。
 3. 确认目录内有 `emby-pc.exe`、`libmpv-2.dll`、`platforms\qwindows.dll`。
 
 **方式 B：从源码构建 + 打包（给开发/构建验证）**
@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\fetch-libmpv.ps1 -Url "<URL
 # 2) 构建 Release 并打包（Qt 路径按本机实际改）
 powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPrefix C:\Qt\6.8.0\msvc2022_64
 
-# 产物：dist\emby-pc-0.1.0-win64.zip（同时保留 dist\emby-pc-0.1.0-win64\ 免安装目录）
+# 产物：dist\emby-pc-0.1.1-win64.zip（同时保留 dist\emby-pc-0.1.1-win64\ 免安装目录）
 ```
 
 > 如果 `fetch-libmpv.ps1` 访问不了 GitHub，可以先手工下载 `mpv-dev-x86_64-*.7z`，
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 时间紧时先跑这一轮，任何一步失败就停下收集日志：
 
 1. 启动应用 → 若有登录框点「取消」 → 菜单「帮助 → 打开日志目录」 → 确认目录里有 `app.log`。
-2. `文件 → 打开文件…` 选 S5 → 有画面有声 → 鼠标移入出现 OSC → 空格能暂停/继续。
+2. `文件 → 打开文件…` 选 S5 → 有画面有声 → 鼠标移入出现 Qt 控制条 → 空格能暂停/继续。
 3. 按 `i` 打开统计 → `Hwdec` 显示 `d3d11va`（不含 `-copy`）、VO 为 `gpu-next`。
 4. 打开 S1 播 2 分钟（不发灰）→ 打开 S2 播 2 分钟（不绿屏）。
 5. 按 `f` 全屏 → `Esc` 退出；关闭应用 → 回日志目录确认已生成 `mpv.log`。
@@ -104,7 +104,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 
 ---
 
-## 3. 基础播放、OSC 与键盘（P 组）
+## 3. 基础播放、Qt 控制条与键盘（P 组）
 
 ### 3.1 打开本地文件/文件夹
 
@@ -115,20 +115,22 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | P-03 | 播放中按 `n` / `p` | 切换到下一集/上一集（mpv playlist），标题更新 | 录屏或连续截图 |
 | P-04 | `文件 → 退出` 或点窗口关闭按钮 | 应用退出，无「mpv 线程未退出」类崩溃 | 任务管理器截图 |
 
-### 3.2 mpv OSC（屏幕控制条）
+### 3.2 Qt 控制条（屏幕控制条）
+
+> 验收口径（2026-11-06 起）：控制条为 **Qt 控制条**（`app/src/ui/playerpage.cpp`），不是 mpv OSC；决策见 `reports/decisions.md` §5。mpv OSC 仅保留 `EMBY_PC_MPV_OSC=1` 调试开关，不纳入验收。
 
 | 编号 | 操作步骤 | 预期结果 | 记录方式 |
 |---|---|---|---|
-| O-01 | 鼠标移入视频画面并轻微移动 | 200ms 内底部出现 mpv OSC 控制条（播放/暂停、进度、音量、字幕、音轨、统计、全屏按钮） | 截图：OSC 可见 |
-| O-02 | 鼠标静止约 2 秒 | OSC 自动淡出隐藏 | 截图两张（显示/隐藏） |
-| O-03 | 点击 OSC 播放/暂停按钮 | 视频暂停/继续，图标状态同步 | 录屏/连续截图 |
-| O-04 | 拖动进度条到中间 | 画面跳转，时间显示变化，无卡死 | 截图 + 记录跳转前后时间 |
-| O-05 | 点击 OSC 音量按钮/滚轮 | 音量增减，OSD 显示当前音量 | 截图 |
-| O-06 | 点击 OSC 字幕/音轨按钮 | 弹出轨道菜单；当前版本若尚未接入真实轨道，菜单内轨道列表应与视频实际轨道一致（mock 轨道若存在，记录为已知问题） | 截图：菜单展开 |
-| O-07 | 点击 OSC 全屏按钮 | 进入/退出全屏，OSC 在全屏下仍可呼出 | 截图 |
-| O-08 | 点击 OSC 统计按钮 | 显示/隐藏 mpv 统计面板（同 I 键） | 截图 |
+| O-01 | 鼠标移入视频画面并轻微移动 | 200ms 内底部出现 Qt 控制条：播放/暂停、上一集/下一集、进度条+时间、字幕、音轨、音量、统计、全屏；960 以下窄窗图标化（纯图标 + tooltip，无文字残留） | 截图：控制条可见 |
+| O-02 | 鼠标静止约 2 秒（默认 2500ms，设置 → 播放可调 500–5000ms） | 控制条自动淡出隐藏；再次移动鼠标恢复 | 截图两张（显示/隐藏） |
+| O-03 | 点击控制条播放/暂停按钮 | 视频暂停/继续，按钮图标与播放状态同步；暂停时控制条保持可见 | 录屏/连续截图 |
+| O-04 | 点击进度条任意位置，并拖动到中间 | 画面跳转到对应位置，底部时间同步；拖动期间控制条不自动隐藏；无卡死 | 截图 + 记录跳转前后时间 |
+| O-05 | 点击/拖动音量滑杆 | 音量 0–100 连续变化，播放器音量同步；无爆音/卡顿 | 截图：滑杆位置 |
+| O-06 | 点击字幕/音轨按钮 | 弹出 Qt 菜单，列出视频实际字幕/音轨（含语言/标题）；选择后 1 秒内生效并显示当前项；无轨道时菜单置灰或提示 | 截图：菜单展开 |
+| O-07 | 点击全屏按钮（或双击视频、按 F） | 进入/退出全屏 <300ms；全屏下鼠标移动仍可呼出控制条；按 Esc 退出并恢复进入前位置/大小 | 截图：全屏与恢复后 |
+| O-08 | 点击统计按钮（或按 I） | 显示/隐藏 mpv 统计面板；再次点击关闭 | 截图：统计面板 |
 
-> 若 OSC 完全不出现：先在 mpv.log 搜索 `osc`，并确认 `--osc=yes`；记录当时是否点击过视频区域（焦点问题）。
+> 播放模式最小窗口 320×180：compact 布局下顶栏/控制条不重叠、次要按钮收进溢出菜单；800/960/1280 三档无横向裁切。菜单弹出关闭后控制条仍可点击（T51）。
 
 ### 3.3 键盘快捷键（mpv 窗口有焦点时）
 
@@ -145,13 +147,13 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 
 > 注意：以上快捷键只在**视频画面有焦点**时生效；Qt 输入框有焦点时不应触发播放操作（若触发记 FAIL）。
 
-**P 组判定**：P-01~P-04 为 P0；O-01~O-03、O-04、O-06~O-08 为 P0；键盘全部为 P0。
+**P 组判定**：P-01~P-04 为 P0；O-01~O-04、O-06~O-08 为 P0（O-05 为 P1）；键盘全部为 P0。
 
 ---
 
 ## 4. mpv 统计面板与硬解/渲染路径（S 组）
 
-> 打开方式：播放中按 `i`，或 OSC 的统计按钮。以下字段名以当前 mpv stats 面板显示为准。
+> 打开方式：播放中按 `i`，或 Qt 控制条的统计按钮。以下字段名以当前 mpv stats 面板显示为准。
 
 | 编号 | 操作步骤 | 预期结果（判据） | 记录方式 |
 |---|---|---|---|
@@ -191,7 +193,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | W-01 | 拖动窗口右下角缩到最小（当前 UI 最小约 960×600） | 控件不重叠、不被裁剪；侧边栏/按钮可用；继续缩小应被最小尺寸拦住 | 截图：最小尺寸窗口 |
 | W-02 | 从最小拖到 1920×1080（或全屏） | 布局随窗口自适应，视频区域不黑屏/不缩小；文字不重叠 | 截图：两档尺寸对比 |
 | W-03 | 双击标题栏 / 点最大化按钮 | 最大化时客户区铺满工作区（±1px），任务栏可见；还原后大小位置恢复（±2px） | 截图：最大化与还原 |
-| W-04 | 按 `f` 或 OSC 全屏按钮；按 `Esc` | 进入全屏 <300ms；Esc 恢复进入前的位置/大小；全屏下 OSC 可呼出 | 截图：全屏与恢复后 |
+| W-04 | 按 `f` 或 Qt 控制条全屏按钮；按 `Esc` | 进入全屏 <300ms；Esc 恢复进入前的位置/大小；全屏下控制条可呼出 | 截图：全屏与恢复后 |
 | W-05 | 把窗口拖到屏幕上/下/左/右边缘；Win11 用 Snap 左右分屏 | 窗口贴边不留异常缝隙（最外 1px 无黑边/桌面透出）；最大化/Snap 后布局正常 | 每个边缘一张截图（放大边缘 5px 检查） |
 | W-06 | 多显示器：窗口拖到副屏；分别在 100%/150%/200% 缩放下启动 | 文字清晰不模糊、控件不重叠；视频跨屏拖动不黑屏；全屏在鼠标所在屏 | 截图 + 显示设置里的缩放比例 |
 
@@ -220,7 +222,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | `app.log.1` / `.2`（如有） | 日志目录 | 轮转历史（5MB×3） |
 | `GPU-*.png` | 任务管理器 | 硬解零回拷证据 |
 | `S1-*.png` ~ `S5-*.png` | 播放截图 | 颜色/字幕证据 |
-| `W-*.png`、`O-*.png`、`P-*.png` | 窗口/OSC 截图 | 交互证据 |
+| `W-*.png`、`O-*.png`、`P-*.png` | 窗口/控制条截图 | 交互证据 |
 
 ---
 
@@ -276,7 +278,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 
 ## 9. 验证边界说明（重要）
 
-1. **Linux 容器只能做编译/语法验证**：本仓库的 `scripts/build-linux.sh` 已在 Debian 13 + Qt 6.8 容器内验证 `cmake` 配置与全量编译通过；`--wid` 嵌入、D3D11VA 硬解、HDR/DV tone-map、mpv OSC、窗口贴边等**只能在本清单的 Windows 实机上验证**。
+1. **Linux 容器只能做编译/语法验证**：本仓库的 `scripts/build-linux.sh` 已在 Debian 13 + Qt 6.8 容器内验证 `cmake` 配置与全量编译通过；`--wid` 嵌入、D3D11VA 硬解、HDR/DV tone-map、Qt 控制条、窗口贴边等**只能在本清单的 Windows 实机上验证**。
 2. **PowerShell 脚本未在容器内执行过**（容器没有 Windows/PowerShell）：`package-windows.ps1` 与 `fetch-libmpv.ps1` 按 PowerShell 5.1 语法编写，并做了静态检查；首次运行若报语法/参数错误，请把完整报错（含命令行）贴回，我们会按 Windows 实际环境修正。
 3. **mpv.log 依赖真实 libmpv 加载**：没有 `libmpv-2.dll` 或 libmpv 初始化失败时不会生成；此时以 `app.log` 中的错误信息为准。
 4. `package-windows.ps1` 需要本机已安装 Qt 的 `windeployqt.exe`；脚本会给出缺少 Qt/libmpv 的明确错误，不会静默产出残缺包。

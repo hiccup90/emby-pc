@@ -23,7 +23,8 @@ LoginDialog::LoginDialog(emby::EmbyClient *client, QWidget *parent)
     setObjectName(QStringLiteral("LoginDialog"));
     setWindowTitle(QStringLiteral("登录 — Emby PC"));
     setModal(true);
-    setMinimumWidth(620);
+    // T64：低分辨率/800×480 主窗口也能完整显示，不强行 620。
+    setMinimumWidth(520);
     buildUi();
 }
 
@@ -68,6 +69,10 @@ void LoginDialog::buildUi()
     m_passwordEdit->setEchoMode(QLineEdit::Password);
     m_passwordEdit->setPlaceholderText(QStringLiteral("密码（无密码可留空）"));
     form->addRow(QStringLiteral("密码"), m_passwordEdit);
+    m_showPasswordCheck = new QCheckBox(QStringLiteral("显示密码"), this);
+    m_showPasswordCheck->setObjectName(QStringLiteral("LoginShowPasswordCheck"));
+    m_showPasswordCheck->setCursor(Qt::PointingHandCursor);
+    form->addRow(QString(), m_showPasswordCheck);
 
     root->addLayout(form);
 
@@ -115,6 +120,9 @@ void LoginDialog::buildUi()
     connect(m_testButton, &QPushButton::clicked, this, &LoginDialog::testConnection);
     connect(m_loginButton, &QPushButton::clicked, this, &LoginDialog::submit);
     connect(m_cancelButton, &QPushButton::clicked, this, &QDialog::reject);
+    connect(m_showPasswordCheck, &QCheckBox::toggled, this, [this](bool visible) {
+        m_passwordEdit->setEchoMode(visible ? QLineEdit::Normal : QLineEdit::Password);
+    });
     connect(m_passwordEdit, &QLineEdit::returnPressed, this, &LoginDialog::submit);
     connect(m_serverEdit, &QLineEdit::returnPressed, this, &LoginDialog::submit);
     connect(m_userEdit, &QLineEdit::returnPressed, this, &LoginDialog::submit);

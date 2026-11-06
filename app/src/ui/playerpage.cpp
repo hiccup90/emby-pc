@@ -64,6 +64,7 @@ QPushButton *makeIconButton(Icon iconKind, const QString &tooltip, const QString
     button->setIconSize(QSize(20, 20));
     button->setFixedSize(36, 36);
     button->setToolTip(tooltip);
+    button->setAccessibleName(tooltip);
     button->setCursor(Qt::PointingHandCursor);
     return button;
 }
@@ -353,15 +354,15 @@ void PlayerPage::buildUi()
     buttonRow->addWidget(m_audioButton);
     buttonRow->addSpacing(8);
 
-    auto *volumeIcon = new QLabel(m_controlBar);
-    volumeIcon->setPixmap(iconPixmap(Icon::Volume, QColor(0x94, 0xA3, 0xB8), 20));
+    m_volumeIcon = new QLabel(m_controlBar);
+    m_volumeIcon->setPixmap(iconPixmap(Icon::Volume, QColor(0x94, 0xA3, 0xB8), 20));
     m_volumeSlider = new QSlider(Qt::Horizontal, m_controlBar);
     m_volumeSlider->setObjectName(QStringLiteral("VolumeSlider"));
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setValue(80);
     m_volumeSlider->setFixedWidth(96);
     m_volumeSlider->setCursor(Qt::PointingHandCursor);
-    buttonRow->addWidget(volumeIcon);
+    buttonRow->addWidget(m_volumeIcon);
     buttonRow->addWidget(m_volumeSlider);
     buttonRow->addSpacing(6);
 
@@ -369,6 +370,10 @@ void PlayerPage::buildUi()
                                         QStringLiteral("FullscreenButton"), m_controlBar);
     buttonRow->addWidget(m_fullscreenButton);
     buttonRow->addWidget(m_statsButton);
+    m_moreButton = makeIconButton(Icon::More, QStringLiteral("更多"), QStringLiteral("MoreButton"),
+                                  m_controlBar);
+    m_moreButton->hide();
+    buttonRow->addWidget(m_moreButton);
     controls->addLayout(buttonRow);
 
     connect(m_backButton, &QPushButton::clicked, this, &PlayerPage::backRequested);
@@ -387,6 +392,9 @@ void PlayerPage::buildUi()
             [this]() { showTrackMenu(m_subtitleButton, m_subtitleTracks, false); });
     connect(m_audioButton, &QPushButton::clicked, this,
             [this]() { showTrackMenu(m_audioButton, m_audioTracks, true); });
+    connect(m_moreButton, &QPushButton::clicked, this, [this]() {
+        showCompactMenu(m_moreButton);
+    });
     connect(m_statsButton, &QPushButton::clicked, this, [this]() {
         // 统计是 mpv OSD toggle，不改控制条状态；点击后重置自动隐藏并确保浮层在前。
         m_lastInteraction.restart();
@@ -579,7 +587,9 @@ void PlayerPage::paintEvent(QPaintEvent *event)
 void PlayerPage::updateResponsiveControls()
 {
     // T53：控制条默认/所有宽度均使用纯图标模式；文字只放在 tooltip。
-    const bool compact = width() < 1100;
+    // T64：宽度 <520 或高度 <400 进入 compact：顶栏 44、控制条 64、次要按钮进「更多」。
+    const bool compact = width() < 520 || height() < 400;
+    m_compactLayout = compact;
     const auto setButtonText = [](QPushButton *button, const QString &fallback) {
         if (!button)
             return;
@@ -590,12 +600,46 @@ void PlayerPage::updateResponsiveControls()
         }
         button->setText(QString());
         button->setToolTip(fullText);
+        button->setAccessibleName(fullText);
     };
     setButtonText(m_subtitleButton, QStringLiteral("字幕"));
     setButtonText(m_audioButton, QStringLiteral("音轨"));
     setButtonText(m_statsButton, QStringLiteral("统计"));
-    if (m_volumeSlider)
+
+    if (m_seekSlider)
+        m_seekSlider->setFixedHeight(compact ? 18 : 28);
+    if (m_playButton)
+        m_playButton->setFixedSize(compact ? 36 : 48, compact ? 36 : 48);
+    if (m_playButton)
+        m_playButton->setIconSize(QSize(compact ? 20 : 24, compact ? 20 : 24));
+    if (m_subtitleButton)
+        m_subtitleButton->setVisible(!compact);
+    if (m_audioButton)
+        m_audioButton->setVisible(!compact);
+    if (m_statsButton)
+        m_statsButton->setVisible(!compact);
+    if (m_fullscreenButton)
+        m_fullscreenButton->setVisible(!compact);
+    if (m_volumeIcon)
+        m_volumeIcon->setVisible(!compact);
+    if (m_volumeSlider) {
+        m_volumeSlider->setVisible(!compact);
         m_volumeSlider->setFixedWidth(compact ? 72 : 96);
+    }
+    if (m_moreButton)
+        m_moreButton->setVisible(compact);
+    if (m_subtitleLabel)
+        m_subtitleLabel->setVisible(!compact);
+    if (auto *topLayout = qobject_cast<QHBoxLayout *>(m_topBar ? m_topBar->layout() : nullptr)) {
+        topLayout->setContentsMargins(compact ? 12 : 24, compact ? 4 : 10,
+                                     compact ? 12 : 24, compact ? 4 : 10);
+        topLayout->setSpacing(compact ? 8 : 12);
+    }
+    if (auto *controls = qobject_cast<QVBoxLayout *>(m_controlBar ? m_controlBar->layout() : nullptr)) {
+        controls->setContentsMargins(compact ? 8 : 24, compact ? 4 : 10,
+                                     compact ? 8 : 24, compact ? 4 : 12);
+        controls->setSpacing(compact ? 2 : 8);
+    }
 }
 
 void PlayerPage::resizeEvent(QResizeEvent *event)
@@ -793,13 +837,15 @@ void PlayerPage::syncOverlayGeometry()
     if (!host.isValid() || host.isEmpty())
         return;
 
-    // T56：画面全铺满，overlay 也不再按 5px 黑边内缩。
-    const int topHeight = 76;
+    // T56：画面全铺满；T64 在 320×180 用 44px 顶栏 + 64px 控制条避免重叠。
+    const bool compact = width() < 520 || height() < 400;
+    const int topHeight = compact ? 44 : 76;
     const int maxTopWidth = qMax(200, host.width() - 24);
-    const int topWidth = qMin(qMax(260, m_topBar->sizeHint().width()), maxTopWidth);
-    m_topBar->setGeometry(host.left() + 12, host.top() + 10, topWidth, topHeight);
+    const int topWidth = compact ? maxTopWidth
+                                 : qMin(qMax(260, m_topBar->sizeHint().width()), maxTopWidth);
+    m_topBar->setGeometry(host.left() + 12, host.top() + (compact ? 6 : 10), topWidth, topHeight);
 
-    const int controlHeight = 108;
+    const int controlHeight = compact ? 64 : 108;
     m_controlBar->setGeometry(host.left(),
                               host.top() + host.height() - controlHeight,
                               qMax(0, host.width()), controlHeight);
@@ -814,8 +860,9 @@ void PlayerPage::updateDockedOverlayGeometry()
 {
     if (!m_topBar || !m_controlBar)
         return;
-    const int topHeight = qBound(58, height() / 9, 84);
-    const int controlHeight = qBound(108, height() / 7, 124);
+    const bool compact = width() < 520 || height() < 400;
+    const int topHeight = compact ? 44 : qBound(58, height() / 9, 84);
+    const int controlHeight = compact ? 64 : qBound(108, height() / 7, 124);
     m_topBar->setGeometry(0, 0, width(), topHeight);
     m_controlBar->setGeometry(0, height() - controlHeight, width(), controlHeight);
     if (m_overlaysVisible) {
@@ -1139,6 +1186,29 @@ void PlayerPage::setFullscreen(bool fullscreen)
     m_fullscreenButton->setIcon(icon(fullscreen ? Icon::ExitFullscreen : Icon::Fullscreen,
                                      QColor(0xE2, 0xE8, 0xF0), 22));
     m_fullscreenButton->setToolTip(fullscreen ? QStringLiteral("退出全屏") : QStringLiteral("全屏"));
+}
+
+void PlayerPage::showCompactMenu(QPushButton *button)
+{
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("CompactMoreMenu"));
+    QAction *subtitle = menu.addAction(QStringLiteral("字幕"));
+    QAction *audio = menu.addAction(QStringLiteral("音轨"));
+    QAction *stats = menu.addAction(QStringLiteral("统计"));
+    QAction *fullscreen = menu.addAction(QStringLiteral("全屏"));
+    QAction *chosen = menu.exec(button->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+    m_lastInteraction.restart();
+    if (m_autoHide)
+        startAutoHideTimer();
+    showOverlays();
+    if (chosen == subtitle)
+        showTrackMenu(m_subtitleButton, m_subtitleTracks, false);
+    else if (chosen == audio)
+        showTrackMenu(m_audioButton, m_audioTracks, true);
+    else if (chosen == stats)
+        emit statsRequested();
+    else if (chosen == fullscreen)
+        emit fullscreenRequested();
 }
 
 void PlayerPage::showTrackMenu(QPushButton *button, const QList<TrackInfo> &tracks, bool audio)

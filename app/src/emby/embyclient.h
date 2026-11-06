@@ -156,9 +156,22 @@ public:
     /// libmpv must use "http-header-fields" (not the command-line-only -append).
     QString mpvHeaderFields() const;
 
+    /// URL-aware variants: the token-bearing headers are returned only when
+    /// target has the same http(s) scheme/host/port as baseUrl(). For a
+    /// cross-host absolute media/CDN URL the result is empty, so an
+    /// Authorization token is never sent to a third-party host.
+    bool isSameOrigin(const QUrl &target) const;
+    QList<QPair<QString, QString>> streamHeaders(const QUrl &target) const;
+    QStringList streamHeaderLines(const QUrl &target) const;
+    QString mpvHeaderFields(const QUrl &target) const;
+
     /// Authorization header value ("MediaBrowser Client=..., Device=...,
     /// DeviceId=..., Version=..., Token=...").
     QString authorizationHeader() const;
+
+    /// Clears the token/user identity after a 401/403 or logout. The server
+    /// base URL and device identity are kept so a re-login can reuse them.
+    void clearAuthentication();
 
     // ---- Playback progress --------------------------------------------
     QNetworkReply *reportPlaybackStart(const PlaybackProgressInfo &info,
@@ -175,6 +188,14 @@ public:
     /// Aborts all in-flight requests. Their callbacks receive an
     /// OperationCanceledError ApiError.
     void abortAll();
+
+signals:
+    /// Emitted at most once per authenticated profile when a non-login API
+    /// request gets HTTP 401 or 403. The UI/PlayerController should stop the
+    /// progress timer, finish/stop the playback session, clear the token and
+    /// ask the user to log in again.
+    void authenticationExpired(int httpStatus, const QString &operation,
+                               const QString &message);
 
 private:
     QUrl buildUrl(const QString &path, const QUrlQuery &query = QUrlQuery()) const;
@@ -198,6 +219,7 @@ private:
     QNetworkAccessManager *m_network = nullptr;
     QSet<QNetworkReply *> m_inFlight;
     int m_requestTimeoutMs = 20000;
+    bool m_authExpiredNotified = false;
 };
 
 }  // namespace emby

@@ -1084,12 +1084,12 @@ QComboBox:hover, QSpinBox:hover, QLineEdit[role="formInput"]:hover { border-colo
 QComboBox:focus, QSpinBox:focus, QLineEdit[role="formInput"]:focus { border-color: #60A5FA; }
 
 /* T43 焦点环：替代全局 outline:none；所有可聚焦控件可见 */
-QPushButton:focus { border: 2px solid #60A5FA; }
+QPushButton:focus { border: 1px solid #60A5FA; }
 QPushButton[role="primary"]:focus, QPushButton[role="secondary"]:focus,
 QPushButton[role="ghost"]:focus, QPushButton[navButton="true"]:focus,
 QPushButton[role="playerIcon"]:focus, QPushButton[role="playerPrimary"]:focus,
 QPushButton[role="playerText"]:focus, QPushButton[titleBarButton="true"]:focus {
-    border: 2px solid #60A5FA;
+    border: 1px solid #60A5FA;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 2px solid #60A5FA; }
 QCheckBox:focus { color: #F8FAFC; }
@@ -1197,3 +1197,20 @@ QLabel#SettingsLibmpvVersionValue {
     color: #94A3B8;
 }
 QWidget#SettingsLibraryRow { padding: 8px 12px; }
+
+
+/* T64 首页错误/加载横幅与卡片焦点 */
+QWidget#HomeSectionsBanner {
+    background-color: #1E293B;
+    border-bottom: 1px solid #334155;
+}
+QLabel#HomeSectionsBannerLabel {
+    color: #E2E8F0;
+    font-size: 13px;
+}
+QLabel#HomeSectionsBannerLabel[state="error"] {
+    color: #FCA5A5;
+}
+QWidget#ResumeCard:focus, QWidget#HomeSectionCard:focus {
+    border: 1px solid #60A5FA;
+}

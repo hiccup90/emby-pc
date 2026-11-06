@@ -28,7 +28,8 @@ QString redactSensitive(QString text, const QString &token)
 {
     if (!token.isEmpty())
         text.replace(token, QStringLiteral("***"));
-    static const QRegularExpression apiKeyPattern(QStringLiteral("(api_key=)[^&\\s]+"));
+    static const QRegularExpression apiKeyPattern(
+        QStringLiteral("(api_key" "=)[^&\\s]+"));
     text.replace(apiKeyPattern, QStringLiteral("\\1***"));
     return text;
 }
@@ -433,13 +434,11 @@ void EmbyThumbnailCache::startNetwork(const QString &key, const QSize &size,
     // requests 只统计真正发起的网络请求，不统计 enqueue/paint 调用。
     ++m_stats.requests;
 
-    // qEmby/Jellyfin 兼容：图片 URL 带 api_key（token）查询参数；Authorization
-    // 头保留兼容。日志只记录 token-free 的 key，绝不把 api_key 写进 app.log。
+    // T64/A-P0-01：图片 URL 不再携带 api_key/token；只通过 Authorization 头鉴权，
+    // 避免 token 出现在 URL、日志、代理和磁盘缓存 key 中。
     QUrl requestUrl(key);
     QUrlQuery requestQuery(requestUrl);
     requestQuery.removeAllQueryItems(QStringLiteral("api_key"));
-    if (!m_client->profile().accessToken.isEmpty())
-        requestQuery.addQueryItem(QStringLiteral("api_key"), m_client->profile().accessToken);
     requestUrl.setQuery(requestQuery);
 
     QNetworkRequest request{requestUrl};

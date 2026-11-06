@@ -31,6 +31,7 @@ set(UI_SOURCES
     authutils.cpp authutils.h
     tokenstore.cpp tokenstore.h
     logindialog.cpp logindialog.h
+    playbackerrordialog.cpp playbackerrordialog.h
     theme.cpp theme.h
     icons.cpp icons.h
     postergenerator.cpp postergenerator.h

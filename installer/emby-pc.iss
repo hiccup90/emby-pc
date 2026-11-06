@@ -1,17 +1,17 @@
-﻿; Emby PC — Inno Setup 6 安装包脚本（T33 / M4-1）
+; Emby PC — Inno Setup 6 安装包脚本（T33 / M4-1）
 ;
 ; 本地编译：
-;   iscc /DMyAppVersion=0.1.0 "/DSourceDir=..\dist\emby-pc-0.1.0-win64" installer\emby-pc.iss
+;   iscc /DMyAppVersion=0.1.1 "/DSourceDir=..\dist\emby-pc-0.1.1-win64" installer\emby-pc.iss
 ; 说明：
 ;   - CI 会自动读取 app/CMakeLists.txt 的 project(VERSION) 并通过 /D 传入；
 ;   - SourceDir 由 CI 传绝对路径（本机打包可传相对路径，ISCC 以脚本目录为基准）；
 ;   - 产物：dist\emby-pc-<version>-setup.exe（≤150MB 目标）。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.1.1"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\emby-pc-0.1.0-win64"
+  #define SourceDir "..\dist\emby-pc-0.1.1-win64"
 #endif
 
 #define MyAppName "Emby PC"

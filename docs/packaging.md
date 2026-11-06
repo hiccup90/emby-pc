@@ -13,7 +13,7 @@
 | emby-pc-installer | dist/emby-pc-<version>-setup.exe | **推荐给用户**：Inno Setup 安装包，安装到 C:/Program Files/Emby PC |
 | emby-pc-win64 | dist/emby-pc-win64.zip | 免安装绿色版，解压即用（验收/便携场景） |
 
-版本号来自 app/CMakeLists.txt 的 project(emby-pc VERSION x.y.z LANGUAGES CXX)，当前 **0.1.0**。
+版本号来自 app/CMakeLists.txt 的 project(emby-pc VERSION x.y.z LANGUAGES CXX)，当前 **0.1.1**。
 Windows 安装包与 exe 的 VERSIONINFO、产物文件名都由该版本号驱动。
 
 ## 2. 版本信息与图标（T33）
@@ -106,6 +106,7 @@ Checkout -> Install Qt -> Fetch libmpv -> Configure/Build -> Emby tests
 1. 用旧版本安装包安装并登录、改设置（如控制条延时）、播放一次留下缓存。
 2. 直接运行新版本安装包覆盖安装（不要先卸载）。
 3. 确认：登录态/设置/缓存仍在；版本号已更新；开始菜单/桌面快捷方式指向新 exe。
+4. 本次发布门禁：**0.1.0 → 0.1.1 覆盖安装**后，登录态、服务器地址、设置、缓存与继续观看位置均保留；关于页显示 0.1.1。
 
 ### 6.3 卸载
 

@@ -1,8 +1,10 @@
 #include "mainwindow.h"
 
 #include "crashhandler.h"
+#include "securetokenstore.h"
 #include "ui/mainwindow.h"
 #include "ui/playerpage.h"
+#include "ui/tokenstore.h"
 
 #include <QAction>
 #include <QApplication>
@@ -94,8 +96,11 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext &context, const
     if (context.file && *context.file)
         location = QStringLiteral(" (%1:%2)").arg(QString::fromUtf8(context.file)).arg(context.line);
 
+    // Defense in depth: even if a future caller logs an Authorization/token
+    // field, app.log and stderr must not contain the credential.
+    const QString safeMessage = emby::redactSensitiveText(message);
     const QString line = timestamp + QStringLiteral(" [") + QString::fromLatin1(levelName(type))
-                         + QStringLiteral("] [") + category + QStringLiteral("] ") + message
+                         + QStringLiteral("] [") + category + QStringLiteral("] ") + safeMessage
                          + location + QLatin1Char('\n');
 
     {
@@ -150,6 +155,27 @@ void shutdownFileLogging()
 }
 
 // ---------------------------------------------------------------------------
+// 安全 token 存储（Windows DPAPI；无 keyring 的 Linux 回退为 0600 混淆文件）
+// ---------------------------------------------------------------------------
+class SecureUiTokenStore final : public ui::TokenStore
+{
+public:
+    emby::ServerProfile loadProfile() const override { return m_store.loadProfile(); }
+
+    void saveProfile(const emby::ServerProfile &profile) override
+    {
+        if (!m_store.saveProfile(profile))
+            qWarning() << "secure token store: failed to persist profile";
+    }
+
+    void clear() override { m_store.clear(); }
+    QString backendName() const override { return m_store.backendName(); }
+
+private:
+    emby::SecureProfileStore m_store;
+};
+
+// ---------------------------------------------------------------------------
 // 菜单
 // ---------------------------------------------------------------------------
 
@@ -160,7 +186,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("emby-pc"));
     app.setOrganizationName(QStringLiteral("emby-pc"));
-    app.setApplicationVersion(QStringLiteral("0.1.0"));
+    app.setApplicationVersion(QStringLiteral("0.1.1"));
     app.setApplicationDisplayName(QStringLiteral("Emby PC"));
 
     // 尽早初始化文件日志：之后的 Qt 日志（含 UI 层）都会写入 app.log。
@@ -177,7 +203,12 @@ int main(int argc, char *argv[])
     CrashHandler::initialize();
 
     // 正式应用壳：ui::MainWindow（侧边栏 + 页面栈 + mock 媒体库）。
-    ui::MainWindow window;
+    // token 只通过 SecureUiTokenStore 落盘；旧的 QSettings 明文值会在首次
+    // loadProfile() 时迁移并删除。
+    SecureUiTokenStore tokenStore;
+    ui::MainWindow::Options windowOptions;
+    windowOptions.tokenStore = &tokenStore;
+    ui::MainWindow window(windowOptions);
     window.setWindowTitle(QStringLiteral("Emby PC"));
     window.resize(1280, 760);
 

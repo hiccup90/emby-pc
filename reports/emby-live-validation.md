@@ -155,3 +155,14 @@ ProviderIds{Tmdb, Imdb}, People[], Studios[], Taglines[], ProductionLocations[]
 
 - 代码：`app/src/emby/tests/live_probe.cpp`，构建配置：`app/src/emby/tests/CMakeLists.txt`
 - 报告：本文件；原始 harness 输出在本地 `/tmp/emby-live-probe.out`（不在仓库内，不含 token/password）。
+
+## 10. T65 安全批修验证（2026-11-06，代码基线含 T65）
+
+本次在原有 Emby 客户端上增加安全存储/鉴权边界能力，未重新跑真实服务器（原 T10 结果仍见上文）；验证以 Linux 单元测试与构建为主：
+
+- **Windows DPAPI token 存储**：`app/src/emby/securetokenstore.*` 提供 `SecureProfileStore`；Windows 用 `CryptProtectData/CryptUnprotectData`，Linux 在无 libsecret 时回退为混淆文件并强制 0600。生产入口 `app/src/main.cpp` 通过 `SecureUiTokenStore` 传给 `ui::MainWindow`，旧 `QSettings("auth/profile")` 明文在首次读取时迁移并删除。
+- **401/403**：`EmbyClient::authenticationExpired(httpStatus, operation, message)` 每个 profile 最多发一次；`clearAuthentication()` 清 token/user，保留 server URL。PlayerController 已接：停播放/Stopped、停 progress timer、清 header、调用 UI `sessionExpired()` 清持久化与页面状态。
+- **跨主机**：`streamHeaders(QUrl)/streamHeaderLines(QUrl)/mpvHeaderFields(QUrl)` 仅对与 `baseUrl()` 同 scheme/host/port 的 URL 返回 Authorization；CDN/第三方候选为空，不把 token 发给第三方主机。
+- **崩溃/诊断**：`app/src/main.cpp` 的全局日志 handler 调用 `emby::redactSensitiveText()`；`crashhandler.cpp` 的 app.log 片段同样脱敏，minidump 改用 `MiniDumpNormal`，不再写 `MiniDumpWithDataSegs`。
+- **回归**：`ctest --test-dir /tmp/emby-sec-final --output-on-failure` → 1/1 passed；新增/累计 **142 个 check**（≥10），覆盖 secure store roundtrip/旧值迁移/0600 权限/损坏回退、401/403 信号去重、登录 401 不误报、跨主机头过滤和日志脱敏。`-Wall -Wextra -Wpedantic` 构建 **0 warning**。
+- **限制**：Windows DPAPI 分支未在本 Linux 容器执行，需在 Windows CI/实机复测；`ui::QSettingsTokenStore` 仍保留给测试/旧入口，正式 app 入口已切到 `SecureUiTokenStore`。

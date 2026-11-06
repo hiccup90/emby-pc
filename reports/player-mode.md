@@ -314,7 +314,7 @@ QPushButton::clicked
 
 ### 12.3 自测
 
-- `emby-ui-demo --selftest` **190 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
+- `emby-ui-demo --selftest` **201 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
 - 全屏测试输出可见完整日志：
 ```text
 PlayerPage: FullscreenButton clicked ...
@@ -407,7 +407,7 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - **日志**：`PlayerPage: control mouse ... watched/objectName/local/global`、`button clicked`、`SeekSlider click value=...`、`extended hit -> ...`。
 - **弹窗/菜单**：`QMenu::exec` 关闭后 `showOverlays()+raise()`、重置 interaction 计时并重新启动自动隐藏；统计按钮点击也重置计时，避免关闭 mpv OSD 后浮层立刻被隐藏。
 - **输入属性**：`showOverlays()` 显式清除 `WA_TransparentForMouseEvents`，保持 `WindowDoesNotAcceptFocus + WA_ShowWithoutActivating`（鼠标仍可点，避免抢播放键盘焦点）。
-- **回归**：新增 3 条 offscreen 断言——边缘扩展点击触发 `playPauseRequested`、SeekSlider 任意位置点击发 `seekRequested`、菜单关闭后控制条可见且非透明输入；总计 **190 项 ALL PASS**。
+- **回归**：新增 3 条 offscreen 断言——边缘扩展点击触发 `playPauseRequested`、SeekSlider 任意位置点击发 `seekRequested`、菜单关闭后控制条可见且非透明输入；总计 **201 项 ALL PASS**。
 - 待实机确认：控制条图标边缘/间隙、进度条任意位置、统计 toggle 后立即点其他按钮。
 
 ## 16. T53 控制条默认图标模式
@@ -415,7 +415,7 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - 字幕/音轨/统计按钮不再显示文字，始终 `setText(QString())`；当前轨道信息放 tooltip（如 `字幕：中文（简体）`、`音轨：中文 5.1`）。
 - 960 图标化逻辑保留为统一的纯图标布局；按钮尺寸/间距/hover/pressed/focus 沿用 T45/T51 token。
 - 播放/上下集/音量/全屏本就为图标，无文字残留。
-- 回归：`emby-ui-demo --selftest` **190 项 ALL PASS**（T53 断言字幕/音轨/统计 text 为空且 tooltip 非空）。
+- 回归：`emby-ui-demo --selftest` **201 项 ALL PASS**（T53 断言字幕/音轨/统计 text 为空且 tooltip 非空）。
 - 截图：`preview/05-player.png`、`10-player-960x600.png`、`12/13` 已更新。
 
 ## 17. T55 控制条/顶栏不透明命中区
@@ -424,7 +424,7 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - 修复：取消 `WA_TranslucentBackground`、`WA_NoSystemBackground`，设置 `autoFillBackground`；QSS `PlayerTopBar`/`PlayerControlBar` 改为不透明 `#0B1220` + `#1E293B` 分隔线。
 - 按钮：字幕/音轨/统计固定 **36×36** 整块可点，图标 18px，hover/pressed 覆盖整个按钮；播放 48px、上下集/返回/全屏 36px。
 - 保留：自动隐藏、T51 扩展命中、T53 纯图标 tooltip、T46 拖动/全屏、T47 sidebar 恢复。
-- 回归：新增 4 条断言——顶栏/控制条非 translucent、grab 像素 alpha=255、控制条四角按钮命中 4/4；总计 **190 项 ALL PASS**。
+- 回归：新增 4 条断言——顶栏/控制条非 translucent、grab 像素 alpha=255、控制条四角按钮命中 4/4；总计 **201 项 ALL PASS**。
 - 截图：`preview/05-player.png`、`10-player-960x600.png`、`12/13` 更新为不透明控件条。
 
 ## 15. T56 播放画面全铺满（去掉 5px 黑边）
@@ -439,3 +439,76 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - 单测：video area == page rect（无 5px）、1/5px 命中、6px 不命中、四角命中、全屏禁用、普通模式铺满；
   共 7 项 PASS；`emby-ui-demo --selftest` 190 PASS。
 - 实机确认：播放四边/四角可缩放且无黑边；全屏无边框。
+
+## 16. T63/B1-A 播放内核/控制器 P0 批修
+
+> 任务：task-63 · 负责人：build-verifier · 日期：2026-11-06
+
+### A-P0-02 mpv.log token 泄露
+
+- 不再运行中调用 `http-header-fields` token setter；header 变化时由 Controller 用
+  `MpvPlayer::reinitialize()` 在 `log-file` 生效前重新注入（同一 header 不重建）。
+- 默认 `msg-level=info`；仅 `EMBY_PC_MPV_VERBOSE=1` 开 `all=v`。
+- `MpvPlayer` 构造时对已有 mpv.log 原地脱敏；启动时 >32MB 日志轮转删除。
+- `exportDiagnostics()` 复制 app.log/mpv.log/diagnostics.txt 前统一脱敏。
+- 本地播放/退出登录/401 通过 `clearHttpHeaderFields()` 清空（空值不含 token）。
+
+### A-P0-05 N/P 切集
+
+- `input.conf`：`n script-message app-next-episode`、`p app-prev-episode`；
+  MpvPlayer 发 `nextEpisodeRequested/previousEpisodeRequested`；
+  Controller 有 Emby 会话走 `stepEmbyEpisode(±1)`，本地播放走 mpv playlist。
+
+### A-P0-06 双击视频全屏
+
+- `input.conf`：`MBTN_LEFT_DBL script-message app-toggle-fullscreen`；
+  覆盖 mpv 内置 cycle fullscreen，统一走 `PlayerPage::fullscreenRequested`/MainWindow 状态机。
+
+### A-P0-07 续播 >95% + autoResume
+
+- 统一 `PlayerController::adjustedResumeTicks(position,duration,autoResume)`：
+  关闭 autoResume、位置 <=0、位置 >=95% duration 都从 0 开始。
+- `handlePlaybackInfo` 所有 Emby 入口统一应用；设置键 `player/autoResume` 默认 true。
+
+### A-P0-08 播放错误处理
+
+- 候选 URL 限制为 3 个（首播 + 2 次重试）。
+- `handlePlaybackFailure` 生成错误码（HTTP_403/404/5XX、PLAYBACK_TIMEOUT、LOCAL_FILE_ERROR、
+  NO_MEDIA_SOURCE、PLAYBACK_FAILED），记录 detail/URL/mpv error/http-status。
+- 使用 T64 `ui::PlaybackErrorDialog`：重试/返回/导出诊断；重试最多 2 次；
+  本地文件错误也走同一对话框；失败先 Stopped，避免幽灵会话。
+- mpv 日志 error 不再触发候选切换；只有 END_FILE reason=ERROR 作为 fatal。
+- watchdog：首次 15s、重试 8s；local 也启用；`file-loaded` 停止；慢起播误判降低。
+
+### A-P0-09 退出丢 Stopped
+
+- `reportPlaybackStopped(bool waitForCompletion)`；closeEvent/aboutToQuit/析构传 true，
+  `QEventLoop + 1.5s` 有界等待 POST 完成；等待回调对栈对象使用 QPointer，超时后迟到回调安全。
+- 只上报一次（m_reporting 先置 false）；正常 clear/切页仍异步不阻塞 UI。
+
+### A-P0-10 hwdec auto-safe 降级
+
+- 读取 `player/hwdecMode`（auto/prefer/off）；auto→auto-safe、prefer→d3d11va、off→no。
+- `hardwareDecoderChanged`/fileLoaded 后检查 hwdec-current：空/no/-copy 时
+  d3d11va → auto-safe → no 两阶段降级；状态栏 + mpv OSD 提示“已切换兼容模式/软解”。
+
+### P1 顺带
+
+- 键盘去重：KeyPress 只由 QApplication 过滤器转发一次，移除 MainWindow 过滤器的重复转发。
+- watchdog 首次起播宽限 15s，file-loaded 即停；仅 fatal END_FILE 切候选。
+
+### 验证
+
+```text
+PASS N/P script-message bindings
+PASS double-click script-message fullscreen
+PASS 95 percent resets
+PASS 98 percent resets
+PASS autoResume off resets
+PASS 10 percent resumes
+sanitize token hits=0
+emby-ui-demo --selftest: 201 PASS
+Linux Debug build exit 0, 0 warning
+```
+
+- 真实 Emby 401/Dashboard/停止位置、Windows 硬解降级仍需实机复测。

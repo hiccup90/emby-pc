@@ -49,6 +49,16 @@ public:
     // filteredCount 返回被过滤掉的 audio 轨道数（可为 nullptr）。
     static QList<ui::TrackInfo> audioTracksFromTrackList(const QString &json,
                                                          int *filteredCount = nullptr);
+    // T63/A-P0-07：统一续播位置规则（关闭续播或 >=95% 从头）。
+    static qint64 adjustedResumeTicks(qint64 positionTicks, qint64 durationTicks,
+                                     bool autoResume)
+    {
+        if (!autoResume || positionTicks <= 0 || durationTicks <= 0)
+            return 0;
+        if (positionTicks >= (durationTicks * 95) / 100)
+            return 0;
+        return positionTicks;
+    }
 
     // T36 测试钩子（假 Emby 服务器 selftest 使用；不改变生产路径）。
     void requestEpisodeSiblingsForTest(const QString &episodeId);
@@ -105,6 +115,11 @@ private:
     void tryNextPlaybackCandidate(const QString &reason);
     void handlePlaybackTimeout();
     void handlePlaybackFailure(const QString &reason);
+    void showPlaybackErrorDialog(const QString &code, const QString &detail, bool retryable);
+    void retryPlaybackAfterFailure();
+    void leavePlaybackAfterFailure();
+    void resetLocalPlaybackState();
+    void applyHardwareFallback(const QString &hwdec);
     QString sanitizedPlaybackUrl(const QString &urlString) const;
     void startEmbyPlayback(const QString &itemId, const QString &title,
                            const emby::MediaSourceInfo &source, const QString &playSessionId,
@@ -122,7 +137,7 @@ private:
     void showPlayerPage();
     void reportPlaybackStart();
     void reportPlaybackProgress(const QString &eventName, qint64 positionMs = -1);
-    void reportPlaybackStopped();
+    void reportPlaybackStopped(bool waitForCompletion = false);
     void clearEmbySession();
     void handleApiError(const emby::ApiError &error);
 
@@ -138,6 +153,15 @@ private:
     QString m_currentPlaybackUrl;
     bool m_playbackFileLoaded = false;
     bool m_playbackFailurePrompted = false;
+    int m_playbackRetryCount = 0;
+    QString m_lastPlaybackErrorCode;
+    QString m_lastPlaybackErrorDetail;
+    QStringList m_localFiles;
+    int m_localStartIndex = 0;
+    bool m_localPlayback = false;
+    bool m_autoResume = true;
+    QString m_hwdecMode = QStringLiteral("auto");
+    int m_hwdecFallbackStage = 0;
 
     QString m_currentSubtitle;
     bool m_surfaceAttached = false;

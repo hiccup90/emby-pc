@@ -8,16 +8,23 @@
 
 #include "deviceprofile.h"
 #include "embyclient.h"
+#include "securetokenstore.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
+#include <QFileDevice>
+#include <QFileInfo>
 #include <QHash>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -187,6 +194,14 @@ private:
             status = 404;
             reason = "Not Found";
             body = R"({"Message":"not found"})";
+        } else if (request.method == "GET" && path == "/Users/u1/Items/unauthorized") {
+            status = 401;
+            reason = "Unauthorized";
+            body = R"({"Message":"token expired"})";
+        } else if (request.method == "GET" && path == "/Users/u1/Items/forbidden") {
+            status = 403;
+            reason = "Forbidden";
+            body = R"({"Message":"forbidden"})";
         } else {
             status = 404;
             reason = "Not Found";
@@ -213,6 +228,15 @@ const HttpRequest *lastRequest(const FakeEmbyServer &server)
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
+
+    // Keep QSettings test data out of the real user profile. The legacy
+    // migration test below writes the old "auth/profile" key here.
+    QTemporaryDir settingsRoot;
+    check(settingsRoot.isValid(), QStringLiteral("temporary QSettings directory created"));
+    QCoreApplication::setOrganizationName(QStringLiteral("EmbyClientTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("emby-client-tests"));
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsRoot.path());
 
     FakeEmbyServer server;
     check(server.start(), QStringLiteral("fake Emby server listens"));
@@ -620,6 +644,219 @@ int main(int argc, char *argv[])
         check(waiter.wait(), QStringLiteral("404 callback fires"));
         check(error.httpStatus == 404 && error.message == QStringLiteral("not found"),
               QStringLiteral("HTTP error payload parsed: ") + error.toString());
+    }
+
+    // ---- T65: same-origin header filtering ----------------------------
+    {
+        const QUrl sameOrigin(server.baseUrl() + QStringLiteral("/Videos/item1/stream"));
+        check(client.isSameOrigin(sameOrigin), QStringLiteral("same-origin media URL accepted"));
+        check(!client.streamHeaderLines(sameOrigin).isEmpty(),
+              QStringLiteral("same-origin media URL gets Authorization header"));
+        check(client.mpvHeaderFields(sameOrigin).contains(QStringLiteral("Authorization")),
+              QStringLiteral("same-origin media URL gets mpv header fields"));
+
+        const QUrl otherHost(QStringLiteral("https://cdn.example.invalid/video.mkv"));
+        check(!client.isSameOrigin(otherHost), QStringLiteral("cross-host URL rejected"));
+        check(client.streamHeaderLines(otherHost).isEmpty(),
+              QStringLiteral("cross-host URL gets no Authorization header"));
+        check(client.mpvHeaderFields(otherHost).isEmpty(),
+              QStringLiteral("cross-host URL gets no mpv token header"));
+        check(!client.streamHeaders(otherHost).size(),
+              QStringLiteral("cross-host URL has empty header list"));
+        check(!client.isSameOrigin(QUrl(QStringLiteral("file:///tmp/movie.mkv"))),
+              QStringLiteral("file URL is not same-origin"));
+        check(!client.isSameOrigin(QUrl(QStringLiteral("http://127.0.0.1:1/video"))),
+              QStringLiteral("different port is not same-origin"));
+    }
+
+    // ---- T65: 401/403 authenticationExpired + clearAuthentication -----
+    {
+        int expiredCount = 0;
+        int expiredStatus = 0;
+        QString expiredOperation;
+        QObject::connect(&client, &EmbyClient::authenticationExpired,
+                         [&](int status, const QString &operation, const QString &) {
+                             ++expiredCount;
+                             expiredStatus = status;
+                             expiredOperation = operation;
+                         });
+        ApiError error;
+        Waiter waiter;
+        client.fetchItem(QStringLiteral("unauthorized"),
+                         [&](const MediaItem &, const ApiError &value) {
+                             error = value;
+                             waiter.finish();
+                         });
+        check(waiter.wait(), QStringLiteral("401 callback fires"));
+        check(error.httpStatus == 401, QStringLiteral("401 error status parsed"));
+        check(expiredCount == 1 && expiredStatus == 401,
+              QStringLiteral("authenticationExpired emitted once with 401"));
+        check(expiredOperation == QStringLiteral("ItemDetails"),
+              QStringLiteral("authenticationExpired carries operation"));
+
+        // The signal is a notification; the UI owns session teardown. It must
+        // not fire again for a second failed request in the same session.
+        ApiError secondError;
+        Waiter secondWaiter;
+        client.fetchItem(QStringLiteral("unauthorized"),
+                         [&](const MediaItem &, const ApiError &value) {
+                             secondError = value;
+                             secondWaiter.finish();
+                         });
+        check(secondWaiter.wait(), QStringLiteral("second 401 callback fires"));
+        check(secondError.httpStatus == 401 && expiredCount == 1,
+              QStringLiteral("authenticationExpired is deduplicated per profile"));
+
+        check(client.isAuthenticated(),
+              QStringLiteral("401 signal does not implicitly clear token"));
+        client.clearAuthentication();
+        check(!client.isAuthenticated(), QStringLiteral("clearAuthentication clears token"));
+        check(client.profile().accessToken.isEmpty() && client.profile().userId.isEmpty(),
+              QStringLiteral("clearAuthentication clears token and user id"));
+        check(client.baseUrl() == server.baseUrl(),
+              QStringLiteral("clearAuthentication keeps server URL"));
+    }
+    {
+        EmbyClient forbiddenClient;
+        ServerProfile forbiddenProfile = profile;
+        forbiddenProfile.userId = QStringLiteral("u1");
+        forbiddenProfile.accessToken = QStringLiteral("forbidden-token");
+        forbiddenClient.setProfile(forbiddenProfile);
+        int forbiddenCount = 0;
+        int forbiddenStatus = 0;
+        QObject::connect(&forbiddenClient, &EmbyClient::authenticationExpired,
+                         [&](int status, const QString &, const QString &) {
+                             ++forbiddenCount;
+                             forbiddenStatus = status;
+                         });
+        ApiError error;
+        Waiter waiter;
+        forbiddenClient.fetchItem(QStringLiteral("forbidden"),
+                                  [&](const MediaItem &, const ApiError &value) {
+                                      error = value;
+                                      waiter.finish();
+                                  });
+        check(waiter.wait(), QStringLiteral("403 callback fires"));
+        check(error.httpStatus == 403 && forbiddenCount == 1 && forbiddenStatus == 403,
+              QStringLiteral("authenticationExpired handles 403"));
+    }
+
+    {
+        // Bad credentials are a login failure, not an expired existing session;
+        // the UI login dialog handles this directly.
+        EmbyClient badLoginClient;
+        badLoginClient.setProfile(profile);
+        int expiredCount = 0;
+        QObject::connect(&badLoginClient, &EmbyClient::authenticationExpired,
+                         [&](int, const QString &, const QString &) { ++expiredCount; });
+        ApiError error;
+        Waiter waiter;
+        badLoginClient.authenticate(QStringLiteral("tester"), QStringLiteral("wrong"),
+                                    [&](const AuthResult &, const ApiError &value) {
+                                        error = value;
+                                        waiter.finish();
+                                    });
+        check(waiter.wait(), QStringLiteral("bad login callback fires"));
+        check(error.httpStatus == 401 && expiredCount == 0,
+              QStringLiteral("login 401 does not emit sessionExpired"));
+    }
+
+    // ---- T65: secure profile storage + legacy migration ----------------
+    {
+        QTemporaryDir secureDir;
+        check(secureDir.isValid(), QStringLiteral("secure store temp dir created"));
+        SecureProfileStore store(secureDir.path());
+        ServerProfile stored = profile;
+        stored.accessToken = QStringLiteral("unit-test-secure-token");
+        stored.userId = QStringLiteral("u-secure");
+        stored.userName = QStringLiteral("secure-user");
+        check(store.saveProfile(stored), QStringLiteral("secure profile save succeeds"));
+        check(store.hasStoredProfile(), QStringLiteral("secure profile exists"));
+        check(store.backendName().contains(QStringLiteral("DPAPI"))
+                  || store.backendName().contains(QStringLiteral("Linux")),
+              QStringLiteral("secure backend name available"));
+#ifndef Q_OS_WIN
+        const QString path = store.storagePath();
+        check(QFileInfo::exists(path), QStringLiteral("secure profile file exists"));
+        QFile file(path);
+        check(file.open(QIODevice::ReadOnly), QStringLiteral("secure profile file readable"));
+        const QByteArray raw = file.readAll();
+        file.close();
+        check(!raw.contains("unit-test-secure-token"),
+              QStringLiteral("secure profile file does not contain plaintext token"));
+        const QFileDevice::Permissions permissions = QFileInfo(path).permissions();
+        check(permissions.testFlag(QFileDevice::ReadOwner)
+                  && permissions.testFlag(QFileDevice::WriteOwner)
+                  && !permissions.testFlag(QFileDevice::ReadGroup)
+                  && !permissions.testFlag(QFileDevice::ReadOther),
+              QStringLiteral("secure profile file is owner-only (0600)"));
+#endif
+        const ServerProfile loaded = store.loadProfile();
+        check(loaded.accessToken == QStringLiteral("unit-test-secure-token")
+                  && loaded.userId == QStringLiteral("u-secure"),
+              QStringLiteral("secure profile roundtrip"));
+        store.clear();
+        check(!store.hasStoredProfile(), QStringLiteral("secure profile clear removes storage"));
+        check(store.loadProfile().accessToken.isEmpty(),
+              QStringLiteral("load after clear returns empty profile"));
+    }
+    {
+        QTemporaryDir migrateDir;
+        ServerProfile legacy = profile;
+        legacy.accessToken = QStringLiteral("legacy-plain-token");
+        legacy.userId = QStringLiteral("u-legacy");
+        QSettings settings;
+        settings.setValue(QStringLiteral("auth/profile"),
+                          QJsonDocument(legacy.toJson()).toJson(QJsonDocument::Compact));
+        settings.sync();
+        check(settings.contains(QStringLiteral("auth/profile")),
+              QStringLiteral("legacy plaintext profile seeded"));
+        SecureProfileStore store(migrateDir.path());
+        const ServerProfile migrated = store.loadProfile();
+        check(migrated.accessToken == QStringLiteral("legacy-plain-token"),
+              QStringLiteral("legacy profile is migrated"));
+        check(!QSettings().contains(QStringLiteral("auth/profile")),
+              QStringLiteral("legacy plaintext profile key removed after migration"));
+        check(store.hasStoredProfile(), QStringLiteral("migrated secure profile exists"));
+    }
+#ifndef Q_OS_WIN
+    {
+        QTemporaryDir tamperDir;
+        check(QDir().mkpath(tamperDir.path()), QStringLiteral("tamper test dir created"));
+        QFile file(tamperDir.path() + QStringLiteral("/profile.dat"));
+        check(file.open(QIODevice::WriteOnly), QStringLiteral("tamper test file writable"));
+        file.write("not-a-secure-profile");
+        file.close();
+        SecureProfileStore store(tamperDir.path());
+        check(store.loadProfile().accessToken.isEmpty(),
+              QStringLiteral("corrupt secure profile falls back safely"));
+    }
+#endif
+
+    // ---- T65: diagnostic redaction ------------------------------------
+    {
+        const QString text = QStringLiteral(
+            "Authorization: MediaBrowser Client=\"C\", Token=\"auth-token\"\n"
+            "GET /x?api_key=unit-test-query-token\n"
+            "{\"AccessToken\":\"json-token\",\"Pw\":\"pw-token\"}");
+        const QString redacted = redactSensitiveText(text);
+        check(!redacted.contains(QStringLiteral("auth-token")),
+              QStringLiteral("redaction removes Authorization token"));
+        check(!redacted.contains(QStringLiteral("unit-test-query-token")),
+              QStringLiteral("redaction removes api_key query value"));
+        check(!redacted.contains(QStringLiteral("json-token")),
+              QStringLiteral("redaction removes AccessToken JSON value"));
+        check(!redacted.contains(QStringLiteral("pw-token")),
+              QStringLiteral("redaction removes password JSON value"));
+        check(redacted.contains(QStringLiteral("<redacted>")),
+              QStringLiteral("redaction leaves marker"));
+
+        const QString mpvLine = redactSensitiveText(QStringLiteral(
+            "Set property: http-header-fields=\"Authorization: MediaBrowser "
+            "Token=\\\"mpv-header-token\\\"\""));
+        check(!mpvLine.contains(QStringLiteral("mpv-header-token"))
+                  && mpvLine.contains(QStringLiteral("<redacted>")),
+              QStringLiteral("redaction handles mpv http-header-fields log line"));
     }
 
     qInfo().noquote() << (g_failures == 0 ? QStringLiteral("ALL TESTS PASSED")

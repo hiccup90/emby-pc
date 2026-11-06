@@ -203,6 +203,12 @@ void SettingsPage::buildUi()
     m_autoPlayNextCheck->setCursor(Qt::PointingHandCursor);
     addControlRow(playbackLayout, QStringLiteral("剧集播放"), m_autoPlayNextCheck, playback);
 
+    m_autoResumeCheck = new QCheckBox(QStringLiteral("自动续播"), playback);
+    m_autoResumeCheck->setObjectName(QStringLiteral("SettingsAutoResumeCheck"));
+    m_autoResumeCheck->setCursor(Qt::PointingHandCursor);
+    m_autoResumeCheck->setToolTip(QStringLiteral("从上次观看位置继续；已看完 95% 的条目自动从头播放"));
+    addControlRow(playbackLayout, QStringLiteral("续播"), m_autoResumeCheck, playback);
+
     m_rememberVolumeCheck = new QCheckBox(QStringLiteral("记住音量"), playback);
     m_rememberVolumeCheck->setObjectName(QStringLiteral("SettingsRememberVolumeCheck"));
     m_rememberVolumeCheck->setCursor(Qt::PointingHandCursor);
@@ -372,7 +378,7 @@ void SettingsPage::buildUi()
     connect(m_logoutButton, &QPushButton::clicked, this, &SettingsPage::logoutRequested);
     connect(m_mockCheck, &QCheckBox::toggled, this, [this](bool checked) {
         if (m_dataSourceValue) {
-            m_dataSourceValue->setText(checked ? QStringLiteral("Mock（本地演示数据）")
+            m_dataSourceValue->setText(checked ? QStringLiteral("本地演示数据")
                                                : QStringLiteral("Emby 服务器（真实媒体库）"));
         }
         emit mockModeChanged(checked);
@@ -402,6 +408,7 @@ void SettingsPage::buildUi()
     };
     connect(m_subtitleCombo, &QComboBox::currentIndexChanged, this, changed);
     connect(m_autoPlayNextCheck, &QCheckBox::toggled, this, changed);
+    connect(m_autoResumeCheck, &QCheckBox::toggled, this, changed);
     connect(m_rememberVolumeCheck, &QCheckBox::toggled, this, changed);
     connect(m_autoHideCombo, &QComboBox::currentIndexChanged, this, changed);
     connect(m_cacheLimitSpin, &QSpinBox::valueChanged, this, changed);
@@ -421,6 +428,8 @@ void SettingsPage::loadSettings()
 
     m_autoPlayNextCheck->setChecked(
         settings.value(QStringLiteral("player/autoPlayNext"), true).toBool());
+    m_autoResumeCheck->setChecked(
+        settings.value(QStringLiteral("player/autoResume"), true).toBool());
     m_rememberVolumeCheck->setChecked(
         settings.value(QStringLiteral("player/rememberVolume"), true).toBool());
 
@@ -437,6 +446,8 @@ void SettingsPage::loadSettings()
         settings.setValue(QStringLiteral("player/subtitleLanguage"), QStringLiteral("chi,zho,zh"));
     if (!settings.contains(QStringLiteral("player/autoPlayNext")))
         settings.setValue(QStringLiteral("player/autoPlayNext"), true);
+    if (!settings.contains(QStringLiteral("player/autoResume")))
+        settings.setValue(QStringLiteral("player/autoResume"), true);
     if (!settings.contains(QStringLiteral("player/rememberVolume")))
         settings.setValue(QStringLiteral("player/rememberVolume"), true);
     if (!settings.contains(QStringLiteral("player/volume")))
@@ -453,6 +464,7 @@ void SettingsPage::saveControlValues()
     QSettings settings;
     settings.setValue(QStringLiteral("player/subtitleLanguage"), subtitleLanguage());
     settings.setValue(QStringLiteral("player/autoPlayNext"), autoPlayNext());
+    settings.setValue(QStringLiteral("player/autoResume"), autoResume());
     settings.setValue(QStringLiteral("player/rememberVolume"), rememberVolume());
     settings.setValue(QStringLiteral("player/autoHideDelayMs"), autoHideDelayMs());
     settings.setValue(QStringLiteral("cache/imageLimitMB"), cacheImageLimitMB());
@@ -515,7 +527,7 @@ void SettingsPage::setMockMode(bool enabled)
         m_mockCheck->setChecked(enabled);
     }
     if (m_dataSourceValue) {
-        m_dataSourceValue->setText(enabled ? QStringLiteral("Mock（本地演示数据）")
+        m_dataSourceValue->setText(enabled ? QStringLiteral("本地演示数据")
                                            : QStringLiteral("Emby 服务器（真实媒体库）"));
     }
 }
@@ -545,6 +557,11 @@ QString SettingsPage::subtitleLanguage() const
 bool SettingsPage::autoPlayNext() const
 {
     return m_autoPlayNextCheck && m_autoPlayNextCheck->isChecked();
+}
+
+bool SettingsPage::autoResume() const
+{
+    return m_autoResumeCheck && m_autoResumeCheck->isChecked();
 }
 
 bool SettingsPage::rememberVolume() const
@@ -632,27 +649,17 @@ void SettingsPage::rebuildLibraryRows()
         row.row = new QWidget(m_libraryGroup);
         row.row->setObjectName(QStringLiteral("SettingsLibraryRow"));
         row.row->setProperty("libraryId", row.id);
-        auto *layout = new QHBoxLayout(row.row);
+        // T64：800×480 下内容区只有约 260px；媒体库行分两行，避免固定控件横向溢出。
+        auto *layout = new QVBoxLayout(row.row);
         layout->setContentsMargins(0, 2, 0, 2);
-        layout->setSpacing(8);
+        layout->setSpacing(4);
+        auto *titleLine = new QHBoxLayout();
+        titleLine->setSpacing(8);
         auto *name = new QLabel(row.name, row.row);
         name->setObjectName(QStringLiteral("SettingName"));
-        name->setMinimumWidth(120);
-        layout->addWidget(name);
-
-        row.sidebarVisible = new QCheckBox(QStringLiteral("侧边栏显示"), row.row);
-        row.sidebarVisible->setObjectName(QStringLiteral("SettingsSidebarVisibleCheck"));
-        row.sidebarVisible->setChecked(!hiddenSidebar.contains(row.id));
-        row.homeVisible = new QCheckBox(QStringLiteral("首页显示"), row.row);
-        row.homeVisible->setObjectName(QStringLiteral("SettingsHomeVisibleCheck"));
-        row.homeVisible->setChecked(!hiddenHome.contains(row.id));
-        row.homeVisible->setEnabled(row.sidebarVisible->isChecked());
-        row.homeVisible->setToolTip(row.sidebarVisible->isChecked()
-                                        ? QStringLiteral("在首页显示该媒体库最新条目")
-                                        : QStringLiteral("需先勾选侧边栏显示"));
-        layout->addWidget(row.sidebarVisible);
-        layout->addWidget(row.homeVisible);
-        layout->addStretch(1);
+        name->setMinimumWidth(80);
+        titleLine->addWidget(name);
+        titleLine->addStretch(1);
 
         auto *up = new QPushButton(QStringLiteral("↑"), row.row);
         up->setObjectName(QStringLiteral("SettingsLibraryUpButton"));
@@ -664,8 +671,26 @@ void SettingsPage::rebuildLibraryRows()
         down->setProperty("role", QStringLiteral("secondary"));
         down->setFixedSize(28, 26);
         down->setToolTip(QStringLiteral("下移首页顺序"));
-        layout->addWidget(up);
-        layout->addWidget(down);
+        titleLine->addWidget(up);
+        titleLine->addWidget(down);
+        layout->addLayout(titleLine);
+
+        auto *checksLine = new QHBoxLayout();
+        checksLine->setSpacing(8);
+        row.sidebarVisible = new QCheckBox(QStringLiteral("侧边栏显示"), row.row);
+        row.sidebarVisible->setObjectName(QStringLiteral("SettingsSidebarVisibleCheck"));
+        row.sidebarVisible->setChecked(!hiddenSidebar.contains(row.id));
+        row.homeVisible = new QCheckBox(QStringLiteral("首页显示"), row.row);
+        row.homeVisible->setObjectName(QStringLiteral("SettingsHomeVisibleCheck"));
+        row.homeVisible->setChecked(!hiddenHome.contains(row.id));
+        row.homeVisible->setEnabled(row.sidebarVisible->isChecked());
+        row.homeVisible->setToolTip(row.sidebarVisible->isChecked()
+                                        ? QStringLiteral("在首页显示该媒体库最新条目")
+                                        : QStringLiteral("需先勾选侧边栏显示"));
+        checksLine->addWidget(row.sidebarVisible);
+        checksLine->addWidget(row.homeVisible);
+        checksLine->addStretch(1);
+        layout->addLayout(checksLine);
 
         const QString rowId = row.id;
         connect(row.sidebarVisible, &QCheckBox::toggled, this, [this, rowId](bool checked) {
@@ -773,6 +798,7 @@ void SettingsPage::copyDiagnosticsToClipboard()
     lines << QStringLiteral("cache usage: %1").arg(m_cacheUsageValue->text());
     lines << QStringLiteral("subtitle language: %1").arg(subtitleLanguage());
     lines << QStringLiteral("auto play next: %1").arg(autoPlayNext() ? 1 : 0);
+    lines << QStringLiteral("auto resume: %1").arg(autoResume() ? 1 : 0);
     lines << QStringLiteral("remember volume: %1").arg(rememberVolume() ? 1 : 0);
     lines << QStringLiteral("auto hide delay ms: %1").arg(autoHideDelayMs());
     lines << QStringLiteral("image cache limit MB: %1").arg(cacheImageLimitMB());

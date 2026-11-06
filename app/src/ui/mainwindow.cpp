@@ -548,6 +548,12 @@ void MainWindow::connectSignals()
     connect(m_search, &QLineEdit::returnPressed, this, &MainWindow::applySearchFilter);
 
     // 首页
+    connect(m_home, &HomeView::retryRequested, this, [this]() {
+        if (m_mockMode)
+            loadMockHome();
+        else
+            loadRealHome();
+    });
     connect(m_home, &HomeView::itemActivated, this, [this](const QString &itemId) {
         openDetail(itemId);
     });
@@ -1602,7 +1608,20 @@ void MainWindow::onLoggedIn(const emby::ServerProfile &profile, const emby::Serv
                              3000);
 }
 
+void MainWindow::sessionExpired(const QString &message)
+{
+    clearSessionAndShowLogin(message.isEmpty()
+                                 ? QStringLiteral("登录状态已失效，请重新登录。")
+                                 : message);
+}
+
 void MainWindow::logout()
+{
+    clearSessionAndShowLogin(QStringLiteral("已退出登录，请重新连接服务器。"));
+    statusBar()->showMessage(QStringLiteral("已退出登录"), 2000);
+}
+
+void MainWindow::clearSessionAndShowLogin(const QString &message)
 {
     if (m_playerMode)
         setPlayerMode(false);
@@ -1634,8 +1653,7 @@ void MainWindow::logout()
     refreshServerCard();
     updateSessionUi();
     emit loginStateChanged(false);
-    statusBar()->showMessage(QStringLiteral("已退出登录"), 2000);
-    showLoginDialog(QStringLiteral("已退出登录，请重新连接服务器。"));
+    showLoginDialog(message);
 }
 
 void MainWindow::updateSessionUi()

@@ -76,6 +76,9 @@ public:
 
     // 打开登录框（设置页“登录…”也走这里）。
     void requestLogin();
+    // T65：播放层收到 401/认证失效后调用，统一清 tokenStore/profile/UI 并拉登录框。
+    // 避免只 requestLogin 而 hasSession()/旧 token 仍残留。
+    void sessionExpired(const QString &message = QString());
 
     bool hasSession() const { return m_sessionActive && m_sessionProfile.isAuthenticated(); }
     const emby::ServerProfile &sessionProfile() const { return m_sessionProfile; }
@@ -182,6 +185,7 @@ private:
     void showLoginDialog(const QString &message = QString());
     void onLoggedIn(const emby::ServerProfile &profile, const emby::ServerInfo &info);
     void logout();
+    void clearSessionAndShowLogin(const QString &message);
     void updateSessionUi();
 
     Options m_options;

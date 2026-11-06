@@ -6,6 +6,7 @@
 
 #include <QDebug>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QProgressBar>
@@ -16,6 +17,7 @@
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -35,6 +37,8 @@ public:
         setObjectName(QStringLiteral("ResumeCard"));
         setAttribute(Qt::WA_StyledBackground, true);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(item.title);
         setFixedWidth(236);
 
         auto *layout = new QVBoxLayout(this);
@@ -109,6 +113,17 @@ protected:
         QWidget::mousePressEvent(event);
     }
 
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter
+             || event->key() == Qt::Key_Space) && onClick) {
+            onClick();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
 private:
     ThumbnailCache *m_cache = nullptr;
     MediaItem m_item;
@@ -133,6 +148,8 @@ public:
         setObjectName(QStringLiteral("HomeSectionCard"));
         setAttribute(Qt::WA_StyledBackground, true);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(item.title);
 
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 6);
@@ -220,6 +237,17 @@ protected:
         if (event->button() == Qt::LeftButton && onClick)
             onClick();
         QWidget::mousePressEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter
+             || event->key() == Qt::Key_Space) && onClick) {
+            onClick();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
     }
 
 private:
@@ -312,6 +340,7 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     m_sectionsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_sectionsContent = new QWidget(m_sectionsScroll);
     m_sectionsContent->setObjectName(QStringLiteral("HomeSectionsContent"));
+    m_sectionsContent->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_sectionsLayout = new QVBoxLayout(m_sectionsContent);
     m_sectionsLayout->setContentsMargins(30, 18, 30, 24);
     m_sectionsLayout->setSpacing(18);
@@ -320,6 +349,27 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     m_viewStack->addWidget(m_sectionsScroll);
     m_viewStack->setCurrentWidget(m_legacyPage);
 
+    // T64：sectioned 首页的加载/错误横幅；只在真实数据 home 上显示，不遮挡卡片。
+    m_sectionsBanner = new QWidget(this);
+    m_sectionsBanner->setObjectName(QStringLiteral("HomeSectionsBanner"));
+    m_sectionsBanner->setVisible(false);
+    auto *bannerLayout = new QHBoxLayout(m_sectionsBanner);
+    bannerLayout->setContentsMargins(30, 8, 30, 8);
+    bannerLayout->setSpacing(12);
+    m_sectionsBannerLabel = new QLabel(m_sectionsBanner);
+    m_sectionsBannerLabel->setObjectName(QStringLiteral("HomeSectionsBannerLabel"));
+    m_sectionsBannerLabel->setWordWrap(true);
+    m_sectionsBannerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    bannerLayout->addWidget(m_sectionsBannerLabel, 1);
+    m_sectionsRetryButton = new QPushButton(QStringLiteral("重试"), m_sectionsBanner);
+    m_sectionsRetryButton->setObjectName(QStringLiteral("HomeSectionsRetryButton"));
+    m_sectionsRetryButton->setProperty("role", QStringLiteral("secondary"));
+    m_sectionsRetryButton->setCursor(Qt::PointingHandCursor);
+    m_sectionsRetryButton->setVisible(false);
+    bannerLayout->addWidget(m_sectionsRetryButton);
+    connect(m_sectionsRetryButton, &QPushButton::clicked, this, &HomeView::retryRequested);
+
+    root->addWidget(m_sectionsBanner);
     root->addWidget(m_viewStack);
 
     connect(m_recent, &LibraryView::itemActivated, this, &HomeView::itemActivated);
@@ -538,6 +588,7 @@ void HomeView::refreshThumbnailsNow()
 
 void HomeView::setRecentItems(const QList<MediaItem> &items)
 {
+    setSectionsBanner(QString(), QString(), false);
     showLegacyPage();
     m_recent->setItems(items);
 }
@@ -558,6 +609,7 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
     m_usingSections = true;
     if (m_viewStack && m_sectionsScroll)
         m_viewStack->setCurrentWidget(m_sectionsScroll);
+    setSectionsBanner(QString(), QString(), false);
     m_sectionRows.clear();
     clearHomeSections();
     for (const HomeSection &section : sections) {
@@ -620,6 +672,7 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
             row.scroll = new QScrollArea(row.row);
             row.scroll->setObjectName(QStringLiteral("HomeSectionScroll"));
             row.scroll->setWidgetResizable(false);
+            row.scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
             row.scroll->setFrameShape(QFrame::NoFrame);
             row.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
             row.scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -665,7 +718,8 @@ void HomeView::layoutPreviewRow(SectionRow &row)
     if (!row.grid || !row.preview)
         return;
     const int available = qMax(240, m_sectionsScroll->viewport()->width() - 64);
-    int columns = qBound(6, qMax(1, available / 160), 8);
+    // T64：窄窗口（800）不能强行 6 列 × 最小 76px，否则右侧卡片会被裁。
+    int columns = qBound(2, qMax(1, available / 160), 8);
     columns = qMin(columns, qMax(1, row.section.items.size()));
     const int spacing = 16;
     const int cardWidth = qMax(76, (available - (columns - 1) * spacing) / columns);
@@ -709,7 +763,7 @@ void HomeView::relayoutPreviewRows()
         m_sectionsLayout->activate();
     if (m_sectionsContent) {
         m_sectionsContent->updateGeometry();
-        m_sectionsContent->adjustSize();
+        updateSectionsContentGeometry();
     }
     if (m_sectionsScroll) {
         if (QWidget *viewport = m_sectionsScroll->widget())
@@ -722,8 +776,10 @@ void HomeView::relayoutPreviewRows()
             return;
         if (m_sectionsLayout)
             m_sectionsLayout->activate();
-        if (m_sectionsContent)
-            m_sectionsContent->adjustSize();
+        if (m_sectionsContent) {
+            m_sectionsContent->updateGeometry();
+            updateSectionsContentGeometry();
+        }
         if (m_sectionsScroll)
             m_sectionsScroll->verticalScrollBar()->update();
     });
@@ -850,6 +906,24 @@ void HomeView::clearHomeSections()
     m_sectionsLayout->addStretch(1);
 }
 
+void HomeView::updateSectionsContentGeometry()
+{
+    if (!m_usingSections || !m_sectionsContent || !m_sectionsLayout)
+        return;
+    m_sectionsLayout->activate();
+    const int viewportWidth = m_sectionsScroll ? m_sectionsScroll->viewport()->width() : width();
+    if (viewportWidth <= 1)
+        return;
+    // T64：QScrollArea 的 widget 宽度只能等于 viewport；resume 内部横向滚动不能把
+    // 外层 HomeSectionsContent 撑宽，否则 800/960 下右侧卡片和「查看全部」被裁。
+    m_sectionsContent->setMinimumWidth(0);
+    m_sectionsContent->setMaximumWidth(viewportWidth);
+    const int contentHeight = qMax(m_sectionsLayout->sizeHint().height(),
+                                   m_sectionsScroll ? m_sectionsScroll->viewport()->height() : 0);
+    m_sectionsContent->setMinimumHeight(contentHeight);
+    m_sectionsContent->resize(viewportWidth, contentHeight);
+}
+
 void HomeView::resizeHomeSectionRows()
 {
     for (SectionRow &row : m_sectionRows) {
@@ -859,19 +933,40 @@ void HomeView::resizeHomeSectionRows()
         const QSize hint = row.layout->sizeHint();
         if (hint.width() > 0 && hint.height() > 0)
             row.content->setFixedSize(hint);
+        if (row.scroll) {
+            row.scroll->setMinimumWidth(0);
+            row.scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        }
     }
     if (m_sectionsLayout)
         m_sectionsLayout->activate();
     if (m_sectionsContent) {
         m_sectionsContent->updateGeometry();
-        m_sectionsContent->adjustSize();
+        updateSectionsContentGeometry();
     }
+}
+
+void HomeView::setSectionsBanner(const QString &text, const QString &state, bool retry)
+{
+    if (!m_sectionsBanner || !m_sectionsBannerLabel || !m_sectionsRetryButton)
+        return;
+    m_sectionsBannerLabel->setText(text);
+    m_sectionsBannerLabel->setProperty("state", state);
+    m_sectionsBannerLabel->style()->unpolish(m_sectionsBannerLabel);
+    m_sectionsBannerLabel->style()->polish(m_sectionsBannerLabel);
+    m_sectionsRetryButton->setVisible(retry);
+    m_sectionsBanner->setVisible(!text.isEmpty());
 }
 
 void HomeView::setLoading(bool loading, const QString &message)
 {
     m_loading = loading;
     m_error.clear();
+    if (loading || m_usingSections) {
+        setSectionsBanner(loading ? (message.isEmpty() ? QStringLiteral("正在加载首页…") : message)
+                                  : QString(),
+                          QStringLiteral("loading"), false);
+    }
     if (loading) {
         m_recent->setInitialLoading(true, message);
         if (m_resumeItems.isEmpty()) {
@@ -889,6 +984,8 @@ void HomeView::setError(const QString &message)
 {
     m_loading = false;
     m_error = message;
+    if (m_usingSections)
+        setSectionsBanner(message, QStringLiteral("error"), true);
     m_recent->setError(message);
     if (m_resumeItems.isEmpty()) {
         m_resumeEmpty->setText(message);

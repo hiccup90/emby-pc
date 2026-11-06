@@ -104,4 +104,15 @@
 - 新增 `MainWindow::restoreWindowedChrome()` 统一四条路径（进/出播放、进/出全屏）：恢复 800×480 最小尺寸 → 必要时 resize → 显示 sidebar/topbar/statusbar → updateWindowChrome → syncTitleBarGeometry + layout activate + titleBar raise → 0ms 再 sync。
 - `syncTitleBarGeometry()` 增加 TitleBar layout activate，确保按钮按新宽度重排。
 - 日志：`MainWindow::restoreWindowedChrome size/minimum/titleBar/minButton/maxButton/closeButton`。
-- 回归：播放模式缩到 320×180 后返回，断言窗口≥800×480、TitleBar 可见且宽度=窗口宽、close/min/max rect 在窗口内；总计 **190 项 ALL PASS**。
+- 回归：播放模式缩到 320×180 后返回，断言窗口≥800×480、TitleBar 可见且宽度=窗口宽、close/min/max rect 在窗口内；总计 **201 项 ALL PASS**。
+
+## 19. T64 B1-B P0/P1 UI 批修
+
+- 首页溢出：`HomeView::updateSectionsContentGeometry()` 将 `HomeSectionsContent` 宽度限制为 viewport，不再 `adjustSize()` 撑宽；预览列数最小 2（800 宽度下由 6 列降为 3 列），resume 横向滚动只留在内层 `HomeSectionScroll`。800/960/1280 三档断言 content 宽度≤viewport、horizontal max=0、卡片 rect 不越界。
+- 320 compact：宽度 <520 或高度 <400 时顶栏 44px、控制条 64px、播放按钮 36px、字幕/音轨/体积/全屏/统计收进「更多」菜单；seek 缩放命中仍 28px，320×180 无重叠。
+- 首页错误态：真实数据失败显示 `HomeSectionsBanner` + 重试，新增 `HomeView::retryRequested`，ui/mainwindow 已连接 loadRealHome。
+- 设置 800：媒体库行改两行布局（名称+排序 / 显示 checkbox），避免 800×480 右侧被裁。
+- 可访问性：首页 ResumeCard/HomeSectionCard StrongFocus + Enter/Space + accessibleName；播放器图标按钮补 accessibleName；焦点环从 2px 改 1px 避免 36×36 按钮位移。
+- 接口（供 B1-A）：`ui/playbackerrordialog.h`（错误码/详情/重试/返回/导出诊断）、`SettingsPage::autoResume()` + QSettings `player/autoResume`。
+- 登录：最小宽度 620→520，增加「显示密码」。API auth：图片 URL 去掉 api_key，只走 Authorization 头。
+- 验证：`emby-ui-demo --selftest` **201 项 ALL PASS**；新增 320 compact、首页三档宽度、设置 800、错误对话框、autoResume、登录/密码、a11y 断言。

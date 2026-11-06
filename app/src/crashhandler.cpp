@@ -1,5 +1,7 @@
 #include "crashhandler.h"
 
+#include "securetokenstore.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
@@ -79,7 +81,7 @@ QStringList lastLogLines(int maxLines)
     for (int i = start; i < lines.size(); ++i) {
         const QString line = QString::fromUtf8(lines.at(i)).trimmed();
         if (!line.isEmpty())
-            result.append(line);
+            result.append(emby::redactSensitiveText(line));
     }
     return result;
 }
@@ -174,8 +176,10 @@ void writeCrashFiles(EXCEPTION_POINTERS *exceptionPointers)
         info.ThreadId = ::GetCurrentThreadId();
         info.ExceptionPointers = exceptionPointers;
         info.ClientPointers = FALSE;
-        const MINIDUMP_TYPE type = static_cast<MINIDUMP_TYPE>(
-            MiniDumpWithThreadInfo | MiniDumpWithDataSegs | MiniDumpWithUnloadedModules);
+        // 不要使用 MiniDumpWithDataSegs：完整可写内存段可能包含 QSettings
+        // 中的 token。MiniDumpNormal 足以定位崩溃地址和线程栈，同时显著缩小
+        // 凭据进入转储的范围；崩溃文本中的 app.log 片段也已做脱敏。
+        const MINIDUMP_TYPE type = MiniDumpNormal;
         ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), file, type,
                             exceptionPointers ? &info : nullptr, nullptr, nullptr);
         ::CloseHandle(file);

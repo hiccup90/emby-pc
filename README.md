@@ -1,9 +1,9 @@
 # Emby PC（Windows 桌面客户端）
 
-自研 Emby 桌面客户端：**Qt 6 Widgets + libmpv（--wid 嵌入）+ mpv OSC**，目标平台 Windows 10/11 x64。
+自研 Emby 桌面客户端：**Qt 6 Widgets + libmpv（--wid 嵌入）+ Qt 控制条**，目标平台 Windows 10/11 x64。
 核心目标：HDR10 / 杜比视界（P5/P8）片源正确 tone-map 到 SDR（**不发灰、不绿屏**）、ASS 特效字幕、低 GPU 占用（D3D11VA 零回拷）。
 
-> 当前状态：M1 播放内核已完成（本地文件播放 / OSC / 键盘 / 硬解配置），M2 Emby 接入进行中。
+> 当前状态：**v0.1.1-rc 发布候选**（M1 播放内核 + M2/M3 UI + Qt 控制条）；变更见 [CHANGELOG.md](CHANGELOG.md)，发布门禁见 [docs/release-checklist.md](docs/release-checklist.md)。
 > 验收清单见 [docs/windows-acceptance.md](docs/windows-acceptance.md)。
 
 ## 快速开始（Windows）
@@ -30,7 +30,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\fetch-libmpv.ps1 `
 powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPrefix C:\Qt\6.8.3\msvc2022_64
 
 # 3) 构建安装包（需 Inno Setup 6，详见 docs\packaging.md）
-#    iscc /DMyAppVersion=0.1.0 "/DSourceDir=dist\emby-pc-0.1.0-win64" installer\emby-pc.iss
+#    iscc /DMyAppVersion=0.1.1 "/DSourceDir=dist\emby-pc-0.1.1-win64" installer\emby-pc.iss
 ```
 
 > 网络受限时，可先手工下载 mpv-dev 的 .7z，再把本地路径传给 `fetch-libmpv.ps1` 的 `-Url`。
@@ -44,13 +44,13 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 # 或指定目录/配置：BUILD_DIR=build-check BUILD_TYPE=Release ./app/scripts/build-linux.sh
 ```
 
-> --wid 嵌入、D3D11VA 硬解、HDR/DV tone-map、mpv OSC 仍需 Windows 实机验证。
+> --wid 嵌入、D3D11VA 硬解、HDR/DV tone-map、Qt 控制条仍需 Windows 实机验证。
 
 ## 日志与验收
 
 - 应用日志：启动后菜单 **帮助 → 打开日志目录**（Windows 通常在 %LOCALAPPDATA%\emby-pc\emby-pc\）。
 - `app.log`：应用日志（5MB × 3 轮转）；`mpv.log`：mpv 全量日志（打开视频后生成）。
-- 完整分步验收清单（构建/播放/OSC/键盘/统计面板/素材矩阵/窗口/日志收集）：
+- 完整分步验收清单（构建/播放/Qt 控制条/键盘/统计面板/素材矩阵/窗口/日志收集）：
   [docs/windows-acceptance.md](docs/windows-acceptance.md)。
 - CI 说明与常见失败处理：[docs/ci.md](docs/ci.md)。
 
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 │   ├── src/
 │   │   ├── main.cpp         # 入口：app.log 初始化、帮助菜单、创建 ui::MainWindow
 │   │   ├── mainwindow.*     # PlayerController：VideoHost + MpvPlayer 接线
-│   │   ├── mpvplayer.*      # libmpv 封装（--wid、硬解/色彩/OSC、mpv.log）
+│   │   ├── mpvplayer.*      # libmpv 封装（--wid、硬解/色彩、mpv.log）
 │   │   ├── videohost.*      # 视频宿主窗口（--wid 目标）
 │   │   ├── emby/            # Emby/Jellyfin API 客户端（Qt Network 静态库 + 自测）
 │   │   └── ui/              # Qt Widgets UI：侧边栏/媒体库/详情/播放/设置/登录
@@ -93,6 +93,8 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | [docs/libmpv-source.md](docs/libmpv-source.md) | libmpv 来源、SHA-256、GPL/LGPL 许可说明 |
 | [docs/ci.md](docs/ci.md) | Actions 构建、下载 artifact、改版本、排错 |
 | [docs/packaging.md](docs/packaging.md) | 安装包构建、版本号/图标修改、安装/升级/卸载验证 |
+| [CHANGELOG.md](CHANGELOG.md) | v0.1.1-rc 变更（P0 修复列表） |
+| [docs/release-checklist.md](docs/release-checklist.md) | 发布门禁 G1~G8 勾选表 |
 | [reports/](reports/) | GPU/窗口/架构/集成/联调分析报告 |
 
 ## CI

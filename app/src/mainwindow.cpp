@@ -10,6 +10,7 @@
 #include "ui/homeview.h"
 #include "ui/libraryview.h"
 #include "ui/mainwindow.h"
+#include "ui/playbackerrordialog.h"
 #include "ui/playerpage.h"
 #include "ui/settingspage.h"
 
@@ -24,6 +25,9 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QAbstractButton>
+#include <QEventLoop>
+#include <QPushButton>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -38,6 +42,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QSharedPointer>
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -48,6 +53,45 @@
 #include <QWidget>
 
 namespace {
+
+QString hwdecMpvValue(const QString &mode)
+{
+    if (mode == QLatin1String("off"))
+        return QStringLiteral("no");
+    if (mode == QLatin1String("prefer"))
+        return QStringLiteral("d3d11va");
+    return QStringLiteral("auto-safe");
+}
+
+QString redactDiagnosticText(const QString &text)
+{
+    QString redacted = text;
+    static const QRegularExpression auth(
+        QStringLiteral("(?i)(Authorization\\s*:\\s*)[^\\r\\n]+"));
+    redacted.replace(auth, QStringLiteral("\\1<redacted>"));
+    static const QRegularExpression bearer(
+        QStringLiteral("(?i)(Bearer\\s+)[A-Za-z0-9._~+/=-]+"));
+    redacted.replace(bearer, QStringLiteral("\\1<redacted>"));
+    static const QRegularExpression tokens(QStringLiteral(
+        "(?i)((?:api_key|access_token|X-Emby-Token|X-MediaBrowser-Token|Token)\\s*[=:]\\s*)[^&,\\s]+"));
+    redacted.replace(tokens, QStringLiteral("\\1<redacted>"));
+    return redacted;
+}
+
+bool copyRedactedLog(const QString &source, const QString &target)
+{
+    QFile in(source);
+    if (!in.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    const QString text = QString::fromUtf8(in.readAll());
+    in.close();
+    QFile out(target);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
+        return false;
+    out.write(redactDiagnosticText(text).toUtf8());
+    out.close();
+    return true;
+}
 
 QStringList videoFilesInFolder(const QString &folder)
 {
@@ -223,7 +267,30 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                         QStringLiteral("hwdec-current=%1 · vo=%2 · gpu-api=%3")
                             .arg(hwdec.isEmpty() ? QStringLiteral("no") : hwdec, vo, gpuApi));
                 }
+                // T63/A-P0-10：文件已加载后 hwdec 为空/no/-copy 时自动降级并提示。
+                if (m_playbackFileLoaded)
+                    applyHardwareFallback(hwdec);
             });
+    if (m_emby) {
+        // T65/A-P0-08：token 过期（401/403）时结束播放会话、清 token、请求重登录。
+        connect(m_emby, &emby::EmbyClient::authenticationExpired, this,
+                [this](int httpStatus, const QString &operation, const QString &message) {
+                    qWarning() << "PlayerController: authentication expired" << httpStatus
+                               << operation << message;
+                    if (m_player && m_player->isReady())
+                        m_player->stop();
+                    if (m_reporting)
+                        reportPlaybackStopped(false);
+                    clearEmbySession();
+                    if (m_playerPage)
+                        m_playerPage->setPlaying(false);
+                    if (m_player && m_player->isReady())
+                        m_player->clearHttpHeaderFields();
+                    // T65：UI 统一清 tokenStore/profile/session/abortAll 后再弹登录；
+                    // 不能只 requestLogin，否则 hasSession()/旧 token 仍残留。
+                    m_window->sessionExpired(tr("登录状态已失效，请重新登录。"));
+                });
+    }
     connect(m_player, &MpvPlayer::libmpvVersionChanged, this, [this](const QString &version) {
         if (auto *settings = m_window->settingsPage())
             settings->setLibmpvVersionText(version);
@@ -255,6 +322,10 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         }
         logMpvState(QStringLiteral("file-loaded"));
         updateHardwareInfo();
+        QTimer::singleShot(150, this, [this]() {
+            if (m_playbackFileLoaded && m_player)
+                applyHardwareFallback(m_player->getPropertyString("hwdec-current"));
+        });
         showStatus(tr("正在播放"));
         // track-list 在 FILE_LOADED 后才稳定；稍等再取，兼顾部分格式解析延迟。
         QTimer::singleShot(150, this, &PlayerController::refreshTracks);
@@ -288,10 +359,15 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                    << "item" << m_embyItemId << "url"
                    << sanitizedPlaybackUrl(m_currentPlaybackUrl)
                    << "fileLoaded" << m_playbackFileLoaded;
-        if (!m_embyItemId.isEmpty() && !m_playbackFileLoaded
-            && !m_playbackCandidates.isEmpty()) {
-            tryNextPlaybackCandidate(QStringLiteral("mpv error: %1").arg(message));
-            return;
+        if (!m_playbackFileLoaded) {
+            if (!m_embyItemId.isEmpty() && !m_playbackCandidates.isEmpty()) {
+                tryNextPlaybackCandidate(QStringLiteral("fatal mpv error: %1").arg(message));
+                return;
+            }
+            if (m_localPlayback && !m_localFiles.isEmpty()) {
+                handlePlaybackFailure(QStringLiteral("local mpv fatal error: %1").arg(message));
+                return;
+            }
         }
         showStatus(message, 5000);
     });
@@ -301,6 +377,22 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     connect(m_player, &MpvPlayer::toggleFullscreenRequested, this, [this]() {
         if (m_playerPage)
             QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
+    });
+    connect(m_player, &MpvPlayer::nextEpisodeRequested, this, [this]() {
+        qInfo() << "PlayerController: mpv next episode item=" << m_embyItemId
+                << "queue=" << m_episodeQueue.size() << "index=" << m_episodeIndex;
+        if (!m_embyItemId.isEmpty())
+            stepEmbyEpisode(1);
+        else if (m_player->isReady())
+            m_player->playlistNext();
+    });
+    connect(m_player, &MpvPlayer::previousEpisodeRequested, this, [this]() {
+        qInfo() << "PlayerController: mpv previous episode item=" << m_embyItemId
+                << "queue=" << m_episodeQueue.size() << "index=" << m_episodeIndex;
+        if (!m_embyItemId.isEmpty())
+            stepEmbyEpisode(-1);
+        else if (m_player->isReady())
+            m_player->playlistPrevious();
     });
     connect(m_player, &MpvPlayer::exitFullscreenRequested, this, [this]() {
         if (m_playerPage && m_window->isFullScreen()) {
@@ -438,7 +530,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     if (QCoreApplication *app = QCoreApplication::instance()) {
         connect(app, &QCoreApplication::aboutToQuit, this, [this]() {
             if (m_reporting)
-                reportPlaybackStopped();
+                reportPlaybackStopped(true);
         });
     }
 
@@ -480,13 +572,20 @@ PlayerController::~PlayerController()
     // T29/SYN-03：窗口关闭/Controller 析构时兜底上报 Stopped；aboutToQuit 和
     // MainWindow closeEvent 路径也会调用，reportPlaybackStopped() 自身有 m_reporting 防重。
     if (m_reporting)
-        reportPlaybackStopped();
+        reportPlaybackStopped(true);
 }
 
 void PlayerController::applyPlayerSettings()
 {
     QSettings settings;
     m_autoNextEpisode = settings.value(QStringLiteral("player/autoPlayNext"), true).toBool();
+    m_autoResume = settings.value(QStringLiteral("player/autoResume"), true).toBool();
+    m_hwdecMode = settings.value(QStringLiteral("player/hwdecMode"), QStringLiteral("auto"))
+                      .toString()
+                      .trimmed()
+                      .toLower();
+    if (m_hwdecMode != QLatin1String("off") && m_hwdecMode != QLatin1String("prefer"))
+        m_hwdecMode = QStringLiteral("auto");
     m_rememberVolume = settings.value(QStringLiteral("player/rememberVolume"), true).toBool();
     m_savedVolume = qBound(0, settings.value(QStringLiteral("player/volume"), 80).toInt(), 100);
     m_subtitleLanguage = settings.value(QStringLiteral("player/subtitleLanguage"),
@@ -504,7 +603,8 @@ void PlayerController::applyPlayerSettings()
     if (m_player && m_player->isReady())
         applyMpvSettings();
     qInfo() << "player settings applied: slang" << normalizedSubtitleLanguage()
-            << "autoNext" << m_autoNextEpisode << "rememberVolume" << m_rememberVolume
+            << "autoNext" << m_autoNextEpisode << "autoResume" << m_autoResume
+            << "hwdecMode" << m_hwdecMode << "rememberVolume" << m_rememberVolume
             << "volume" << m_savedVolume << "hideDelay" << hideDelay;
 }
 
@@ -522,6 +622,8 @@ void PlayerController::applyMpvSettings()
         return;
     // mpv 的 slang 为空/不自动开启时用 "no"，避免空字符串被当成无效语言列表。
     m_player->setPropertyString("slang", normalizedSubtitleLanguage());
+    m_player->setPropertyString("hwdec", hwdecMpvValue(m_hwdecMode));
+    m_hwdecFallbackStage = 0;
     if (m_playerPage)
         m_player->setVolume(m_playerPage->volume());
 }
@@ -540,20 +642,49 @@ void PlayerController::updateHardwareInfo()
     }
 }
 
+void PlayerController::applyHardwareFallback(const QString &hwdec)
+{
+    if (m_hwdecMode == QLatin1String("off") || m_hwdecFallbackStage >= 2)
+        return;
+    const QString current = hwdec.trimmed().toLower();
+    const bool bad = current.isEmpty() || current == QLatin1String("no")
+                     || current.contains(QLatin1String("-copy"));
+    if (!bad) {
+        m_hwdecFallbackStage = 0;
+        return;
+    }
+    const QString next = m_hwdecFallbackStage == 0 ? QStringLiteral("auto-safe")
+                                                   : QStringLiteral("no");
+    const bool applied = m_player && m_player->setPropertyString("hwdec", next);
+    ++m_hwdecFallbackStage;
+    qWarning() << "PlayerController: hwdec fallback" << hwdec << "->" << next
+               << "stage=" << m_hwdecFallbackStage << "applied=" << applied;
+    const QString message = m_hwdecFallbackStage == 1
+                                ? tr("硬件解码不可用，已切换兼容模式（auto-safe）")
+                                : tr("硬件解码不可用，已切换软解");
+    showStatus(message, 5000);
+    // 播放模式状态栏隐藏，额外用 mpv OSD 保证用户能看到降级提示。
+    if (m_player && m_player->isReady() && m_player->command({QStringLiteral("show-text"), message,
+                                                              QStringLiteral("5000")}))
+        qInfo() << "hardware fallback OSD shown";
+}
+
 bool PlayerController::eventFilter(QObject *watched, QEvent *event)
 {
     // T29/SYN-03：窗口 closeEvent 先于对象析构；保证上报最后已知位置而不是 0。
     if (watched == m_window && event->type() == QEvent::Close) {
         if (m_reporting)
-            reportPlaybackStopped();
+            reportPlaybackStopped(true);
     }
 
     // 键盘转发：mpv 子窗口在 --wid 下收不到输入，Qt 主窗口把按键转成
     // mpv `keypress`，空格/方向键/F/n/p/i 等 input.conf 绑定才会生效。
     // Esc/F11 留给 Qt 自己的快捷键；Ctrl/Alt 组合也不转发。
-    if (event->type() == QEvent::KeyPress && m_window && m_window->isPlayerMode()
-        && m_window->isActiveWindow() && m_player && m_player->isReady()
-        && !QApplication::activeModalWidget()) {
+    // T63/A-P1-20：同时安装在 QApplication 和 MainWindow 上的过滤器会对同一
+    // KeyPress 各转发一次；只允许 app 层转发，消除空格/F/N/P 的双触发。
+    if (event->type() == QEvent::KeyPress && watched == QCoreApplication::instance()
+        && m_window && m_window->isPlayerMode() && m_window->isActiveWindow() && m_player
+        && m_player->isReady() && !QApplication::activeModalWidget()) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
         const QString keyName = mpvKeyNameFromEvent(keyEvent);
         if (!keyName.isEmpty())
@@ -685,6 +816,9 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
     if (!m_embyItemId.isEmpty() || m_reporting)
         clearEmbySession();
 
+    // T65：本地播放不再携带旧 Emby Authorization（空值 setter 不含 token）。
+    if (m_player && m_player->isReady() && !m_player->httpHeaderLines().isEmpty())
+        m_player->clearHttpHeaderFields();
     if (!ensurePlayer())
         return;
     if (m_playbackWatchdog)
@@ -694,6 +828,10 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
     m_currentPlaybackUrl.clear();
     m_playbackFileLoaded = false;
     m_playbackFailurePrompted = false;
+    m_playbackRetryCount = 0;
+    m_localPlayback = true;
+    m_localFiles = files;
+    m_localStartIndex = qBound(0, startIndex, static_cast<int>(files.size()) - 1);
     m_lastKnownPositionSeconds = 0.0;
 
     const QFileInfo firstInfo(files.first());
@@ -701,6 +839,8 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
                             .arg(files.size())
                             .arg(firstInfo.absolutePath());
     m_player->loadPlaylist(files, qBound(0, startIndex, static_cast<int>(files.size()) - 1));
+    if (m_playbackWatchdog)
+        m_playbackWatchdog->start(15000);
     if (m_playerPage) {
         const bool multiple = files.size() > 1;
         m_playerPage->setEpisodeNavigationEnabled(multiple && startIndex > 0,
@@ -720,26 +860,25 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
 bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
 {
     if (m_player->isReady()) {
-        // T50：mpv 已初始化时不能用 -append（libmpv 无此选项）。
-        // 先尝试运行中设置 http-header-fields；失败再销毁重建 mpv 实例。
-        if (!httpHeaderLines.isEmpty() && m_emby) {
-            const QString fields = m_emby->mpvHeaderFields();
-            if (!m_player->setHttpHeaderFields(fields)) {
-                qWarning() << "mpv ready but http-header-fields could not be updated; "
-                              "reinitializing";
-                QString error;
-                if (!m_player->reinitialize(m_videoHost->nativeWindow(), httpHeaderLines,
-                                            &error)) {
-                    QMessageBox::critical(m_window, tr("播放内核初始化失败"), error);
-                    return false;
-                }
-                applyMpvSettings();
-                updateHardwareInfo();
-                logMpvState(QStringLiteral("reinitialized-http-headers"));
+        // T63/A-P0-02：运行时 http-header-fields setter 会把完整 token 写进 mpv.log。
+        // 只在 header 变化时销毁重建（新实例在 log-file 生效前注入 header）。
+        if (m_player->httpHeaderLines() != httpHeaderLines) {
+            qInfo() << "mpv headers changed; reinitializing before load (no runtime token setter)";
+            m_player->setHardwareDecoderMode(hwdecMpvValue(m_hwdecMode));
+            QString error;
+            if (!m_player->reinitialize(m_videoHost->nativeWindow(), httpHeaderLines, &error)) {
+                QMessageBox::critical(m_window, tr("播放内核初始化失败"), error);
+                return false;
             }
+            applyMpvSettings();
+            updateHardwareInfo();
+            logMpvState(QStringLiteral("reinitialized-http-headers"));
         }
         return true;
     }
+
+    // T63/A-P0-10：初始化前应用硬解模式（auto→auto-safe、prefer→d3d11va、off→no）。
+    m_player->setHardwareDecoderMode(hwdecMpvValue(m_hwdecMode));
 
     if (!m_surfaceAttached) {
         m_playerPage->attachVideoSurface(m_videoHost);
@@ -1088,6 +1227,16 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
         return;
     }
 
+    // T63/A-P0-07：所有 Emby 续播入口统一过 >95%/autoResume 规则。
+    startPositionTicks = adjustedResumeTicks(startPositionTicks, source->runTimeTicks, m_autoResume);
+    qInfo() << "PlaybackInfo: resume startPositionTicks=" << startPositionTicks
+            << "autoResume=" << m_autoResume << "duration=" << source->runTimeTicks;
+
+    m_localPlayback = false;
+    m_localFiles.clear();
+    m_localStartIndex = 0;
+    m_playbackRetryCount = 0;
+
     const QString playMethod = source->supportsDirectPlay
                                    ? QStringLiteral("DirectPlay")
                                    : (source->supportsDirectStream ? QStringLiteral("DirectStream")
@@ -1114,6 +1263,9 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
     QStringList candidates;
     for (const QUrl &candidate : candidateUrls)
         candidates.append(candidate.toString());
+    // T63/A-P0-08：候选最多 3 个（首播 + 2 次重试），不超过 PLY-12。
+    if (candidates.size() > 3)
+        candidates = candidates.mid(0, 3);
     if (candidates.isEmpty()) {
         qWarning() << "PlaybackInfo: no URL item=" << itemId << "method=" << playMethod
                    << "sourceId=" << source->id;
@@ -1155,7 +1307,8 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
     m_currentSubtitle = tr("Emby · %1 · %2")
                             .arg(m_window->sessionProfile().userName, playMethod);
 
-    if (!ensurePlayer(m_emby->streamHeaderLines()))
+    // T63/T65：header 按候选 URL 同源判断；CDN/第三方候选不带 Authorization。
+    if (!ensurePlayer(m_emby->streamHeaderLines(QUrl(candidates.first()))))
         return;
 
     m_player->setPropertyString("force-media-title", title.isEmpty() ? itemId : title);
@@ -1199,12 +1352,21 @@ void PlayerController::startPlaybackCandidate(int index)
     m_playbackCandidateIndex = index;
     m_currentPlaybackUrl = m_playbackCandidates.at(index);
     m_playbackFileLoaded = false;
+    // 候选可能跨 CDN host；重新确认该 URL 的 header（跨源为空，需要时重建 mpv）。
+    if (m_emby && !m_embyItemId.isEmpty()
+        && !ensurePlayer(m_emby->streamHeaderLines(QUrl(m_currentPlaybackUrl)))) {
+        handlePlaybackFailure(QStringLiteral("mpv header/reinitialize failed"));
+        return;
+    }
+    m_hwdecFallbackStage = 0;
     qInfo() << "PlayerController::playback candidate start" << index + 1 << "/"
             << m_playbackCandidates.size() << "url"
             << sanitizedPlaybackUrl(m_currentPlaybackUrl);
     m_player->loadPlaylist({m_currentPlaybackUrl}, 0);
-    if (m_playbackWatchdog)
-        m_playbackWatchdog->start(8000);
+    if (m_playbackWatchdog) {
+        // A-P1-21：首次起播给 15s 宽限（冷启动/大文件），重试候选 8s。
+        m_playbackWatchdog->start(index == 0 ? 15000 : 8000);
+    }
 }
 
 void PlayerController::tryNextPlaybackCandidate(const QString &reason)
@@ -1225,12 +1387,14 @@ void PlayerController::tryNextPlaybackCandidate(const QString &reason)
 
 void PlayerController::handlePlaybackTimeout()
 {
-    if (m_playbackFileLoaded || m_embyItemId.isEmpty())
+    if (m_playbackFileLoaded)
         return;
-    qWarning() << "PlayerController::playback watchdog 8s no file-loaded item"
-               << m_embyItemId << "url"
+    if (m_embyItemId.isEmpty() && !m_localPlayback)
+        return;
+    qWarning() << "PlayerController::playback watchdog no file-loaded item"
+               << m_embyItemId << "local=" << m_localPlayback << "url"
                << sanitizedPlaybackUrl(m_currentPlaybackUrl);
-    tryNextPlaybackCandidate(QStringLiteral("8s timeout without file-loaded"));
+    tryNextPlaybackCandidate(QStringLiteral("watchdog timeout without file-loaded"));
 }
 
 void PlayerController::handlePlaybackFailure(const QString &reason)
@@ -1244,26 +1408,128 @@ void PlayerController::handlePlaybackFailure(const QString &reason)
     static const QRegularExpression tokenPattern(
         QStringLiteral("(?i)((?:api_key|X-Emby-Token|Token|Authorization)\\s*[=:]\\s*)[^&,\\s]+"));
     mpvError.replace(tokenPattern, QStringLiteral("\\1<redacted>"));
-    qWarning() << "PlayerController::playback FAILED reason" << reason
+    const QString httpStatus = m_player ? m_player->getPropertyString("http-status") : QString();
+    QString code = QStringLiteral("PLAYBACK_FAILED");
+    if (m_localPlayback)
+        code = QStringLiteral("LOCAL_FILE_ERROR");
+    else if (httpStatus == QLatin1String("403"))
+        code = QStringLiteral("HTTP_403");
+    else if (httpStatus == QLatin1String("404"))
+        code = QStringLiteral("HTTP_404");
+    else if (!httpStatus.isEmpty() && httpStatus.toInt() >= 500)
+        code = QStringLiteral("HTTP_5XX");
+    else if (reason.contains(QLatin1String("timeout"), Qt::CaseInsensitive))
+        code = QStringLiteral("PLAYBACK_TIMEOUT");
+    else if (m_playbackCandidates.isEmpty() && m_embyItemId.isEmpty())
+        code = QStringLiteral("NO_MEDIA_SOURCE");
+
+    QString detail = reason;
+    if (!mpvError.isEmpty())
+        detail += QStringLiteral("\nmpv: ") + mpvError;
+    if (!httpStatus.isEmpty())
+        detail += QStringLiteral("\nHTTP: ") + httpStatus;
+    if (!m_currentPlaybackUrl.isEmpty())
+        detail += QStringLiteral("\nURL: ") + sanitizedPlaybackUrl(m_currentPlaybackUrl);
+
+    qWarning() << "PlayerController::playback FAILED code" << code << "reason" << reason
                << "item" << m_embyItemId << "mediaSourceId" << m_mediaSourceId
                << "method" << m_playMethod << "candidate"
                << m_playbackCandidateIndex + 1 << "/" << m_playbackCandidates.size()
                << "url" << sanitizedPlaybackUrl(m_currentPlaybackUrl)
-               << "mpvError" << mpvError
-               << "httpStatus" << (m_player ? m_player->getPropertyString("http-status") : QString());
+               << "mpvError" << mpvError << "httpStatus" << httpStatus
+               << "retryCount" << m_playbackRetryCount;
 
     if (m_playbackFailurePrompted)
         return;
+    // A-P0-08：失败时先结束会话，避免服务器留下幽灵 Playing。
+    if (m_reporting)
+        reportPlaybackStopped(false);
     m_playbackFailurePrompted = true;
-    showStatus(tr("播放失败，已记录诊断，请导出 app.log/mpv.log"), 8000);
+    m_lastPlaybackErrorCode = code;
+    m_lastPlaybackErrorDetail = detail;
+    showStatus(tr("播放失败（%1），已记录诊断，请导出 app.log/mpv.log").arg(code), 8000);
     if (qEnvironmentVariableIntValue("EMBY_PC_TEST_NO_DIALOG") > 0)
         return;
-    auto *box = new QMessageBox(
-        QMessageBox::Warning, tr("播放失败"),
-        tr("播放失败，已记录诊断。\n请到设置页导出 app.log / mpv.log 反馈。"),
-        QMessageBox::Ok, m_window);
-    box->setAttribute(Qt::WA_DeleteOnClose);
-    box->open();
+    showPlaybackErrorDialog(code, detail, true);
+}
+
+void PlayerController::showPlaybackErrorDialog(const QString &code, const QString &detail,
+                                               bool retryable)
+{
+    // T64/B1-B：统一错误对话框，返回 Retry/Back/Export 动作。
+    ui::PlaybackErrorDialog::Info info;
+    info.code = code;
+    info.title = tr("播放失败");
+    info.detail = detail;
+    info.diagnostics = redactDiagnosticText(diagnosticSummary());
+    info.retryEnabled = retryable && m_playbackRetryCount < 2;
+    const ui::PlaybackErrorDialog::Action action =
+        ui::PlaybackErrorDialog::show(m_window, info);
+    if (action == ui::PlaybackErrorDialog::Action::Retry) {
+        if (m_playbackRetryCount >= 2) {
+            showStatus(tr("已达到最大重试次数（2 次）"), 5000);
+            return;
+        }
+        ++m_playbackRetryCount;
+        m_playbackFailurePrompted = false;
+        qInfo() << "playback retry requested count=" << m_playbackRetryCount
+                << "code=" << m_lastPlaybackErrorCode;
+        retryPlaybackAfterFailure();
+    } else if (action == ui::PlaybackErrorDialog::Action::Back) {
+        leavePlaybackAfterFailure();
+    } else if (action == ui::PlaybackErrorDialog::Action::Export) {
+        exportDiagnostics();
+    } else {
+        // 用户直接关闭对话框：与“返回”一致，避免停在失败播放页。
+        leavePlaybackAfterFailure();
+    }
+}
+
+void PlayerController::retryPlaybackAfterFailure()
+{
+    m_playbackFailurePrompted = false;
+    if (m_localPlayback && !m_localFiles.isEmpty()) {
+        const int retryCount = m_playbackRetryCount;
+        playFiles(m_localFiles, m_localStartIndex);
+        m_playbackRetryCount = retryCount;
+        return;
+    }
+    if (!m_playbackCandidates.isEmpty()) {
+        if (!m_reporting && !m_embyItemId.isEmpty())
+            reportPlaybackStart();
+        startPlaybackCandidate(0);
+        return;
+    }
+    if (!m_embyItemId.isEmpty()) {
+        playEmbyItem(m_embyItemId, m_embyTitle, -1, -1, 0);
+        return;
+    }
+    showStatus(tr("没有可重试的播放源"), 4000);
+}
+
+void PlayerController::leavePlaybackAfterFailure()
+{
+    if (m_player && m_player->isReady())
+        m_player->stop();
+    if (m_reporting)
+        reportPlaybackStopped(false);
+    clearEmbySession();
+    resetLocalPlaybackState();
+    if (m_playerPage)
+        m_playerPage->setPlaying(false);
+    if (m_window->isFullScreen())
+        QMetaObject::invokeMethod(m_window, "toggleFullscreen", Qt::DirectConnection);
+    if (m_window->isPlayerMode())
+        m_window->setPlayerMode(false);
+    updatePlayerWindowChrome();
+    scheduleHomeRefresh(300);
+}
+
+void PlayerController::resetLocalPlaybackState()
+{
+    m_localPlayback = false;
+    m_localFiles.clear();
+    m_localStartIndex = 0;
 }
 
 void PlayerController::showPlayerPage()
@@ -1659,11 +1925,12 @@ void PlayerController::exportDiagnostics()
     // 同时把 app.log / mpv.log 复制到诊断目录，用户只需打包这个目录。
     const QString bundleDir = dir + QStringLiteral("/diagnostics-") + stamp;
     if (QDir().mkpath(bundleDir)) {
-        QFile::copy(dir + QStringLiteral("/app.log"),
-                    bundleDir + QStringLiteral("/app.log"));
-        QFile::copy(dir + QStringLiteral("/mpv.log"),
-                    bundleDir + QStringLiteral("/mpv.log"));
-        QFile::copy(path, bundleDir + QStringLiteral("/diagnostics.txt"));
+        // T63/A-P0-02：诊断包内日志先脱敏，避免旧版/verbose mpv.log 的 token 被带走。
+        copyRedactedLog(dir + QStringLiteral("/app.log"),
+                        bundleDir + QStringLiteral("/app.log"));
+        copyRedactedLog(dir + QStringLiteral("/mpv.log"),
+                        bundleDir + QStringLiteral("/mpv.log"));
+        copyRedactedLog(path, bundleDir + QStringLiteral("/diagnostics.txt"));
     }
 
     const QString shown = bundleDir.isEmpty() ? path : bundleDir;
@@ -1721,7 +1988,7 @@ void PlayerController::reportPlaybackProgress(const QString &eventName, qint64 p
     });
 }
 
-void PlayerController::reportPlaybackStopped()
+void PlayerController::reportPlaybackStopped(bool waitForCompletion)
 {
     if (!m_emby || m_embyItemId.isEmpty())
         return;
@@ -1742,21 +2009,40 @@ void PlayerController::reportPlaybackStopped()
     if (m_progressTimer)
         m_progressTimer->stop();
     m_lastKnownPositionSeconds = 0.0;
+
+    // T63/A-P0-09：关闭窗口/退出应用时必须有界等待最后一次 Stopped 完成，
+    // 否则 QNetworkReply 会在 EmbyClient 析构时被 abort，服务端续播位置丢失。
+    QEventLoop waitLoop;
+    QTimer waitTimer;
+    waitTimer.setSingleShot(true);
+    QObject::connect(&waitTimer, &QTimer::timeout, &waitLoop, &QEventLoop::quit);
+    auto finished = QSharedPointer<bool>::create(false);
+    QPointer<QEventLoop> waitLoopGuard(&waitLoop);
     QPointer<PlayerController> self(this);
-    m_emby->reportPlaybackStopped(info, [self](const emby::ApiError &error) {
-        if (!self)
-            return;
-        if (error.isError())
+    m_emby->reportPlaybackStopped(info, [self, finished, waitLoopGuard](const emby::ApiError &error) {
+        *finished = true;
+        if (self && error.isError())
             self->handleApiError(error);
-        // Stopped 请求返回后再刷新首页，确保 Resume 能读到刚写入的位置。
-        self->scheduleHomeRefresh(0);
+        if (self)
+            self->scheduleHomeRefresh(0);
+        if (waitLoopGuard)
+            waitLoopGuard->quit();
     });
+    if (waitForCompletion && !*finished && QCoreApplication::instance()) {
+        waitTimer.start(1500);
+        waitLoop.exec();
+        qInfo() << "playback stopped report wait finished=" << *finished
+                << "elapsedMs=" << (1500 - waitTimer.remainingTime());
+    }
 }
 
 void PlayerController::clearEmbySession()
 {
     if (m_reporting)
         reportPlaybackStopped();
+    // T65/A-P0-02：logout/切账号/本地播放统一清掉 mpv 旧 Authorization 头。
+    if (m_player && m_player->isReady())
+        m_player->clearHttpHeaderFields();
     m_progressTimer->stop();
     m_embyItemId.clear();
     m_embyTitle.clear();

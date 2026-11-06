@@ -78,8 +78,8 @@ gh run rerun <run-id> --repo hiccup90/emby-pc
 
 | 位置 | 说明 |
 |---|---|
-| `app/CMakeLists.txt` 的 `project(emby-pc VERSION x.y.z ...)` | **当前 0.1.0**；驱动 zip 命名、exe VERSIONINFO、安装包文件名（CI 自动读取） |
-| `app/src/main.cpp` 的 `app.setApplicationVersion("0.1.0")` | 应用内显示/日志版本 |
+| `app/CMakeLists.txt` 的 `project(emby-pc VERSION x.y.z ...)` | **当前 0.1.1**；驱动 zip 命名、exe VERSIONINFO、安装包文件名（CI 自动读取） |
+| `app/src/main.cpp` 的 `app.setApplicationVersion("0.1.1")` | 应用内显示/日志版本（关于页） |
 | `app/scripts/package-windows.ps1 -Version x.y.z` | 可选，覆盖上面自动读取的版本（只影响 zip 文件名） |
 
 改完后提交并 push，CI 会自动产出 `dist/emby-pc-<version>-win64.zip`；若只是想打一个特定版本号、不改代码，可在本地运行：

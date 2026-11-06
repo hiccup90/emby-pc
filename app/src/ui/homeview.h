@@ -8,6 +8,7 @@
 class QGridLayout;
 class QHBoxLayout;
 class QLabel;
+class QPushButton;
 class QScrollArea;
 class QShowEvent;
 class QStackedWidget;
@@ -62,6 +63,7 @@ signals:
     void sectionActivated(int kind, const QString &libraryId);
     void loadMoreRequested();
     void sortChanged(int mode);
+    void retryRequested();
 
 private:
     struct SectionRow
@@ -84,6 +86,8 @@ private:
     void rebuildHomeSections();
     void clearHomeSections();
     void resizeHomeSectionRows();
+    void updateSectionsContentGeometry();
+    void setSectionsBanner(const QString &text, const QString &state, bool retry);
     void showLegacyPage();
     void buildVisibleSections();
     void scheduleSectionBuild();
@@ -107,6 +111,9 @@ private:
     QScrollArea *m_sectionsScroll = nullptr;
     QWidget *m_sectionsContent = nullptr;
     QVBoxLayout *m_sectionsLayout = nullptr;
+    QWidget *m_sectionsBanner = nullptr;
+    QLabel *m_sectionsBannerLabel = nullptr;
+    QPushButton *m_sectionsRetryButton = nullptr;
     QList<SectionRow> m_sectionRows;
     int m_builtSectionCount = 0;
     int m_thumbnailMisses = 0;

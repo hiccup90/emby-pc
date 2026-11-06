@@ -20,7 +20,7 @@ T6 增加登录对话框、Token 持久化、启动自动恢复，T7（M2-B）�
 | `playerpage.h/.cpp` | 播放页容器：视频区铺满整页，顶层半透明浮层控制条（自动隐藏/鼠标轮询） |
 | `titlebar.h/.cpp` | T27 自绘标题栏：图标/标题/最小化/最大化/关闭、双击、WindowFrame 最大化按钮矩形上报 |
 | `thumbnailcache.h/.cpp` | 缩略图缓存接口：同步 get + 异步 request + LRU，默认生成离线占位海报 |
-| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：EmbyClient QNAM + api_key/Authorization、15s 超时、in-flight 去重/并发 6/FIFO、1GB 磁盘 LRU |
+| `embythumbnailcache.h/.cpp` | 真实 Emby 图片缓存：EmbyClient QNAM + Authorization、15s 超时、in-flight 去重/并发 6/FIFO、1GB 磁盘 LRU |
 | `postergenerator.h/.cpp` | 确定性抽象海报/背景图生成（离线占位资源） |
 | `icons.h/.cpp` | 24x24 线性矢量图标集，不依赖系统主题 |
 | `mocklibrary.h/.cpp` | 200 部 mock 媒体库（电影/剧集、季/集、观看进度，确定性） |
@@ -135,6 +135,7 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
 |---|---|---|
 | `player/subtitleLanguage` | `chi,zho,zh` | mpv slang：`chi,zho,zh` / `zho,chi,zh` / `en` / `none` |
 | `player/autoPlayNext` | `true` | 自动连播 |
+| `player/autoResume` | `true` | 自动续播（95% 以上从头；设置→播放可关） |
 | `player/rememberVolume` | `true` | 记住音量；关闭后不自动恢复 |
 | `player/volume` | `80` | 上次音量（0–100） |
 | `player/autoHideDelayMs` | `2500` | 控制条自动隐藏延时（1500/2500/3000） |
@@ -278,7 +279,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 - **请求挂起修复（T25）**：
   - 图片请求复用 `EmbyClient::networkManager()` 的 QNAM（元数据正常的那一个），无则回退自有 QNAM；
   - 每请求 `setTransferTimeout(15000)`，超时按失败释放槽位；失败最多重试 2 次（共 3 次网络尝试）；
-  - 图片 URL 追加 `api_key`（qEmby/Jellyfin 兼容），同时保留 Authorization 头；
+  - 图片 URL 不再追加 `api_key`，只通过 Authorization 头鉴权；
   - `EMBY_PC_IMAGE_HTTP2=1` 可开启 HTTP/2 对比（默认关闭）；
   - 本地磁盘缓存：`QStandardPaths::CacheLocation/images`，key 由 itemId、type、tag、尺寸组成并 hash，
     先读盘、成功写盘，默认 1GB LRU；`EMBY_PC_IMAGE_DISK_CACHE=0` 可关闭；
@@ -295,7 +296,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **190 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **201 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；
@@ -315,7 +316,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
     Episode Series Primary 五类回退链断言；
   - T23：同一 URL request 100 次仅发 1 次网络请求；12 张延迟图片并发上限 6 + FIFO 队列完成；
   - T25：复用 QNAM/默认关 HTTP/2/开关生效；500ms 延迟 + 100ms 传输超时释放槽位并重试上限 2 次；
-    磁盘缓存写盘/新 cache 命中不联网；图片 URL 带 api_key、元数据 URL 不含 token；
+    磁盘缓存写盘/新 cache 命中不联网；图片/元数据 URL 都不含 token；
   - T27：TitleBar 高度/按钮尺寸/标题跟随/WindowFrame host 与最大化矩形/双击切换；播放模式与全屏隐藏 TitleBar/QMenuBar；窗口 normalGeometry/最大化状态保存恢复与屏幕 clamp；
   - T28：设置页控件/默认值、settingsChanged、六个 QSettings 键、缓存清理/诊断导出信号、关于字段；重新构造 SettingsPage 恢复值；T30：minimumSize==800x480 且 resize(700,400) 被约束；
   - 设置页 mock 开关可来回切换数据源。
@@ -358,6 +359,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 | **播放器模式 1280x760（视频铺满 + 浮层）** | [12-player-mode-1280x760.png](preview/12-player-mode-1280x760.png) |
 | **播放器模式 960x600（视频铺满 + 浮层）** | [13-player-mode-960x600.png](preview/13-player-mode-960x600.png) |
 | **播放器模式 · 浮层自动隐藏后（纯视频）** | [14-player-mode-autohide.png](preview/14-player-mode-autohide.png) |
+| **播放器模式最小 320x180（compact 控制条）** | [15-player-320x180.png](preview/15-player-320x180.png) |
 
 ## 已知限制 / 后续
 

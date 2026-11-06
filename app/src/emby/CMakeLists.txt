@@ -20,6 +20,8 @@ set(EMBY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/deviceprofile.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/embyclient.h
     ${CMAKE_CURRENT_SOURCE_DIR}/embyclient.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/securetokenstore.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/securetokenstore.cpp
 )
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(EMBY_SOURCES "${EMBY_SOURCES}" PARENT_SCOPE)
@@ -40,6 +42,10 @@ if(NOT TARGET emby)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
     )
     target_link_libraries(emby PUBLIC Qt6::Network Qt6::Core)
+    if(WIN32)
+        # CryptProtectData/CryptUnprotectData in securetokenstore.cpp.
+        target_link_libraries(emby PUBLIC crypt32)
+    endif()
     target_compile_features(emby PUBLIC cxx_std_20)
 endif()
 

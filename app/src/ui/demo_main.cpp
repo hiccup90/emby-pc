@@ -16,6 +16,7 @@
 #include "logindialog.h"
 #include "mainwindow.h"
 #include "playerpage.h"
+#include "playbackerrordialog.h"
 #include "settingspage.h"
 #include "sidebar.h"
 #include "theme.h"
@@ -493,9 +494,17 @@ int runSelfTest(QApplication &app)
         }
     }
     check(sectionsScroll && posterWidthAt1280 > 0 && posterWidthAt960 > 0
-              && posterWidthAt960 < posterWidthAt1280
+              && posterWidthAt960 != posterWidthAt1280
+              && sectionsScroll->widget()->width() <= sectionsScroll->viewport()->width()
+              && sectionsScroll->horizontalScrollBar()->maximum() == 0
               && sectionsScroll->verticalScrollBar()->maximum() > 0,
-          QStringLiteral("T47 首页 resize 更新海报列宽/滚动范围"));
+          QStringLiteral("T47 首页 resize 更新列宽/滚动范围且无横向溢出"));
+    window.resize(800, 480);
+    settle(app, 260);
+    check(sectionsScroll && sectionsScroll->viewport()->width() > 0
+              && sectionsScroll->widget()->width() <= sectionsScroll->viewport()->width()
+              && sectionsScroll->horizontalScrollBar()->maximum() == 0,
+          QStringLiteral("T64 首页 800×480 无横向溢出"));
     window.resize(1280, 760);
     settle(app, 200);
 
@@ -661,7 +670,8 @@ int runSelfTest(QApplication &app)
     auto *audioButton = player->findChild<QPushButton *>(QStringLiteral("AudioButton"));
     auto *statsButton = player->findChild<QPushButton *>(QStringLiteral("StatsButton"));
     check(subtitleButton && subtitleButton->text().isEmpty()
-              && subtitleButton->toolTip().contains(QStringLiteral("中文")),
+              && subtitleButton->toolTip().contains(QStringLiteral("中文"))
+              && subtitleButton->accessibleName().contains(QStringLiteral("中文")),
           QStringLiteral("T53 字幕纯图标+tooltip：%1").arg(subtitleButton ? subtitleButton->toolTip() : QString()));
     check(audioButton && audioButton->text().isEmpty() && !audioButton->toolTip().isEmpty()
               && statsButton && statsButton->text().isEmpty() && !statsButton->toolTip().isEmpty(),
@@ -793,7 +803,26 @@ int runSelfTest(QApplication &app)
 
     // T57：播放器缩到最小 320x180 后返回，恢复 800x480 + 标题栏按钮可见。
     window.resize(320, 180);
-    settle(app, 120);
+    settle(app, 160);
+    auto *compactTop = player->topOverlay();
+    auto *compactBottom = player->bottomOverlay();
+    auto *moreButton = player->findChild<QPushButton *>(QStringLiteral("MoreButton"));
+    auto *compactPlay = player->findChild<QPushButton *>(QStringLiteral("PlayPauseButton"));
+    auto *compactPrev = player->findChild<QPushButton *>(QStringLiteral("PrevButton"));
+    auto *compactNext = player->findChild<QPushButton *>(QStringLiteral("NextButton"));
+    const bool compactButtonsInside = compactBottom && compactPlay && compactPrev && compactNext
+                                      && compactPlay->mapTo(compactBottom, QPoint(0, 0)).x() >= 0
+                                      && compactPlay->mapTo(compactBottom, QPoint(0, 0)).x()
+                                             + compactPlay->width() <= compactBottom->width()
+                                      && compactPrev->mapTo(compactBottom, QPoint(0, 0)).x()
+                                             + compactPrev->width() <= compactBottom->width()
+                                      && compactNext->mapTo(compactBottom, QPoint(0, 0)).x()
+                                             + compactNext->width() <= compactBottom->width();
+    check(player->compactLayout() && compactTop && compactBottom
+              && compactTop->height() == 44 && compactBottom->height() == 64
+              && compactTop->geometry().bottom() < compactBottom->geometry().top()
+              && moreButton && moreButton->isVisible() && compactButtonsInside,
+          QStringLiteral("T64 320×180 compact 顶栏/控制条不重叠且按钮可见"));
     player->findChild<QPushButton *>(QStringLiteral("PlayerBackButton"))->click();
     settle(app, 260);
     const auto titleButtonRect = [&window](const QString &name) {
@@ -985,22 +1014,24 @@ int runSettingsTests(QApplication &app)
         settle(app, 80);
         auto *subtitle = page.findChild<QComboBox *>(QStringLiteral("SettingsSubtitleLanguageCombo"));
         auto *autoPlay = page.findChild<QCheckBox *>(QStringLiteral("SettingsAutoPlayNextCheck"));
+        auto *autoResume = page.findChild<QCheckBox *>(QStringLiteral("SettingsAutoResumeCheck"));
         auto *remember = page.findChild<QCheckBox *>(QStringLiteral("SettingsRememberVolumeCheck"));
         auto *delay = page.findChild<QComboBox *>(QStringLiteral("SettingsAutoHideDelayCombo"));
         auto *cacheLimit = page.findChild<QSpinBox *>(QStringLiteral("SettingsCacheLimitSpin"));
         auto *hardware = page.findChild<QLabel *>(QStringLiteral("SettingsHardwareDecoderValue"));
-        check(subtitle && autoPlay && remember && delay && cacheLimit && hardware,
+        check(subtitle && autoPlay && autoResume && remember && delay && cacheLimit && hardware,
               QStringLiteral("设置页播放/存储控件存在"));
         check(page.subtitleLanguage() == QStringLiteral("chi,zho,zh")
-                  && page.autoPlayNext() && page.rememberVolume()
+                  && page.autoPlayNext() && page.autoResume() && page.rememberVolume()
                   && page.autoHideDelayMs() == 2500 && page.cacheImageLimitMB() == 1024,
-              QStringLiteral("设置页默认值"));
+              QStringLiteral("设置页默认值（含自动续播）"));
 
         int changedCount = 0;
         QObject::connect(&page, &ui::SettingsPage::settingsChanged,
                          [&changedCount]() { ++changedCount; });
         subtitle->setCurrentIndex(subtitle->findData(QStringLiteral("zho,chi,zh")));
         autoPlay->setChecked(false);
+        autoResume->setChecked(false);
         remember->setChecked(false);
         delay->setCurrentIndex(delay->findData(1500));
         cacheLimit->setValue(512);
@@ -1011,6 +1042,7 @@ int runSettingsTests(QApplication &app)
         check(settings.value(QStringLiteral("player/subtitleLanguage")).toString()
                   == QStringLiteral("zho,chi,zh")
                   && !settings.value(QStringLiteral("player/autoPlayNext")).toBool()
+                  && !settings.value(QStringLiteral("player/autoResume")).toBool()
                   && !settings.value(QStringLiteral("player/rememberVolume")).toBool()
                   && settings.value(QStringLiteral("player/autoHideDelayMs")).toInt() == 1500
                   && settings.value(QStringLiteral("cache/imageLimitMB")).toInt() == 512,
@@ -1051,9 +1083,30 @@ int runSettingsTests(QApplication &app)
     {
         ui::SettingsPage restored;
         check(restored.subtitleLanguage() == QStringLiteral("zho,chi,zh")
-                  && !restored.autoPlayNext() && !restored.rememberVolume()
+                  && !restored.autoPlayNext() && !restored.autoResume() && !restored.rememberVolume()
                   && restored.autoHideDelayMs() == 1500 && restored.cacheImageLimitMB() == 512,
-              QStringLiteral("重新构造 SettingsPage 恢复设置值"));
+              QStringLiteral("重新构造 SettingsPage 恢复设置值（含自动续播）"));
+    }
+
+    {
+        ui::PlaybackErrorDialog::Info info;
+        info.code = QStringLiteral("HTTP 403");
+        info.title = QStringLiteral("播放失败");
+        info.detail = QStringLiteral("服务器拒绝了播放请求。");
+        info.diagnostics = QStringLiteral("diagnostic sample");
+        ui::PlaybackErrorDialog dialog(info);
+        auto *code = dialog.findChild<QLabel *>(QStringLiteral("PlaybackErrorCode"));
+        auto *retry = dialog.findChild<QPushButton *>(QStringLiteral("PlaybackErrorRetryButton"));
+        auto *back = dialog.findChild<QPushButton *>(QStringLiteral("PlaybackErrorBackButton"));
+        auto *exportButton = dialog.findChild<QPushButton *>(
+            QStringLiteral("PlaybackErrorExportButton"));
+        check(code && code->text().contains(QStringLiteral("403")) && retry && back
+                  && exportButton && exportButton->isEnabled(),
+              QStringLiteral("T64 播放错误对话框包含错误码/重试/返回/导出诊断"));
+        if (back)
+            back->click();
+        check(dialog.action() == ui::PlaybackErrorDialog::Action::Back,
+              QStringLiteral("T64 播放错误对话框返回动作"));
     }
 
     QCoreApplication::setOrganizationName(oldOrganization);
@@ -1128,6 +1181,27 @@ int runLibraryLayoutTests(QApplication &app)
     const int homeRowCount = home.findChildren<QWidget *>(QStringLiteral("HomeSectionRow")).size();
     check(homeRowCount == 3,
           QStringLiteral("HomeView 生成 3 个 HomeSectionRow（实际 %1）").arg(homeRowCount));
+    auto *homeCard = home.findChild<QWidget *>(QStringLiteral("HomeSectionCard"));
+    check(homeCard && homeCard->focusPolicy() == Qt::StrongFocus
+              && !homeCard->accessibleName().isEmpty(),
+          QStringLiteral("T64 首页卡片可键盘聚焦且有 accessibleName"));
+
+    // T64：真实数据 home 的错误/重试横幅。
+    int retrySignals = 0;
+    QObject::connect(&home, &ui::HomeView::retryRequested,
+                     [&retrySignals]() { ++retrySignals; });
+    home.setError(QStringLiteral("网络错误：连接超时"));
+    settle(app, 60);
+    auto *homeBanner = home.findChild<QWidget *>(QStringLiteral("HomeSectionsBanner"));
+    auto *homeRetry = home.findChild<QPushButton *>(QStringLiteral("HomeSectionsRetryButton"));
+    check(homeBanner && homeBanner->isVisible() && homeRetry && homeRetry->isVisible(),
+          QStringLiteral("T64 首页错误态显示横幅和重试按钮"));
+    if (homeRetry)
+        homeRetry->click();
+    settle(app, 40);
+    check(retrySignals == 1, QStringLiteral("T64 首页重试按钮发出 retryRequested"));
+    home.setHomeSections(sections);
+    settle(app, 120);
 
     // T39：5 section × 18 张卡片的懒加载/构建耗时（offscreen）。
     QList<ui::HomeSection> manySections;
@@ -1170,6 +1244,41 @@ int runLibraryLayoutTests(QApplication &app)
               && home.builtSectionCount() <= totalSections,
           QStringLiteral("滚动后增量构建剩余 section（built=%1/%2）")
               .arg(home.builtSectionCount()).arg(totalSections));
+
+    // T64：800/960/1280 三档首页内容不横向溢出，右侧卡片/查看全部不被裁。
+    bool homeWidthsOk = true;
+    QList<int> homeViewportWidths;
+    for (int w : {800, 960, 1280}) {
+        home.resize(w, 480);
+        settle(app, 220);
+        if (!sectionsScroll)
+            continue;
+        const int viewportWidth = sectionsScroll->viewport()->width();
+        const int contentWidth = sectionsScroll->widget() ? sectionsScroll->widget()->width() : 0;
+        const int hmax = sectionsScroll->horizontalScrollBar()->maximum();
+        homeViewportWidths << viewportWidth;
+        bool cardsInside = true;
+        for (QWidget *preview : home.findChildren<QWidget *>(QStringLiteral("HomeSectionPreview"))) {
+            if (!preview->isVisible())
+                continue;
+            for (QWidget *card : preview->findChildren<QWidget *>(QStringLiteral("HomeSectionCard"))) {
+                if (card->isVisible() && card->mapTo(preview, QPoint(0, 0)).x() + card->width()
+                                            > preview->width()) {
+                    cardsInside = false;
+                    break;
+                }
+            }
+            if (!cardsInside)
+                break;
+        }
+        homeWidthsOk = homeWidthsOk && contentWidth <= viewportWidth && hmax == 0 && cardsInside;
+        if (contentWidth > viewportWidth || hmax != 0)
+            qWarning() << "T64 home width overflow at" << w << "viewport" << viewportWidth
+                       << "content" << contentWidth << "hmax" << hmax;
+    }
+    check(homeWidthsOk && homeViewportWidths.size() == 3,
+          QStringLiteral("T64 首页 800/960/1280 无横向溢出（viewport=%1）")
+              .arg(homeViewportWidths.value(0)));
 
     // T40：非继续观看行只做固定预览网格，不横向滚动；标题点击发 sectionActivated。
     const auto previewRows = home.findChildren<QWidget *>(QStringLiteral("HomeSectionPreview"));
@@ -1238,7 +1347,23 @@ int runLibraryLayoutTests(QApplication &app)
         }
     }
     page.setLibrarySections(libraries);
-    settle(app, 80);
+    page.resize(760, 480);
+    settle(app, 160);
+    bool settingsRowsFit = true;
+    for (QWidget *row : page.findChildren<QWidget *>(QStringLiteral("SettingsLibraryRow"))) {
+        for (QWidget *child : row->findChildren<QWidget *>()) {
+            if (!child->isVisible())
+                continue;
+            const QPoint pos = child->mapTo(row, QPoint(0, 0));
+            if (pos.x() < 0 || pos.x() + child->width() > row->width() + 1) {
+                settingsRowsFit = false;
+                break;
+            }
+        }
+        if (!settingsRowsFit)
+            break;
+    }
+    check(settingsRowsFit, QStringLiteral("T64 设置页 800 宽媒体库行不横向溢出"));
     auto rows = page.findChildren<QWidget *>(QStringLiteral("SettingsLibraryRow"));
     check(rows.size() == 2 && page.findChild<QWidget *>(QStringLiteral("SettingsLibraryGroup"))
                                   ->isVisible(),
@@ -1412,10 +1537,19 @@ int runAuthTests(QApplication &app)
     auto *testButton = login.findChild<QPushButton *>(QStringLiteral("TestConnectionButton"));
     auto *loginButton = login.findChild<QPushButton *>(QStringLiteral("LoginSubmitButton"));
     auto *statusLabel = login.findChild<QLabel *>(QStringLiteral("LoginStatus"));
-    check(password && testButton && loginButton && statusLabel,
+    auto *showPassword = login.findChild<QCheckBox *>(QStringLiteral("LoginShowPasswordCheck"));
+    check(password && testButton && loginButton && statusLabel && showPassword,
           QStringLiteral("LoginDialog 控件齐全"));
     check(statusLabel && statusLabel->isHidden(),
           QStringLiteral("T44 登录空状态框不渲染"));
+    check(login.minimumWidth() <= 520, QStringLiteral("T64 登录框适配低分辨率宽度"));
+    if (showPassword && password) {
+        showPassword->setChecked(true);
+        const bool revealed = password->echoMode() == QLineEdit::Normal;
+        showPassword->setChecked(false);
+        check(revealed && password->echoMode() == QLineEdit::Password,
+              QStringLiteral("T64 登录密码显示切换"));
+    }
 
     int loginOkCount = 0;
     emby::ServerProfile loginProfile;
@@ -1736,8 +1870,8 @@ int runAuthTests(QApplication &app)
               QStringLiteral("海报/背景图通过带 Authorization 的图片请求加载"));
         check(server.lastImageAuthorization.contains(QStringLiteral("Token=")),
               QStringLiteral("图片请求使用 Authorization 头（token 不在 URL）"));
-        check(!server.lastImageApiKey.isEmpty(),
-              QStringLiteral("图片请求同时带 api_key 查询参数（兼容 qEmby/Jellyfin）"));
+        check(server.lastImageApiKey.isEmpty(),
+              QStringLiteral("图片请求不使用 api_key 查询参数（只走 Authorization 头）"));
 
         window.setMockMode(true);
         check(window.isMockMode()
@@ -1804,7 +1938,7 @@ int runAuthTests(QApplication &app)
             tokenInMetadataUrl = true;
     }
     check(!tokenInMetadataUrl, QStringLiteral("元数据请求 URL 不含 token"));
-    check(tokenInImageUrl, QStringLiteral("图片请求使用 api_key 查询参数（token 只在图片 URL）"));
+    check(!tokenInImageUrl, QStringLiteral("图片请求 URL 不含 token（只走 Authorization 头）"));
 
     QCoreApplication::setOrganizationName(oldOrganization);
     QCoreApplication::setApplicationName(oldApplication);
@@ -2314,6 +2448,11 @@ int runScreenshots(QApplication &app, const QString &directory)
     settle(app, 220);
     save(QStringLiteral("10-player-960x600"));
     save(QStringLiteral("13-player-mode-960x600"));
+
+    // T64：播放模式最小 320×180 compact 布局截图。
+    window.resize(320, 180);
+    settle(app, 260);
+    save(QStringLiteral("15-player-320x180"));
 
     emby::EmbyClient client;
     ui::LoginDialog login(&client);

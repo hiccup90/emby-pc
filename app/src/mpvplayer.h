@@ -20,12 +20,19 @@ public:
     // Emby 直连播放用：httpHeaderLines 为 "Name: value" 列表，初始化前写入
     // http-header-fields（token 不拼进 URL）。
     bool initialize(quintptr windowId, const QStringList &httpHeaderLines, QString *error);
-    // T50：mpv 运行中尝试更新 http-header-fields（失败时由调用方决定重初始化）。
-    bool setHttpHeaderFields(const QString &fields);
-    // T50：销毁当前 mpv 实例并用新 HTTP 头重新 initialize（窗口 ID 不变）。
+    // T63/A-P0-02：不要在运行中设置 http-header-fields（mpv 日志会记录 token）。
+    // 头变化时由 Controller 用 reinitialize 在 log-file 之前重新注入。
+    const QStringList &httpHeaderLines() const { return m_httpHeaderLines; }
+    // 清空运行时 http-header-fields（空值不含 token；用于本地播放/退出登录）。
+    bool clearHttpHeaderFields();
     bool reinitialize(quintptr windowId, const QStringList &httpHeaderLines, QString *error);
     void shutdown();
     bool isReady() const { return m_mpv != nullptr; }
+    // T63/A-P0-10：hwdec 配置（d3d11va / auto-safe / no），初始化前设置。
+    void setHardwareDecoderMode(const QString &mode) { m_hwdecMode = mode; }
+    QString hardwareDecoderMode() const { return m_hwdecMode; }
+    // T63 自测：input.conf 的 N/P/双击绑定（不启动 mpv）。
+    static QString inputConfForTest();
 
     void loadPlaylist(const QStringList &files, int startIndex = 0);
     void togglePause();
@@ -61,6 +68,9 @@ signals:
     void libmpvVersionChanged(const QString &version);
     void toggleFullscreenRequested();
     void exitFullscreenRequested();
+    // T63/A-P0-05：mpv n/p 键在 Emby 单集播放列表下转发到应用层上下集。
+    void nextEpisodeRequested();
+    void previousEpisodeRequested();
     void errorOccurred(const QString &message);
 
 private:
@@ -74,4 +84,6 @@ private:
     double m_duration = 0.0;
     bool m_paused = false;
     QString m_title;
+    QStringList m_httpHeaderLines;
+    QString m_hwdecMode = QStringLiteral("d3d11va");
 };

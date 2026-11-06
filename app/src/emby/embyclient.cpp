@@ -115,6 +115,7 @@ EmbyClient::~EmbyClient()
 void EmbyClient::setProfile(const ServerProfile &profile)
 {
     m_profile = profile;
+    m_authExpiredNotified = false;
     if (m_profile.id.isEmpty())
         m_profile.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     if (m_profile.deviceId.isEmpty())
@@ -142,6 +143,8 @@ void EmbyClient::setServer(const QString &baseUrl, const QString &accessToken)
 void EmbyClient::setAccessToken(const QString &accessToken)
 {
     m_profile.accessToken = accessToken.trimmed();
+    if (!m_profile.accessToken.isEmpty())
+        m_authExpiredNotified = false;
 }
 
 void EmbyClient::setUserId(const QString &userId, const QString &userName)
@@ -205,6 +208,66 @@ QString EmbyClient::mpvHeaderFields() const
         escaped.append(escapeMpvListValue(header.first + QStringLiteral(": ") + header.second));
     }
     return escaped.join(QLatin1Char(','));
+}
+
+bool EmbyClient::isSameOrigin(const QUrl &target) const
+{
+    const QUrl base(m_profile.baseUrl());
+    if (!base.isValid() || base.scheme().isEmpty() || base.host().isEmpty())
+        return false;
+
+    QUrl resolved = target;
+    if (resolved.isRelative())
+        resolved = base.resolved(target);
+    if (!resolved.isValid() || resolved.scheme().isEmpty() || resolved.host().isEmpty())
+        return false;
+
+    const QString scheme = resolved.scheme().toLower();
+    if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
+        return false;
+    if (scheme != base.scheme().toLower())
+        return false;
+    if (resolved.host().compare(base.host(), Qt::CaseInsensitive) != 0)
+        return false;
+
+    const int targetPort = resolved.port(scheme == QLatin1String("https") ? 443 : 80);
+    const int basePort = base.port(base.scheme().toLower() == QLatin1String("https") ? 443 : 80);
+    return targetPort == basePort;
+}
+
+QList<QPair<QString, QString>> EmbyClient::streamHeaders(const QUrl &target) const
+{
+    if (!isSameOrigin(target))
+        return {};
+    return streamHeaders();
+}
+
+QStringList EmbyClient::streamHeaderLines(const QUrl &target) const
+{
+    const auto headers = streamHeaders(target);
+    QStringList lines;
+    lines.reserve(headers.size());
+    for (const auto &header : headers)
+        lines.append(header.first + QStringLiteral(": ") + header.second);
+    return lines;
+}
+
+QString EmbyClient::mpvHeaderFields(const QUrl &target) const
+{
+    QStringList escaped;
+    const auto headers = streamHeaders(target);
+    escaped.reserve(headers.size());
+    for (const auto &header : headers)
+        escaped.append(escapeMpvListValue(header.first + QStringLiteral(": ") + header.second));
+    return escaped.join(QLatin1Char(','));
+}
+
+void EmbyClient::clearAuthentication()
+{
+    m_profile.accessToken.clear();
+    m_profile.userId.clear();
+    m_profile.userName.clear();
+    m_authExpiredNotified = true;
 }
 
 QUrl EmbyClient::buildUrl(const QString &path, const QUrlQuery &query) const
@@ -331,6 +394,13 @@ void EmbyClient::handleReply(QNetworkReply *reply, const QString &operation,
     } else if (!parsed) {
         error.message = QStringLiteral("Invalid JSON response from server");
     }
+
+    if ((error.httpStatus == 401 || error.httpStatus == 403)
+        && operation != QLatin1String("AuthenticateByName") && !m_authExpiredNotified) {
+        m_authExpiredNotified = true;
+        emit authenticationExpired(error.httpStatus, operation, error.message);
+    }
+
     deliverResult(std::move(handler), object, error);
 }
 
@@ -409,6 +479,7 @@ QNetworkReply *EmbyClient::authenticate(const QString &username, const QString &
             m_profile.accessToken = result.accessToken;
             m_profile.userId = result.user.id;
             m_profile.userName = result.user.name;
+            m_authExpiredNotified = false;
             if (!result.serverId.isEmpty())
                 m_profile.serverId = result.serverId;
             if (handler)
