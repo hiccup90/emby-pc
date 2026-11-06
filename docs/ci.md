@@ -214,8 +214,9 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | 2026-11-06 | b3ac036 | <https://github.com/hiccup90/emby-pc/actions/runs/42179497271> | emby-pc-win64（72,343,818 B，id 13485206821）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,900,502 B，id 13485191912） | **T51+T52+T53**：控制条命中外扩 6px/Seek 任意位置点击、播放模式 320x180 最小尺寸、字幕/音轨/统计纯图标+tooltip；全步骤通过（6m20s），供用户实机复测 |
 | 2026-11-06 | edee83f | <https://github.com/hiccup90/emby-pc/actions/runs/42205983082> | emby-pc-win64（72,344,060 B，id 13497155735）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,896,949 B，id 13495774542） | **T54+T55**：DWM 直角（DWMWA_WINDOW_CORNER_PREFERENCE=33/DONOTROUND）+ 控制条/顶栏不透明命中区（QSS #0B1220、按钮 36×36）；全步骤通过（5m21s），供用户实机看四角与点击 |
 | 2026-11-06 | 84a2496 | <https://github.com/hiccup90/emby-pc/actions/runs/42215696972> | emby-pc-win64（72,344,644 B，id 13502180290）+ **emby-pc-installer**（emby-pc-0.1.0-setup.exe，49,897,588 B，id 13502275029） | **T56+T57**：无边框全铺满（margin 0/MARGINS 0/DWMWA_BORDER_COLOR=NONE、6px 边缘命中）+ 退出播放模式恢复窗口 chrome（restoreWindowedChrome/TitleBar 同步）；全步骤通过（6m12s），供用户验「无边框全铺满+回主页按钮正常」 |
+| 2026-11-06 | b61347a | <https://github.com/hiccup90/emby-pc/actions/runs/42234517670> | emby-pc-win64（72,365,850 B，id 13510799458）+ **emby-pc-installer**（emby-pc-0.1.1-setup.exe，49,918,773 B，id 13510219938） | **B1 批修 / v0.1.1-rc1**：10 个代码 P0（token 泄露×2、首页溢出、320×180 compact、N/P、双击全屏、95% 续播、错误处理、Stopped、hwdec 降级）+ 安全 P1（DPAPI/401/跨主机头/脱敏）+ Qt 控制条验收/0.1.1 文档；selftest 201、emby 142 checks；全步骤通过（4m33s），候选发布包 |
 
 包内容（各次一致，54 个条目，解压约 171MB）：
-emby-pc-0.1.0-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
+emby-pc-0.1.1-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
 
 > 后续每次 push 到 main 或手动 Run workflow 都会重新产出同名 artifact（emby-pc-win64，保留 30 天）；下载方式见第 2 节。
