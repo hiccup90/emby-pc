@@ -244,3 +244,15 @@ failures 0
 ```
 
 - Linux app Debug 构建 exit 0；`-Wall -Wextra` 0 warning。
+
+## 13. T54 去除 Win11 视频窗口 DWM 圆角
+
+> 任务：task-54 · 负责人：build-verifier · 日期：2026-11-06
+
+- 新增 `WindowFrame::applyWindowCornerPreference()`：
+  `DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE(33), &DWMCP_DONOTROUND(1), sizeof(int))`。
+- 在 `applyDwmFrame()` 和 `installNativeStyles()` 统一调用，覆盖初始化、DPI/激活后样式重应用；
+  Win10 不支持该属性时返回错误但只记录日志，不影响窗口。
+- 日志：`WindowFrame: DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE) DWMCP_DONOTROUND hr=... succeeded=...`。
+- 不改变 T31/T35 边缘 5px、T46 拖动、T52 最小尺寸；圆角关闭后视频四角可完全铺满。
+- Linux 构建通过；Windows 实机确认四角直角，Win10 日志 `succeeded=false` 属预期。

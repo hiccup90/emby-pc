@@ -67,6 +67,7 @@ private:
 #ifdef Q_OS_WIN
     void installNativeStyles();
     void applyDwmFrame();
+    void applyWindowCornerPreference();
     void updateDpi();
     QRect maximizedWorkArea() const;
     bool handleNativeMessage(void *message, qintptr *result);

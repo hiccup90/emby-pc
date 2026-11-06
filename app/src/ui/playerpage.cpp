@@ -235,9 +235,12 @@ void PlayerPage::createOverlayWindows()
         overlay->setObjectName(objectName);
         overlay->setAttribute(Qt::WA_StyledBackground, true);
         if (m_topLevelOverlay) {
-            overlay->setAttribute(Qt::WA_TranslucentBackground, true);
+            // T55：Windows 分层窗口按像素 alpha 命中，透明区域会穿透导致只有图标中心能点；
+            // 控制条改为不透明顶层窗口 + QSS 不透明深色背景，整块按钮都可命中。
+            overlay->setAttribute(Qt::WA_TranslucentBackground, false);
+            overlay->setAttribute(Qt::WA_NoSystemBackground, false);
             overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
-            overlay->setAttribute(Qt::WA_NoSystemBackground, true);
+            overlay->setAutoFillBackground(true);
             overlay->setFocusPolicy(Qt::NoFocus);
         }
         overlay->hide();
@@ -341,6 +344,10 @@ void PlayerPage::buildUi()
     m_statsButton->setObjectName(QStringLiteral("StatsButton"));
     m_statsButton->setProperty("role", QStringLiteral("playerText"));
     m_statsButton->setCursor(Qt::PointingHandCursor);
+    for (QPushButton *button : {m_subtitleButton, m_audioButton, m_statsButton}) {
+        button->setFixedSize(36, 36);
+        button->setIconSize(QSize(18, 18));
+    }
     buttonRow->addWidget(m_subtitleButton);
     buttonRow->addWidget(m_audioButton);
     buttonRow->addSpacing(8);

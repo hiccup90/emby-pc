@@ -575,13 +575,13 @@ int runSelfTest(QApplication &app)
           QStringLiteral("顶部/底部浮层是 PlayerPage 的顶层子窗口"));
     check(player->topOverlay()->windowFlags().testFlag(Qt::Tool)
               && player->topOverlay()->windowFlags().testFlag(Qt::FramelessWindowHint)
-              && player->topOverlay()->testAttribute(Qt::WA_TranslucentBackground)
+              && !player->topOverlay()->testAttribute(Qt::WA_TranslucentBackground)
+              && !player->topOverlay()->testAttribute(Qt::WA_NoSystemBackground)
               && player->topOverlay()->testAttribute(Qt::WA_ShowWithoutActivating),
-          QStringLiteral("顶层 overlay 为 Tool/Frameless/半透明/不抢焦点"));
+          QStringLiteral("T55 顶层 overlay 不透明且不抢焦点"));
     const QImage topOverlayImage = player->topOverlay()->grab().toImage();
-    check(topOverlayImage.hasAlphaChannel()
-              && topOverlayImage.pixelColor(2, 2).alpha() < 250,
-          QStringLiteral("顶层浮层背景带半透明 alpha（不遮挡视频）"));
+    check(topOverlayImage.pixelColor(2, 2).alpha() == 255,
+          QStringLiteral("T55 顶层浮层背景像素完全不透明"));
     check(player->controlsVisible() && player->topOverlay()->isVisible()
               && player->bottomOverlay()->isVisible(),
           QStringLiteral("进入播放器模式浮层可见"));
@@ -726,6 +726,34 @@ int runSelfTest(QApplication &app)
                   && !controlBar->testAttribute(Qt::WA_TransparentForMouseEvents),
               QStringLiteral("T51 菜单关闭后控制条恢复可点"));
     }
+    // T55：顶层浮层必须是不透明窗口，四个角点击都能命中按钮。
+    auto *t55ControlBar = player->findChild<QWidget *>(QStringLiteral("PlayerControlBar"));
+    auto *t55TopBar = player->findChild<QWidget *>(QStringLiteral("PlayerTopBar"));
+    check(t55ControlBar && !t55ControlBar->testAttribute(Qt::WA_TranslucentBackground)
+              && !t55ControlBar->testAttribute(Qt::WA_NoSystemBackground)
+              && t55TopBar && !t55TopBar->testAttribute(Qt::WA_TranslucentBackground)
+              && !t55TopBar->testAttribute(Qt::WA_NoSystemBackground),
+          QStringLiteral("T55 控制条/顶栏为不透明 overlay"));
+    int cornerClicks = 0;
+    QObject::connect(player, &ui::PlayerPage::playPauseRequested,
+                     [&cornerClicks]() { ++cornerClicks; });
+    if (playButton) {
+        const QList<QPoint> corners = {QPoint(1, 1),
+                                       QPoint(playButton->width() - 2, 1),
+                                       QPoint(1, playButton->height() - 2),
+                                       QPoint(playButton->width() - 2, playButton->height() - 2)};
+        for (const QPoint &corner : corners) {
+            QMouseEvent press(QEvent::MouseButtonPress, corner,
+                              playButton->mapToGlobal(corner), Qt::LeftButton,
+                              Qt::LeftButton, Qt::NoModifier);
+            QMouseEvent release(QEvent::MouseButtonRelease, corner,
+                                playButton->mapToGlobal(corner), Qt::LeftButton,
+                                Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(playButton, &press);
+            QApplication::sendEvent(playButton, &release);
+        }
+    }
+    check(cornerClicks == 4, QStringLiteral("T55 按钮四角整块命中（%1/4）").arg(cornerClicks));
 
     // T32：无 episode 队列时禁用上一集/下一集并给出 tooltip。
     player->setEpisodeNavigationEnabled(false, false);

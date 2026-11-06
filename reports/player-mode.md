@@ -314,7 +314,7 @@ QPushButton::clicked
 
 ### 12.3 自测
 
-- `emby-ui-demo --selftest` **187 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
+- `emby-ui-demo --selftest` **189 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
 - 全屏测试输出可见完整日志：
 ```text
 PlayerPage: FullscreenButton clicked ...
@@ -407,7 +407,7 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - **日志**：`PlayerPage: control mouse ... watched/objectName/local/global`、`button clicked`、`SeekSlider click value=...`、`extended hit -> ...`。
 - **弹窗/菜单**：`QMenu::exec` 关闭后 `showOverlays()+raise()`、重置 interaction 计时并重新启动自动隐藏；统计按钮点击也重置计时，避免关闭 mpv OSD 后浮层立刻被隐藏。
 - **输入属性**：`showOverlays()` 显式清除 `WA_TransparentForMouseEvents`，保持 `WindowDoesNotAcceptFocus + WA_ShowWithoutActivating`（鼠标仍可点，避免抢播放键盘焦点）。
-- **回归**：新增 3 条 offscreen 断言——边缘扩展点击触发 `playPauseRequested`、SeekSlider 任意位置点击发 `seekRequested`、菜单关闭后控制条可见且非透明输入；总计 **187 项 ALL PASS**。
+- **回归**：新增 3 条 offscreen 断言——边缘扩展点击触发 `playPauseRequested`、SeekSlider 任意位置点击发 `seekRequested`、菜单关闭后控制条可见且非透明输入；总计 **189 项 ALL PASS**。
 - 待实机确认：控制条图标边缘/间隙、进度条任意位置、统计 toggle 后立即点其他按钮。
 
 ## 16. T53 控制条默认图标模式
@@ -415,5 +415,14 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 - 字幕/音轨/统计按钮不再显示文字，始终 `setText(QString())`；当前轨道信息放 tooltip（如 `字幕：中文（简体）`、`音轨：中文 5.1`）。
 - 960 图标化逻辑保留为统一的纯图标布局；按钮尺寸/间距/hover/pressed/focus 沿用 T45/T51 token。
 - 播放/上下集/音量/全屏本就为图标，无文字残留。
-- 回归：`emby-ui-demo --selftest` **187 项 ALL PASS**（T53 断言字幕/音轨/统计 text 为空且 tooltip 非空）。
+- 回归：`emby-ui-demo --selftest` **189 项 ALL PASS**（T53 断言字幕/音轨/统计 text 为空且 tooltip 非空）。
 - 截图：`preview/05-player.png`、`10-player-960x600.png`、`12/13` 已更新。
+
+## 17. T55 控制条/顶栏不透明命中区
+
+- 根因：顶层 overlay 使用 `WA_TranslucentBackground` 分层窗口，Windows 按像素 alpha 命中；按钮透明区域/渐变透明区域鼠标穿透，只有图标不透明中心能 hover/点击。
+- 修复：取消 `WA_TranslucentBackground`、`WA_NoSystemBackground`，设置 `autoFillBackground`；QSS `PlayerTopBar`/`PlayerControlBar` 改为不透明 `#0B1220` + `#1E293B` 分隔线。
+- 按钮：字幕/音轨/统计固定 **36×36** 整块可点，图标 18px，hover/pressed 覆盖整个按钮；播放 48px、上下集/返回/全屏 36px。
+- 保留：自动隐藏、T51 扩展命中、T53 纯图标 tooltip、T46 拖动/全屏、T47 sidebar 恢复。
+- 回归：新增 4 条断言——顶栏/控制条非 translucent、grab 像素 alpha=255、控制条四角按钮命中 4/4；总计 **189 项 ALL PASS**。
+- 截图：`preview/05-player.png`、`10-player-960x600.png`、`12/13` 更新为不透明控件条。

@@ -23,6 +23,13 @@
 #ifndef DWMWA_COLOR_NONE
 #define DWMWA_COLOR_NONE 0xFFFFFFFE
 #endif
+// Win11 DWM 圆角偏好；Win10 会忽略/返回错误，不影响窗口。
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMCP_DONOTROUND
+#define DWMCP_DONOTROUND 1
+#endif
 
 namespace {
 
@@ -220,6 +227,7 @@ void WindowFrame::installNativeStyles()
 {
     if (!m_hwnd)
         return;
+    applyWindowCornerPreference();
     HWND hwnd = reinterpret_cast<HWND>(m_hwnd);
     const LONG_PTR required = WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
                               | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
@@ -237,10 +245,25 @@ void WindowFrame::installNativeStyles()
             << Qt::hex << static_cast<qulonglong>(style);
 }
 
+void WindowFrame::applyWindowCornerPreference()
+{
+    if (!m_hwnd)
+        return;
+    HWND hwnd = reinterpret_cast<HWND>(m_hwnd);
+    const int preference = DWMCP_DONOTROUND;
+    const HRESULT hr = ::DwmSetWindowAttribute(
+        hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
+    qInfo() << "WindowFrame: DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE)"
+            << "DWMCP_DONOTROUND"
+            << "hr=" << Qt::hex << static_cast<qulonglong>(hr) << Qt::dec
+            << "succeeded=" << SUCCEEDED(hr);
+}
+
 void WindowFrame::applyDwmFrame()
 {
     if (!m_hwnd)
         return;
+    applyWindowCornerPreference();
     HWND hwnd = reinterpret_cast<HWND>(m_hwnd);
     // 1px 仅用于 DWM 外框/阴影，不是 resize 热区；避免可见黑边/桌面透出。
     MARGINS margins{1, 1, 1, 1};

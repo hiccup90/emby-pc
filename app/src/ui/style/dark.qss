@@ -495,11 +495,10 @@ QWidget#PlayerPage {
 
 /* 播放器模式：视频铺满整页，顶部/底部控制条是压在视频上的半透明渐变浮层。 */
 QWidget#PlayerTopBar {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 rgba(0, 0, 0, 0.78),
-                                stop:0.70 rgba(0, 0, 0, 0.38),
-                                stop:1 rgba(0, 0, 0, 0.0));
+    /* T55：不透明顶层窗口；不要用 rgba/渐变透明，Windows 会按 alpha 穿透命中。 */
+    background-color: #0B1220;
     border: none;
+    border-bottom: 1px solid #1E293B;
 }
 
 QLabel#PlayerTitle {
@@ -543,11 +542,9 @@ QLabel#VideoHostHint {
 }
 
 QWidget#PlayerControlBar {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 rgba(0, 0, 0, 0.0),
-                                stop:0.30 rgba(0, 0, 0, 0.42),
-                                stop:1 rgba(0, 0, 0, 0.82));
+    background-color: #0B1220;
     border: none;
+    border-top: 1px solid #1E293B;
 }
 
 QLabel#PlayerTimeLabel {
@@ -588,7 +585,7 @@ QPushButton[role="playerText"] {
     color: #CBD5E1;
     border: 1px solid transparent;
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 0;
     font-size: 13px;
 }
 
