@@ -18,8 +18,13 @@ public:
 
     bool initialize(quintptr windowId, QString *error);
     // Emby 直连播放用：httpHeaderLines 为 "Name: value" 列表，初始化前写入
-    // http-header-fields-append（token 不拼进 URL）。
+    // http-header-fields（token 不拼进 URL）。
     bool initialize(quintptr windowId, const QStringList &httpHeaderLines, QString *error);
+    // T50：mpv 运行中尝试更新 http-header-fields（失败时由调用方决定重初始化）。
+    bool setHttpHeaderFields(const QString &fields);
+    // T50：销毁当前 mpv 实例并用新 HTTP 头重新 initialize（窗口 ID 不变）。
+    bool reinitialize(quintptr windowId, const QStringList &httpHeaderLines, QString *error);
+    void shutdown();
     bool isReady() const { return m_mpv != nullptr; }
 
     void loadPlaylist(const QStringList &files, int startIndex = 0);

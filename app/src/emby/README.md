@@ -63,10 +63,8 @@ client->fetchPlaybackInfo(itemId, [client, itemId](const PlaybackInfoResult &inf
     if (!source)
         return;
     const QUrl url = client->playbackUrl(itemId, *source);  // 直连时无 token
-    // libmpv:
-    //   --http-header-fields 用 client->mpvHeaderFields()，或者逐条
-    //   mpv_set_option_string(mpv, "http-header-fields-append", line)
-    //   其中 line 来自 client->streamHeaderLines()
+    // libmpv：初始化前用 mpv_set_option_string(mpv, "http-header-fields",
+    // client->mpvHeaderFields())；不要使用命令行展开的 -append。
 });
 
 // 4) 进度上报（节流由调用方负责，例如每 10s + 暂停/拖动时）

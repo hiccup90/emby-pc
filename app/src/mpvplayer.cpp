@@ -152,11 +152,38 @@ MpvPlayer::MpvPlayer(QObject *parent)
 
 MpvPlayer::~MpvPlayer()
 {
+    shutdown();
+}
+
+void MpvPlayer::shutdown()
+{
     m_timer.stop();
     if (m_mpv) {
         api().terminateDestroy(m_mpv);
         m_mpv = nullptr;
     }
+    m_position = 0.0;
+    m_duration = 0.0;
+    m_paused = false;
+    m_title.clear();
+}
+
+bool MpvPlayer::setHttpHeaderFields(const QString &fields)
+{
+    if (!m_mpv)
+        return false;
+    const QByteArray utf8 = fields.toUtf8();
+    const int rc = api().setPropertyString(m_mpv, "http-header-fields", utf8.constData());
+    qInfo() << "mpv set http-header-fields rc=" << rc << "headersBytes=" << utf8.size();
+    return rc >= 0;
+}
+
+bool MpvPlayer::reinitialize(quintptr windowId, const QStringList &httpHeaderLines,
+                             QString *error)
+{
+    qInfo() << "mpv reinitialize: headers" << httpHeaderLines.size();
+    shutdown();
+    return initialize(windowId, httpHeaderLines, error);
 }
 
 bool MpvPlayer::initialize(quintptr windowId, QString *error)
@@ -166,6 +193,8 @@ bool MpvPlayer::initialize(quintptr windowId, QString *error)
 
 bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines, QString *error)
 {
+    if (m_mpv)
+        shutdown();
     QString loadError;
     if (!loadApi(&loadError)) {
         if (error)
@@ -231,14 +260,25 @@ bool MpvPlayer::initialize(quintptr windowId, const QStringList &httpHeaderLines
     setOption("terminal", QStringLiteral("no"));
 
     // ---- Emby 直连 HTTP 头（T8）----
-    // Authorization 等头只在 mpv 初始化前通过 http-header-fields-append 注入，
+    // Authorization 等头只在 mpv 初始化前通过 http-header-fields 注入，
     // 不拼进播放 URL。
     if (!httpHeaderLines.isEmpty()) {
         QStringList escapedHeaders;
         escapedHeaders.reserve(httpHeaderLines.size());
         for (const QString &line : httpHeaderLines)
             escapedHeaders.append(escapeMpvListValue(line));
-        setOption("http-header-fields-append", escapedHeaders.join(QLatin1Char(',')));
+        // T50：-append 只存在于 mpv 命令行展开；libmpv API 必须用 http-header-fields。
+        const bool headerOptionSet =
+            setOption("http-header-fields", escapedHeaders.join(QLatin1Char(',')));
+        qInfo() << "mpv option http-header-fields set=" << headerOptionSet
+                << "headers" << escapedHeaders.size();
+        if (!headerOptionSet) {
+            if (error)
+                *error = QObject::tr("mpv 不接受 http-header-fields 选项");
+            a.terminateDestroy(m_mpv);
+            m_mpv = nullptr;
+            return false;
+        }
     }
 
     // ---- 文件日志（T9 验收支撑）----

@@ -152,9 +152,8 @@ public:
     QList<QPair<QString, QString>> streamHeaders() const;
     /// Same headers as full lines ("Name: value").
     QStringList streamHeaderLines() const;
-    /// Value for mpv's --http-header-fields option (list separators escaped).
-    /// For libmpv, streamHeaderLines() + the "http-header-fields-append"
-    /// option is safer because append does not interpret escapes.
+    /// Value for mpv's http-header-fields option (list separators escaped).
+    /// libmpv must use "http-header-fields" (not the command-line-only -append).
     QString mpvHeaderFields() const;
 
     /// Authorization header value ("MediaBrowser Client=..., Device=...,

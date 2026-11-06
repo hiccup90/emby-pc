@@ -720,10 +720,24 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
 bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
 {
     if (m_player->isReady()) {
-        // mpv 已初始化：本地播放之后再播 Emby 时尝试追加 Authorization 头。
-        if (!httpHeaderLines.isEmpty() && m_emby)
-            m_player->setPropertyString("http-header-fields-append",
-                                        m_emby->mpvHeaderFields());
+        // T50：mpv 已初始化时不能用 -append（libmpv 无此选项）。
+        // 先尝试运行中设置 http-header-fields；失败再销毁重建 mpv 实例。
+        if (!httpHeaderLines.isEmpty() && m_emby) {
+            const QString fields = m_emby->mpvHeaderFields();
+            if (!m_player->setHttpHeaderFields(fields)) {
+                qWarning() << "mpv ready but http-header-fields could not be updated; "
+                              "reinitializing";
+                QString error;
+                if (!m_player->reinitialize(m_videoHost->nativeWindow(), httpHeaderLines,
+                                            &error)) {
+                    QMessageBox::critical(m_window, tr("播放内核初始化失败"), error);
+                    return false;
+                }
+                applyMpvSettings();
+                updateHardwareInfo();
+                logMpvState(QStringLiteral("reinitialized-http-headers"));
+            }
+        }
         return true;
     }
 

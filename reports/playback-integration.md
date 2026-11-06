@@ -166,3 +166,45 @@ failures 0
 - 实体库 1050415：日志应出现 server DirectStreamUrl 候选、file-loaded；若失败自动 retry 自拼 URL，
   最终日志包含 mpv error/http-status。
 - 失败时一次性提示，导出 app.log/mpv.log；日志中无 token/Authorization。
+
+## T50 实体库 401 根因：libmpv HTTP 头选项名修复
+
+> 任务：task-50 · 负责人：build-verifier · 日期：2026-11-06
+
+### 根因
+
+- `http-header-fields-append` 只是 mpv **命令行**的展开写法；libmpv API
+  `mpv_set_option_string` 返回 -5 (option not found)，Authorization 从未注入。
+- 实体库 `/videos/.../original.mp4` 需要 Authorization 头，因此 401；strm 路径未暴露。
+
+### 修复
+
+- `MpvPlayer::initialize` 改用 `http-header-fields`（`mpvHeaderFields()` 已做逗号和反斜杠转义）。
+- 检查 `setOption` 返回值；失败直接报初始化失败，不再静默忽略。
+- `MpvPlayer::setHttpHeaderFields()`：mpv 已初始化时用 `mpv_set_property_string` 更新；
+  失败才由 `PlayerController::ensurePlayer` 调 `reinitialize()` 重建 mpv 实例。
+- `MpvPlayer::shutdown/reinitialize`：销毁旧实例、重置状态，再用同一 wid + 新头初始化；
+  本地播放后再播 Emby 也能注入头。
+- 日志只记录 header 数量/字节数，不记录 Authorization/token。
+
+### 验证（容器 libmpv 实测）
+
+```text
+append option rc=-5 (option not found)
+PASS append option rejected by libmpv
+http-header-fields option rc=0 (success)
+PASS http-header-fields option accepted before init
+init rc=0
+http-header-fields property rc=0 (success)
+value=Authorization: MediaBrowser Token=secret2,X-Test: 2
+PASS runtime property updates header
+failures 0
+```
+
+说明：运行时 property 也能成功更新，因此正常情况下走 `setHttpHeaderFields`，
+`reinitialize` 仅作为 API 行为变化/失败兜底。
+
+### 待实机
+
+- 实体库 1050415：Authorization 头应注入 mpv，不再 401；日志无 token。
+- 若仍 401，检查 app.log `mpv option http-header-fields set=true` 与 mpv.log HTTP 状态。
