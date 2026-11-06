@@ -489,13 +489,19 @@ Qt::Edges PlayerPage::edgeResizeEdgesAt(const QPoint &position) const
 bool PlayerPage::tryStartEdgeResize(const QPoint &globalPosition)
 {
     const Qt::Edges edges = edgeResizeEdgesAt(mapFromGlobal(globalPosition));
-    if (!edges)
+    return startEdgeResize(edges, globalPosition);
+}
+
+bool PlayerPage::startEdgeResize(Qt::Edges edges, const QPoint &globalPosition)
+{
+    if (!edges || !m_playerModeActive || m_fullscreen)
         return false;
     QWindow *handle = window() ? window()->windowHandle() : nullptr;
     const bool started = handle && handle->startSystemResize(edges);
     qInfo() << "PlayerPage::edgeResize: edges" << static_cast<int>(edges)
             << "global" << globalPosition << "startSystemResize" << started;
-    return true;
+    // T65：startSystemResize 失败时不要吞掉 press，交回调用方继续走拖动/mpv 点击。
+    return started;
 }
 
 bool PlayerPage::windowDragThresholdExceeded(const QPoint &pressGlobal,
@@ -722,12 +728,39 @@ bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    // T65：顶层 overlay 不透明化后会盖住窗口边缘的 6px 命中带：控制条贴底/两侧，
+    // 顶栏在页面内兜底模式贴顶、顶层模式距顶 6–10px。控制条按钮的扩展命中已在
+    // 上面 return true，所以这里只处理落在 overlay 自身空白/padding 上的左键 press。
+    if ((watched == m_topBar || watched == m_controlBar)
+        && event->type() == QEvent::MouseButtonPress) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            const QPoint globalPos = mouseEvent->globalPosition().toPoint();
+            Qt::Edges edges = edgeResizeEdgesAt(mapFromGlobal(globalPos));
+            // 顶层 overlay 的顶栏本身位于窗口顶边下方 6–10px，用户按“上边”拖时
+            // 落在顶栏上沿；把顶栏自身顶边 6px 也映射为 TopEdge（仅播放模式/非全屏）。
+            if (!edges && watched == m_topBar && m_playerModeActive && !m_fullscreen) {
+                const QPoint local = m_topBar->mapFromGlobal(globalPos);
+                const QRect host = hostGlobalRect();
+                const int topOffset = m_topBar->mapToGlobal(QPoint(0, 0)).y() - host.top();
+                if (local.y() >= 0 && local.y() < kPlayerResizeHit
+                    && qAbs(topOffset) <= 2 * kPlayerResizeHit) {
+                    edges |= Qt::TopEdge;
+                }
+            }
+            if (startEdgeResize(edges, globalPos)) {
+                mouseEvent->accept();
+                resetWindowDrag();
+                return true;
+            }
+        }
+    }
+
     if (watched == m_surface || watched == m_surfaceStack || watched == m_topBar) {
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouseEvent = static_cast<QMouseEvent *>(event);
             if (mouseEvent->button() == Qt::LeftButton) {
-                if (watched != m_topBar
-                    && tryStartEdgeResize(mouseEvent->globalPosition().toPoint())) {
+                if (tryStartEdgeResize(mouseEvent->globalPosition().toPoint())) {
                     mouseEvent->accept();
                     return true;
                 }

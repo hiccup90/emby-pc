@@ -117,6 +117,7 @@ private:
     void ensureHostWindow();
     void applyVideoMargins();
     bool tryStartEdgeResize(const QPoint &globalPosition);
+    bool startEdgeResize(Qt::Edges edges, const QPoint &globalPosition);
     bool handleWindowDragPress(const QPoint &globalPosition);
     bool handleWindowDragMove(const QPoint &globalPosition, const char *source);
     void resetWindowDrag();
