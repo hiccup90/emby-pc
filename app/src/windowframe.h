@@ -45,6 +45,9 @@ public:
     QRect maximizeButtonRect() const { return m_maximizeButtonRect; }
 
     bool isMaximized() const;
+    // T52：原生 WM_GETMINMAXINFO 使用的最小窗口尺寸；默认 800x480。
+    void setMinimumWindowSize(const QSize &size);
+    QSize minimumWindowSize() const { return m_minimumSize; }
     void toggleMaximize();
     void beginSystemMove();
     void beginSystemResize(Qt::Edges edges);

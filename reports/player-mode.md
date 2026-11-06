@@ -314,7 +314,7 @@ QPushButton::clicked
 
 ### 12.3 自测
 
-- `emby-ui-demo --selftest` **183 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
+- `emby-ui-demo --selftest` **187 项 ALL PASS**（其中 T32 新增：FullscreenButton 点击链路/再次退出全屏、队列为空时 Prev/Next disabled+tooltip）。
 - 全屏测试输出可见完整日志：
 ```text
 PlayerPage: FullscreenButton clicked ...
@@ -399,3 +399,21 @@ MainWindow::toggleFullscreen enter-fullscreen ...
 
 - 播放模式视频中央/顶部栏空白处拖动；日志应出现 startSystemMove true。
 - 全屏退出后主页四边/四角缩放光标；日志 windowState=0。
+
+## 15. T51 控制条点击命中 / Seek / 弹窗恢复
+
+- **按钮扩展命中**：`PlayerControlBar` 层统一分发，按钮 rect 外扩 6px；按下落在按钮边缘/间隙时直接 `click()`，保留正常 QPushButton 事件。
+- **SeekSlider**：视觉轨道仍 4px，Widget 命中高度 28px；点击/拖动任意位置直接算值，发出 `seekRequested`，同时更新当前时间；拖动期间暂停自动隐藏计时。
+- **日志**：`PlayerPage: control mouse ... watched/objectName/local/global`、`button clicked`、`SeekSlider click value=...`、`extended hit -> ...`。
+- **弹窗/菜单**：`QMenu::exec` 关闭后 `showOverlays()+raise()`、重置 interaction 计时并重新启动自动隐藏；统计按钮点击也重置计时，避免关闭 mpv OSD 后浮层立刻被隐藏。
+- **输入属性**：`showOverlays()` 显式清除 `WA_TransparentForMouseEvents`，保持 `WindowDoesNotAcceptFocus + WA_ShowWithoutActivating`（鼠标仍可点，避免抢播放键盘焦点）。
+- **回归**：新增 3 条 offscreen 断言——边缘扩展点击触发 `playPauseRequested`、SeekSlider 任意位置点击发 `seekRequested`、菜单关闭后控制条可见且非透明输入；总计 **187 项 ALL PASS**。
+- 待实机确认：控制条图标边缘/间隙、进度条任意位置、统计 toggle 后立即点其他按钮。
+
+## 16. T53 控制条默认图标模式
+
+- 字幕/音轨/统计按钮不再显示文字，始终 `setText(QString())`；当前轨道信息放 tooltip（如 `字幕：中文（简体）`、`音轨：中文 5.1`）。
+- 960 图标化逻辑保留为统一的纯图标布局；按钮尺寸/间距/hover/pressed/focus 沿用 T45/T51 token。
+- 播放/上下集/音量/全屏本就为图标，无文字残留。
+- 回归：`emby-ui-demo --selftest` **187 项 ALL PASS**（T53 断言字幕/音轨/统计 text 为空且 tooltip 非空）。
+- 截图：`preview/05-player.png`、`10-player-960x600.png`、`12/13` 已更新。

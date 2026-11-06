@@ -140,6 +140,7 @@ private:
     void saveWindowState();
     void rememberFullscreenWindowState();
     void restoreWindowedStateFromFullscreen();
+    void updateWindowMinimumSize(bool playerMode);
     void applySettings();
     void clearImageCache();
     void updateEpisodeNavigation();

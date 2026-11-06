@@ -656,9 +656,15 @@ int runSelfTest(QApplication &app)
           QStringLiteral("退出播放器模式恢复 chrome/TitleBar 并隐藏顶层浮层"));
     window.setPlayerMode(true);
     player->setOverlayAutoHide(false);
-    if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton")))
-        check(subtitleButton->text().contains(QStringLiteral("中文")),
-              QStringLiteral("字幕按钮反映当前轨道：%1").arg(subtitleButton->text()));
+    auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton"));
+    auto *audioButton = player->findChild<QPushButton *>(QStringLiteral("AudioButton"));
+    auto *statsButton = player->findChild<QPushButton *>(QStringLiteral("StatsButton"));
+    check(subtitleButton && subtitleButton->text().isEmpty()
+              && subtitleButton->toolTip().contains(QStringLiteral("中文")),
+          QStringLiteral("T53 字幕纯图标+tooltip：%1").arg(subtitleButton ? subtitleButton->toolTip() : QString()));
+    check(audioButton && audioButton->text().isEmpty() && !audioButton->toolTip().isEmpty()
+              && statsButton && statsButton->text().isEmpty() && !statsButton->toolTip().isEmpty(),
+          QStringLiteral("T53 音轨/统计纯图标+tooltip"));
     auto *playButton = player->findChild<QPushButton *>(QStringLiteral("PlayPauseButton"));
     auto *prevButton = player->findChild<QPushButton *>(QStringLiteral("PrevButton"));
     auto *nextButton = player->findChild<QPushButton *>(QStringLiteral("NextButton"));
@@ -684,6 +690,41 @@ int runSelfTest(QApplication &app)
         settle(app, 160);
         check(fullscreenSignals == 2 && !window.isFullScreen(),
               QStringLiteral("FullscreenButton 再次点击退出全屏"));
+    }
+
+    // T51：控制条扩展命中区、SeekSlider 点击即 seek、菜单关闭后 overlay 可点。
+    if (auto *controlBar = player->findChild<QWidget *>(QStringLiteral("PlayerControlBar"))) {
+        int extendedClicks = 0;
+        QObject::connect(player, &ui::PlayerPage::playPauseRequested,
+                         [&extendedClicks]() { ++extendedClicks; });
+        const QPoint edge = playButton->mapTo(controlBar, QPoint(-3, playButton->height() / 2));
+        QMouseEvent hit(QEvent::MouseButtonPress, edge, controlBar->mapToGlobal(edge),
+                        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(controlBar, &hit);
+        check(extendedClicks == 1, QStringLiteral("T51 控制条按钮边缘扩展命中"));
+    }
+    int seekClicks = 0;
+    QObject::connect(player, &ui::PlayerPage::seekRequested,
+                     [&seekClicks](qint64) { ++seekClicks; });
+    if (seekSlider) {
+        const QPoint seekPoint(seekSlider->width() * 3 / 4, seekSlider->height() / 2);
+        QMouseEvent seek(QEvent::MouseButtonPress, seekPoint,
+                         seekSlider->mapToGlobal(seekPoint), Qt::LeftButton, Qt::LeftButton,
+                         Qt::NoModifier);
+        QApplication::sendEvent(seekSlider, &seek);
+    }
+    check(seekClicks > 0, QStringLiteral("T51 进度条点击任意位置发出 seek"));
+    if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton"))) {
+        QTimer::singleShot(80, []() {
+            if (QWidget *popup = QApplication::activePopupWidget())
+                popup->close();
+        });
+        subtitleButton->click();
+        settle(app, 120);
+        auto *controlBar = player->findChild<QWidget *>(QStringLiteral("PlayerControlBar"));
+        check(controlBar && controlBar->isVisible()
+                  && !controlBar->testAttribute(Qt::WA_TransparentForMouseEvents),
+              QStringLiteral("T51 菜单关闭后控制条恢复可点"));
     }
 
     // T32：无 episode 队列时禁用上一集/下一集并给出 tooltip。

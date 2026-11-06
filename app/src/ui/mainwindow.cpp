@@ -1282,12 +1282,23 @@ void MainWindow::stepEpisode(int delta)
     }
 }
 
+void MainWindow::updateWindowMinimumSize(bool playerMode)
+{
+    const QSize minimum = playerMode ? QSize(320, 180) : QSize(800, 480);
+    setMinimumSize(minimum);
+    if (m_windowFrame)
+        m_windowFrame->setMinimumWindowSize(minimum);
+    qInfo() << "MainWindow: playerMode" << playerMode << "minimumSize" << minimum
+            << "actual" << minimumSize() << "windowFrame" << (m_windowFrame != nullptr);
+}
+
 void MainWindow::setPlayerMode(bool enabled)
 {
     if (!m_player)
         return;
 
     if (enabled) {
+        updateWindowMinimumSize(true);
         if (!m_playerMode) {
             m_playerReturnIndex = m_stack->currentIndex();
             m_playerMode = true;
@@ -1327,6 +1338,7 @@ void MainWindow::setPlayerMode(bool enabled)
     m_stack->setCurrentIndex(returnIndex);
     m_player->setFullscreen(m_fullscreen);
     restoreSidebarLayoutAfterChrome();
+    updateWindowMinimumSize(false);
     emit playerModeChanged(false);
 }
 

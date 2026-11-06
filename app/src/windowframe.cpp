@@ -142,6 +142,12 @@ bool WindowFrame::isMaximized() const
 #endif
 }
 
+void WindowFrame::setMinimumWindowSize(const QSize &size)
+{
+    m_minimumSize = QSize(qMax(1, size.width()), qMax(1, size.height()));
+    qInfo() << "WindowFrame: minimum window size" << m_minimumSize;
+}
+
 void WindowFrame::toggleMaximize()
 {
     if (!m_window)
@@ -346,7 +352,8 @@ bool WindowFrame::handleNativeMessage(void *message, qintptr *result)
             info->ptMaxSize.y = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
         }
         const int dpi = windowDpi(hwnd);
-        const QSize minSize = m_window->minimumSize().expandedTo(m_minimumSize);
+        // T52：只用显式设置的窗口最小尺寸，避免 Qt widget minimumSize 与播放模式冲突。
+        const QSize minSize = m_minimumSize;
         const QSize physicalMin = scaledSize(minSize, dpi);
         info->ptMinTrackSize.x = physicalMin.width();
         info->ptMinTrackSize.y = physicalMin.height();

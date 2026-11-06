@@ -217,3 +217,30 @@ failures 0
 - 自测：标题/图标 QLabel 对鼠标透明；三个按钮仍可点击；双击标题触发最大化；offscreen 全 PASS。
 - 实机：若原生 WM_NCHITTEST 仍把标题区域判成 HTCLIENT，日志会出现 TitleBar::startSystemMove；
   若直接走 HTCAPTION，则系统原生拖动生效，两种路径都覆盖。
+
+## 12. T52 播放模式最小窗口 320x180
+
+> 任务：task-52 · 负责人：build-verifier · 日期：2026-11-06
+
+- `WindowFrame::setMinimumWindowSize(QSize)`：默认 800x480；`WM_GETMINMAXINFO` 改用该显式值，
+  不再把 Qt widget `minimumSize()` 与原生最小尺寸混在一起。
+- `ui::MainWindow::updateWindowMinimumSize(bool playerMode)`：
+  - 播放模式：Qt `setMinimumSize(320,180)` + `WindowFrame::setMinimumWindowSize(320,180)`；
+  - 普通模式：恢复 800x480；日志 `MainWindow: playerMode ... minimumSize ... actual ...`。
+- `setPlayerMode(true)` 进入时切换，`setPlayerMode(false)` 恢复；“退出全屏后仍在播放模式”保持 320x180。
+- 全屏/最大化路径不变；T31/T35 边缘 5px、T46 拖拽、T51 控制条命中均保留。
+
+### 自测
+
+```text
+PASS default Qt minimum 800x480
+PASS default WindowFrame minimum 800x480
+PASS player Qt minimum 320x180
+PASS player WindowFrame minimum 320x180
+PASS player can resize below 800x480
+PASS normal Qt minimum restored 800x480
+PASS normal WindowFrame minimum restored 800x480
+failures 0
+```
+
+- Linux app Debug 构建 exit 0；`-Wall -Wextra` 0 warning。

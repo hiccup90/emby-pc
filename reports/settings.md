@@ -71,7 +71,7 @@ MainWindow 额外暴露 `SettingsPage *settingsPage() const`，T29 可在播放�
 
 ## 6. 自测
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest`：**183 项 ALL PASS**（本地假 Emby 服务器/offscreen，不访问真实服务器）。
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest`：**187 项 ALL PASS**（本地假 Emby 服务器/offscreen，不访问真实服务器）。
 
 T28 新增覆盖：
 

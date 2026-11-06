@@ -25,6 +25,8 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <functional>
+
 namespace ui {
 namespace {
 
@@ -73,6 +75,7 @@ public:
         : QSlider(Qt::Horizontal, parent)
     {
         setMouseTracking(true);
+        setFixedHeight(28);
     }
 
     void setBufferedValue(int value)
@@ -81,7 +84,54 @@ public:
         update();
     }
 
+    std::function<void(int)> onSeek;
+
 protected:
+    void seekAt(qreal x)
+    {
+        if (maximum() <= minimum())
+            return;
+        const int px = qBound(0, qRound(x), qMax(1, width()));
+        const int value = minimum()
+                          + qRound(double(maximum() - minimum()) * px / qMax(1, width()));
+        setValue(value);
+        update();
+        if (onSeek)
+            onSeek(value);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            m_dragging = true;
+            seekAt(event->position().x());
+            event->accept();
+            return;
+        }
+        QSlider::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_dragging) {
+            seekAt(event->position().x());
+            event->accept();
+            return;
+        }
+        QSlider::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && m_dragging) {
+            seekAt(event->position().x());
+            m_dragging = false;
+            event->accept();
+            return;
+        }
+        QSlider::mouseReleaseEvent(event);
+    }
+
     void paintEvent(QPaintEvent *) override
     {
         QPainter painter(this);
@@ -118,6 +168,7 @@ protected:
 
 private:
     int m_bufferedValue = 0;
+    bool m_dragging = false;
 };
 
 } // namespace
@@ -328,7 +379,15 @@ void PlayerPage::buildUi()
             [this]() { showTrackMenu(m_subtitleButton, m_subtitleTracks, false); });
     connect(m_audioButton, &QPushButton::clicked, this,
             [this]() { showTrackMenu(m_audioButton, m_audioTracks, true); });
-    connect(m_statsButton, &QPushButton::clicked, this, &PlayerPage::statsRequested);
+    connect(m_statsButton, &QPushButton::clicked, this, [this]() {
+        // 统计是 mpv OSD toggle，不改控制条状态；点击后重置自动隐藏并确保浮层在前。
+        m_lastInteraction.restart();
+        if (m_autoHide && m_playerModeActive)
+            startAutoHideTimer();
+        showOverlays();
+        qInfo() << "PlayerPage: StatsButton clicked (toggle)";
+        emit statsRequested();
+    });
     connect(m_fullscreenButton, &QPushButton::clicked, this, [this]() {
         const bool wasFullScreen = window() && window()->isFullScreen();
         qInfo() << "PlayerPage: FullscreenButton clicked fullscreen=" << m_fullscreen
@@ -356,6 +415,32 @@ void PlayerPage::buildUi()
         if (!m_updatingSlider)
             emit seekRequested(m_seekSlider->value());
     });
+    if (auto *seek = static_cast<SeekSlider *>(m_seekSlider)) {
+        seek->onSeek = [this](int value) {
+            if (m_updatingSlider)
+                return;
+            m_lastInteraction.restart();
+            if (m_autoHide && m_playerModeActive)
+                startAutoHideTimer();
+            m_positionLabel->setText(formatTimeValue(value));
+            qInfo() << "PlayerPage: SeekSlider click value=" << value;
+            emit seekRequested(value);
+        };
+    }
+
+    // T51：控制条空白/按钮边缘/滑杆的按键日志与自动隐藏重置。
+    m_controlBar->installEventFilter(this);
+    for (QPushButton *button : m_controlBar->findChildren<QPushButton *>())
+        button->installEventFilter(this);
+    for (QPushButton *button : m_topBar->findChildren<QPushButton *>())
+        button->installEventFilter(this);
+    m_seekSlider->installEventFilter(this);
+    m_volumeSlider->installEventFilter(this);
+    for (QPushButton *button : m_controlBar->findChildren<QPushButton *>()) {
+        connect(button, &QPushButton::clicked, this, [button]() {
+            qInfo() << "PlayerPage: button clicked" << button->objectName();
+        });
+    }
 
     if (!m_topLevelOverlay)
         updateDockedOverlayGeometry();
@@ -485,8 +570,9 @@ void PlayerPage::paintEvent(QPaintEvent *event)
 
 void PlayerPage::updateResponsiveControls()
 {
+    // T53：控制条默认/所有宽度均使用纯图标模式；文字只放在 tooltip。
     const bool compact = width() < 1100;
-    const auto setButtonText = [compact](QPushButton *button, const QString &fallback) {
+    const auto setButtonText = [](QPushButton *button, const QString &fallback) {
         if (!button)
             return;
         QString fullText = button->property("fullText").toString();
@@ -494,7 +580,7 @@ void PlayerPage::updateResponsiveControls()
             fullText = button->toolTip().isEmpty() ? fallback : button->toolTip();
             button->setProperty("fullText", fullText);
         }
-        button->setText(compact ? QString() : fullText);
+        button->setText(QString());
         button->setToolTip(fullText);
     };
     setButtonText(m_subtitleButton, QStringLiteral("字幕"));
@@ -538,6 +624,52 @@ void PlayerPage::hideEvent(QHideEvent *event)
 
 bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
 {
+    // T51：控制条/按钮/滑杆的鼠标按下日志与自动隐藏重置。
+    // 空白和按钮外扩区域统一在 PlayerControlBar 层分发，避免图标边缘/间隙丢点击。
+    const bool isControlButton = qobject_cast<QPushButton *>(watched) != nullptr
+                                 && qobject_cast<QWidget *>(watched)->parent() == m_controlBar;
+    const bool isTopButton = qobject_cast<QPushButton *>(watched) != nullptr
+                             && qobject_cast<QWidget *>(watched)->parent() == m_topBar;
+    const bool isControlWidget = watched == m_controlBar || watched == m_seekSlider
+                                 || watched == m_volumeSlider || isControlButton || isTopButton;
+    if (isControlWidget && (event->type() == QEvent::MouseButtonPress
+                            || event->type() == QEvent::MouseButtonRelease)) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            m_lastInteraction.restart();
+            if (watched == m_seekSlider && event->type() == QEvent::MouseButtonPress)
+                stopAutoHideTimer(); // 拖动进度条期间不自动隐藏
+            else if (m_autoHide && m_playerModeActive)
+                startAutoHideTimer();
+            showOverlays();
+            qInfo() << "PlayerPage: control mouse" << event->type()
+                    << "watched=" << watched->objectName()
+                    << "local=" << mouseEvent->position().toPoint()
+                    << "global=" << mouseEvent->globalPosition().toPoint();
+        }
+        if (watched == m_controlBar && event->type() == QEvent::MouseButtonPress
+            && mouseEvent->button() == Qt::LeftButton) {
+            const QPoint pos = mouseEvent->position().toPoint();
+            QPushButton *hit = nullptr;
+            for (QPushButton *button : m_controlBar->findChildren<QPushButton *>()) {
+                if (!button->isVisible() || !button->isEnabled())
+                    continue;
+                QRect rect(button->mapTo(m_controlBar, QPoint(0, 0)), button->size());
+                rect.adjust(-6, -6, 6, 6);
+                if (rect.contains(pos)) {
+                    hit = button;
+                    break;
+                }
+            }
+            if (hit) {
+                qInfo() << "PlayerPage: extended hit ->" << hit->objectName()
+                        << "local=" << pos;
+                hit->click();
+                return true;
+            }
+        }
+    }
+
     if (watched == m_surface || watched == m_surfaceStack || watched == m_topBar) {
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouseEvent = static_cast<QMouseEvent *>(event);
@@ -692,11 +824,15 @@ void PlayerPage::showOverlays()
     if (!m_controlsRequested || !m_playerModeActive || !isVisible())
         return;
     syncOverlayGeometry();
+    m_topBar->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+    m_controlBar->setAttribute(Qt::WA_TransparentForMouseEvents, false);
     m_topBar->show();
     m_controlBar->show();
     m_overlaysVisible = true;
     m_topBar->raise();
     m_controlBar->raise();
+    qInfo() << "PlayerPage: overlays shown top=" << m_topBar->geometry()
+            << "bottom=" << m_controlBar->geometry();
 }
 
 void PlayerPage::hideOverlays()
@@ -926,14 +1062,14 @@ void PlayerPage::setSubtitleTracks(const QList<TrackInfo> &tracks)
     m_subtitleTracks = tracks;
     for (const TrackInfo &track : tracks) {
         if (track.selected && !track.title.isEmpty()) {
-            const QString label = QStringLiteral("字幕 · %1").arg(track.title);
-            m_subtitleButton->setText(label);
+            const QString label = QStringLiteral("字幕：%1").arg(track.title);
+            m_subtitleButton->setText(QString());
             m_subtitleButton->setToolTip(label);
             m_subtitleButton->setProperty("fullText", label);
             return;
         }
     }
-    m_subtitleButton->setText(QStringLiteral("字幕"));
+    m_subtitleButton->setText(QString());
     m_subtitleButton->setToolTip(QStringLiteral("字幕"));
     m_subtitleButton->setProperty("fullText", QStringLiteral("字幕"));
 }
@@ -943,14 +1079,14 @@ void PlayerPage::setAudioTracks(const QList<TrackInfo> &tracks)
     m_audioTracks = tracks;
     for (const TrackInfo &track : tracks) {
         if (track.selected && !track.title.isEmpty()) {
-            const QString label = QStringLiteral("音轨 · %1").arg(track.title);
-            m_audioButton->setText(label);
+            const QString label = QStringLiteral("音轨：%1").arg(track.title);
+            m_audioButton->setText(QString());
             m_audioButton->setToolTip(label);
             m_audioButton->setProperty("fullText", label);
             return;
         }
     }
-    m_audioButton->setText(QStringLiteral("音轨"));
+    m_audioButton->setText(QString());
     m_audioButton->setToolTip(QStringLiteral("音轨"));
     m_audioButton->setProperty("fullText", QStringLiteral("音轨"));
 }
@@ -1004,10 +1140,24 @@ void PlayerPage::showTrackMenu(QPushButton *button, const QList<TrackInfo> &trac
 {
     QMenu menu(this);
     menu.setObjectName(QStringLiteral("TrackMenu"));
+    const auto restoreOverlayAfterPopup = [this]() {
+        if (!m_playerModeActive)
+            return;
+        m_lastInteraction.restart();
+        if (m_autoHide)
+            startAutoHideTimer();
+        showOverlays();
+        if (m_controlBar)
+            m_controlBar->raise();
+        if (m_topBar)
+            m_topBar->raise();
+        qInfo() << "PlayerPage: popup closed, overlay raised";
+    };
     if (tracks.isEmpty()) {
         QAction *empty = menu.addAction(QStringLiteral("没有可用的轨道"));
         empty->setEnabled(false);
         menu.exec(button->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+        restoreOverlayAfterPopup();
         return;
     }
 
@@ -1025,6 +1175,7 @@ void PlayerPage::showTrackMenu(QPushButton *button, const QList<TrackInfo> &trac
     }
 
     QAction *chosen = menu.exec(button->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+    restoreOverlayAfterPopup();
     if (!chosen || !chosen->data().isValid())
         return;
     const QString id = chosen->data().toString();
