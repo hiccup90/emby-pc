@@ -98,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 | L-04 | 用文本编辑器打开 `mpv.log` | 首部包含 mpv 版本信息（形如 `[cplayer] mpv 0.xx.x`）与 `VO: [gpu-next]`、`hwdec`、`gpu-api` 等启动日志 | 复制 mpv.log 前 60 行，标出 mpv 版本行 |
 | L-05 | 敏感信息检查：对 app.log 和 mpv.log 执行搜索 `findstr /i "access_token api_key password authorization" app.log mpv.log` | **不得出现**真实 token、密码、Authorization 头内容（出现即 P0 安全缺陷；把命中行打码后报回） | 命令行输出截图（敏感值打码） |
 | L-06 | 关闭应用，把整个日志目录复制到 `acceptance-<日期>-<机器名>\logs\` | 目录里至少有 `app.log`；播放过则还有 `mpv.log`；如有 `app.log.1/.2` 一并保留 | 最终交付 zip 中体现 |
-| L-07 | 凭据存储检查（升级场景：**先在 0.1.0 登录并保持**，再覆盖安装 0.1.1 并启动一次） | cmd 执行 `reg query "HKCU\\Software\\emby-pc\\emby-pc\\auth" /s`：只看到 `profile.dpapi.v1`（QSettings 以 REG_SZ 存 base64 的 DPAPI blob，不是裸二进制），**没有** `profile` 明文值；重启后登录态可恢复（服务器可达时）；`%LOCALAPPDATA%\emby-pc` 仅用于 app.log/mpv.log；Linux 回退密文在 `$XDG_CONFIG_HOME/emby-pc/emby-pc/secure/profile.dat`（0600） | 命令行输出截图（敏感值打码）+ 升级前后对比 |
+| L-07 | 凭据存储检查（升级场景：**先在 0.1.0 登录并保持**，再覆盖安装 0.1.1 并启动一次） | cmd 执行 `reg query "HKCU\Software\emby-pc\emby-pc\auth" /s`：只看到 `profile.dpapi.v1`（QSettings 以 REG_SZ 存 base64 的 DPAPI blob，不是裸二进制），**没有** `profile` 明文值；重启后登录态可恢复（服务器可达时）；`%LOCALAPPDATA%\emby-pc` 仅用于 app.log/mpv.log；Linux 回退密文在 `$XDG_CONFIG_HOME/emby-pc/emby-pc/secure/profile.dat`（0600） | 命令行输出截图（敏感值打码）+ 升级前后对比 |
 
 > 说明：`mpv.log` 只有**真正初始化 libmpv（打开文件播放）之后**才会生成；只启动不播放时没有该文件是正常的。
 > 如果启动阶段就失败，先收集 `app.log`（如不存在，检查 `%LOCALAPPDATA%\emby-pc\emby-pc\` 是否被安全软件拦截）。
