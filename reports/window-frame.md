@@ -203,3 +203,17 @@ failures 0
 - `EMBY_PC_DEBUG_HITTEST=1`（或 `EMBY_PC_DEBUG_GEOMETRY=1`）时输出：
   `WindowFrame: WM_NCHITTEST point=... client=... state=... maximized=... fullscreen=... border=...`。
 - 单测：x=2 命中 LeftEdge、中心无边缘、最大化无边缘；配合 T46 全屏退出 NoState 断言。
+
+## 11. T49 主页标题栏拖动
+
+> 任务：task-49 · 负责人：build-verifier · 日期：2026-11-06
+
+- TitleBar 内图标/标题 QLabel 继续设置 `WA_TransparentForMouseEvents`（按钮保留鼠标事件），
+  鼠标落在标题文字/空白处时事件可落到 TitleBar/顶层。
+- TitleBar 新增 Qt 层兜底：左键按下+移动超过 4px 调
+  `window()->windowHandle()->startSystemMove()`；日志 `TitleBar::startSystemMove ... started=...`。
+- 双击标题栏仍发 `maximizeToggleRequested`；最大化按钮不参与拖动，WindowFrame 的
+  `HTMAXBUTTON`/Snap Layouts 路径不变。
+- 自测：标题/图标 QLabel 对鼠标透明；三个按钮仍可点击；双击标题触发最大化；offscreen 全 PASS。
+- 实机：若原生 WM_NCHITTEST 仍把标题区域判成 HTCLIENT，日志会出现 TitleBar::startSystemMove；
+  若直接走 HTCAPTION，则系统原生拖动生效，两种路径都覆盖。

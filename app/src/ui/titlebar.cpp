@@ -11,6 +11,7 @@
 #include <QResizeEvent>
 #include <QStyle>
 #include <QToolTip>
+#include <QWindow>
 
 namespace ui {
 namespace {
@@ -146,6 +147,42 @@ void TitleBar::resizeEvent(QResizeEvent *event)
     emitMaximizeRect();
 }
 
+void TitleBar::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_dragPressGlobal = event->globalPosition().toPoint();
+        m_dragPressed = true;
+        m_dragStarted = false;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void TitleBar::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_dragPressed && !m_dragStarted && (event->buttons() & Qt::LeftButton)) {
+        const QPoint global = event->globalPosition().toPoint();
+        if ((global - m_dragPressGlobal).manhattanLength() > 4) {
+            m_dragStarted = true;
+            QWidget *top = window();
+            QWindow *handle = top ? top->windowHandle() : nullptr;
+            const bool started = handle && handle->startSystemMove();
+            qInfo() << "TitleBar::startSystemMove press=" << m_dragPressGlobal
+                    << "current=" << global
+                    << "distance=" << (global - m_dragPressGlobal).manhattanLength()
+                    << "started=" << started;
+            if (!started)
+                qWarning() << "TitleBar::startSystemMove failed";
+        }
+    }
+    QWidget::mouseMoveEvent(event);
+}
+
+void TitleBar::mouseReleaseEvent(QMouseEvent *event)
+{
+    m_dragPressed = false;
+    m_dragStarted = false;
+    QWidget::mouseReleaseEvent(event);
+}
 void TitleBar::mouseDoubleClickEvent(QMouseEvent *event)
 {
     QWidget::mouseDoubleClickEvent(event);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPoint>
 #include <QRect>
 #include <QString>
 #include <QWidget>
@@ -36,6 +37,9 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
@@ -51,6 +55,9 @@ private:
     QPushButton *m_closeButton = nullptr;
     QString m_titleText;
     bool m_maximized = false;
+    QPoint m_dragPressGlobal;
+    bool m_dragPressed = false;
+    bool m_dragStarted = false;
 };
 
 } // namespace ui
