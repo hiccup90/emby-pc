@@ -58,12 +58,67 @@ QPushButton *makeIconButton(Icon iconKind, const QString &tooltip, const QString
     button->setObjectName(objectName);
     button->setProperty("role", QStringLiteral("playerIcon"));
     button->setIcon(icon(iconKind, QColor(0xE2, 0xE8, 0xF0), 22));
-    button->setIconSize(QSize(22, 22));
-    button->setFixedSize(40, 40);
+    button->setIconSize(QSize(20, 20));
+    button->setFixedSize(36, 36);
     button->setToolTip(tooltip);
     button->setCursor(Qt::PointingHandCursor);
     return button;
 }
+
+// T45：分段进度条：底轨/缓冲/已播/可拖 handle，保持 QSlider 输入语义。
+class SeekSlider : public QSlider
+{
+public:
+    explicit SeekSlider(QWidget *parent = nullptr)
+        : QSlider(Qt::Horizontal, parent)
+    {
+        setMouseTracking(true);
+    }
+
+    void setBufferedValue(int value)
+    {
+        m_bufferedValue = qBound(0, value, maximum());
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const int trackHeight = 4;
+        const QRectF track(6.0, (height() - trackHeight) / 2.0,
+                           qMax(1.0, width() - 12.0), trackHeight);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0x33, 0x41, 0x55));
+        painter.drawRoundedRect(track, 2, 2);
+
+        const int range = maximum() - minimum();
+        const auto fraction = [&](int value) {
+            if (range <= 0)
+                return 0.0;
+            return qBound(0.0, double(value - minimum()) / double(range), 1.0);
+        };
+        if (m_bufferedValue > value()) {
+            QRectF buffered = track;
+            buffered.setWidth(track.width() * fraction(m_bufferedValue));
+            painter.setBrush(QColor(148, 163, 184, 92));
+            painter.drawRoundedRect(buffered, 2, 2);
+        }
+        QRectF played = track;
+        played.setWidth(track.width() * fraction(value()));
+        painter.setBrush(QColor(0x3B, 0x82, 0xF6));
+        painter.drawRoundedRect(played, 2, 2);
+
+        const qreal handleX = track.left() + track.width() * fraction(value());
+        painter.setBrush(QColor(0xF8, 0xFA, 0xFC));
+        painter.setPen(QPen(QColor(0x3B, 0x82, 0xF6), 2));
+        painter.drawEllipse(QPointF(handleX, track.center().y()), 7, 7);
+    }
+
+private:
+    int m_bufferedValue = 0;
+};
 
 } // namespace
 
@@ -151,7 +206,7 @@ void PlayerPage::buildUi()
 
     // 顶部信息栏：不加入布局，作为浮层压在视频上。
     auto *topLayout = new QHBoxLayout(m_topBar);
-    topLayout->setContentsMargins(14, 8, 20, 8);
+    topLayout->setContentsMargins(24, 10, 24, 10);
     topLayout->setSpacing(12);
     m_backButton = makeIconButton(Icon::Back, QStringLiteral("返回"), QStringLiteral("PlayerBackButton"),
                                   m_topBar);
@@ -178,8 +233,8 @@ void PlayerPage::buildUi()
 
     // 底部控制条：同样作为浮层，不占视频布局高度。
     auto *controls = new QVBoxLayout(m_controlBar);
-    controls->setContentsMargins(22, 10, 22, 12);
-    controls->setSpacing(6);
+    controls->setContentsMargins(24, 10, 24, 12);
+    controls->setSpacing(8);
 
     auto *seekRow = new QHBoxLayout();
     seekRow->setSpacing(12);
@@ -190,7 +245,7 @@ void PlayerPage::buildUi()
     m_durationLabel->setObjectName(QStringLiteral("PlayerTimeLabel"));
     m_durationLabel->setMinimumWidth(48);
     m_durationLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_seekSlider = new QSlider(Qt::Horizontal, m_controlBar);
+    m_seekSlider = new SeekSlider(m_controlBar);
     m_seekSlider->setObjectName(QStringLiteral("SeekSlider"));
     m_seekSlider->setRange(0, 0);
     m_seekSlider->setCursor(Qt::PointingHandCursor);
@@ -206,15 +261,16 @@ void PlayerPage::buildUi()
     m_playButton->setProperty("role", QStringLiteral("playerPrimary"));
     m_playButton->setIcon(icon(Icon::Play, QColor(0xFF, 0xFF, 0xFF), 24));
     m_playButton->setIconSize(QSize(24, 24));
-    m_playButton->setFixedSize(46, 46);
+    m_playButton->setFixedSize(48, 48);
     m_playButton->setToolTip(QStringLiteral("播放 / 暂停"));
     m_playButton->setCursor(Qt::PointingHandCursor);
     m_prevButton = makeIconButton(Icon::Prev, QStringLiteral("上一集"), QStringLiteral("PrevButton"),
                                   m_controlBar);
     m_nextButton = makeIconButton(Icon::Next, QStringLiteral("下一集"), QStringLiteral("NextButton"),
                                   m_controlBar);
-    buttonRow->addWidget(m_playButton);
+    buttonRow->addStretch(1);
     buttonRow->addWidget(m_prevButton);
+    buttonRow->addWidget(m_playButton);
     buttonRow->addWidget(m_nextButton);
     buttonRow->addStretch(1);
 
@@ -235,8 +291,7 @@ void PlayerPage::buildUi()
     m_statsButton->setCursor(Qt::PointingHandCursor);
     buttonRow->addWidget(m_subtitleButton);
     buttonRow->addWidget(m_audioButton);
-    buttonRow->addWidget(m_statsButton);
-    buttonRow->addSpacing(10);
+    buttonRow->addSpacing(8);
 
     auto *volumeIcon = new QLabel(m_controlBar);
     volumeIcon->setPixmap(iconPixmap(Icon::Volume, QColor(0x94, 0xA3, 0xB8), 20));
@@ -253,6 +308,7 @@ void PlayerPage::buildUi()
     m_fullscreenButton = makeIconButton(Icon::Fullscreen, QStringLiteral("全屏"),
                                         QStringLiteral("FullscreenButton"), m_controlBar);
     buttonRow->addWidget(m_fullscreenButton);
+    buttonRow->addWidget(m_statsButton);
     controls->addLayout(buttonRow);
 
     connect(m_backButton, &QPushButton::clicked, this, &PlayerPage::backRequested);
@@ -303,6 +359,7 @@ void PlayerPage::buildUi()
     if (!m_topLevelOverlay)
         updateDockedOverlayGeometry();
 
+    updateResponsiveControls();
     // 初始没有剧集队列上下文，避免用户误点。
     setEpisodeNavigationEnabled(false, false);
 }
@@ -384,9 +441,31 @@ void PlayerPage::paintEvent(QPaintEvent *event)
     }
 }
 
+void PlayerPage::updateResponsiveControls()
+{
+    const bool compact = width() < 1100;
+    const auto setButtonText = [compact](QPushButton *button, const QString &fallback) {
+        if (!button)
+            return;
+        QString fullText = button->property("fullText").toString();
+        if (fullText.isEmpty()) {
+            fullText = button->toolTip().isEmpty() ? fallback : button->toolTip();
+            button->setProperty("fullText", fullText);
+        }
+        button->setText(compact ? QString() : fullText);
+        button->setToolTip(fullText);
+    };
+    setButtonText(m_subtitleButton, QStringLiteral("字幕"));
+    setButtonText(m_audioButton, QStringLiteral("音轨"));
+    setButtonText(m_statsButton, QStringLiteral("统计"));
+    if (m_volumeSlider)
+        m_volumeSlider->setFixedWidth(compact ? 72 : 96);
+}
+
 void PlayerPage::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
+    updateResponsiveControls();
     if (m_topLevelOverlay) {
         if (m_playerModeActive)
             syncOverlayGeometry();
@@ -521,7 +600,7 @@ void PlayerPage::syncOverlayGeometry()
     m_topBar->setGeometry(host.left() + 12 + margin, host.top() + 10 + margin, topWidth, topHeight);
 
     // T31：底部 overlay 同步内缩，避免盖住窗口底边的可缩放边缘；全屏 margin=0。
-    const int controlHeight = 96;
+    const int controlHeight = 108;
     m_controlBar->setGeometry(host.left() + margin,
                               host.top() + host.height() - controlHeight - margin,
                               qMax(0, host.width() - 2 * margin), controlHeight);
@@ -538,7 +617,7 @@ void PlayerPage::updateDockedOverlayGeometry()
         return;
     const int margin = (m_playerModeActive && !m_fullscreen) ? kPlayerResizeMargin : 0;
     const int topHeight = qBound(58, height() / 9, 84);
-    const int controlHeight = qBound(96, height() / 7, 112);
+    const int controlHeight = qBound(108, height() / 7, 124);
     m_topBar->setGeometry(margin, margin, qMax(0, width() - 2 * margin), topHeight);
     m_controlBar->setGeometry(margin, height() - controlHeight - margin,
                               qMax(0, width() - 2 * margin), controlHeight);
@@ -750,6 +829,11 @@ void PlayerPage::setPosition(qint64 positionMs, qint64 durationMs)
     m_updatingSlider = true;
     m_seekSlider->setRange(0, static_cast<int>(qMin<qint64>(m_durationMs, INT_MAX)));
     m_seekSlider->setValue(static_cast<int>(position));
+    if (auto *seek = dynamic_cast<SeekSlider *>(m_seekSlider)) {
+        const int buffered = static_cast<int>(qMin<qint64>(
+            m_durationMs, position + qMax<qint64>(1000, m_durationMs / 6)));
+        seek->setBufferedValue(buffered);
+    }
     m_updatingSlider = false;
 
     m_positionLabel->setText(formatTimeValue(position));
@@ -782,11 +866,16 @@ void PlayerPage::setSubtitleTracks(const QList<TrackInfo> &tracks)
     m_subtitleTracks = tracks;
     for (const TrackInfo &track : tracks) {
         if (track.selected && !track.title.isEmpty()) {
-            m_subtitleButton->setText(QStringLiteral("字幕 · %1").arg(track.title));
+            const QString label = QStringLiteral("字幕 · %1").arg(track.title);
+            m_subtitleButton->setText(label);
+            m_subtitleButton->setToolTip(label);
+            m_subtitleButton->setProperty("fullText", label);
             return;
         }
     }
     m_subtitleButton->setText(QStringLiteral("字幕"));
+    m_subtitleButton->setToolTip(QStringLiteral("字幕"));
+    m_subtitleButton->setProperty("fullText", QStringLiteral("字幕"));
 }
 
 void PlayerPage::setAudioTracks(const QList<TrackInfo> &tracks)
@@ -794,11 +883,16 @@ void PlayerPage::setAudioTracks(const QList<TrackInfo> &tracks)
     m_audioTracks = tracks;
     for (const TrackInfo &track : tracks) {
         if (track.selected && !track.title.isEmpty()) {
-            m_audioButton->setText(QStringLiteral("音轨 · %1").arg(track.title));
+            const QString label = QStringLiteral("音轨 · %1").arg(track.title);
+            m_audioButton->setText(label);
+            m_audioButton->setToolTip(label);
+            m_audioButton->setProperty("fullText", label);
             return;
         }
     }
     m_audioButton->setText(QStringLiteral("音轨"));
+    m_audioButton->setToolTip(QStringLiteral("音轨"));
+    m_audioButton->setProperty("fullText", QStringLiteral("音轨"));
 }
 
 void PlayerPage::setVolume(int volume)

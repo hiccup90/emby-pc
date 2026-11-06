@@ -164,6 +164,11 @@ QT_QPA_PLATFORM=offscreen EMBY_TEST_URL='http://<server>:8096' \
 - 详情：360px hero + 188×282 海报、28px 标题、长简介展开/收起、季/集列表。
 - 登录：620px 居中卡片、空状态框隐藏、统一表单控件。
 
+## 播放器与设置页（T45）
+
+- 播放器：自定义分段进度条（缓冲/已播/可拖）、播放/上下集居中、右侧字幕/音轨/音量/全屏/统计；960 宽自动图标化；保留 5px 边距/边缘缩放/自动隐藏。
+- 设置页：左侧分类导航 + 右侧分组（服务器/播放/媒体库/存储/关于），值对比度与行距统一；保留 QSettings 键和功能。
+
 ## 真实媒体库（T7 / M2-B）
 
 ### 数据流
@@ -290,7 +295,7 @@ player->setControlsVisible(true);      // 手动显示/隐藏
 
 ## 验证结果（本容器，Qt 6.8.2 / CMake 3.31 / GCC 14）
 
-`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **179 项全部 PASS**，包括：
+`QT_QPA_PLATFORM=offscreen emby-ui-demo --selftest` 共 **181 项全部 PASS**，包括：
 
 - mock：媒体库 200 部、首页 Resume 卡片、电影/剧集复用同一 LibraryView、页面栈索引；
 - QListView 模型 200 行、海报 gridSize 生效、搜索“星际”5 条、滚动平均 15~18 ms/帧；

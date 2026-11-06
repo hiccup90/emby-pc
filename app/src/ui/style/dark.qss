@@ -503,13 +503,13 @@ QWidget#PlayerTopBar {
 }
 
 QLabel#PlayerTitle {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
     color: #F8FAFC;
 }
 
 QLabel#PlayerSubtitle {
-    font-size: 11px;
+    font-size: 12px;
     color: #94A3B8;
 }
 
@@ -570,13 +570,13 @@ QPushButton[role="playerIcon"]:pressed {
 }
 
 QPushButton[role="playerPrimary"] {
-    background-color: #2563EB;
+    background-color: #3B82F6;
     border: none;
-    border-radius: 23px;
+    border-radius: 24px;
 }
 
 QPushButton[role="playerPrimary"]:hover {
-    background-color: #1D4ED8;
+    background-color: #2563EB;
 }
 
 QPushButton[role="playerPrimary"]:pressed {
@@ -587,9 +587,9 @@ QPushButton[role="playerText"] {
     background-color: transparent;
     color: #CBD5E1;
     border: 1px solid transparent;
-    border-radius: 7px;
+    border-radius: 8px;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: 13px;
 }
 
 QPushButton[role="playerText"]:hover {
@@ -1126,3 +1126,77 @@ QPushButton#HomeSectionSeeAll:hover {
 }
 QWidget#HomeSectionRow { background: transparent; }
 QWidget#HomeSectionPreview { background: transparent; }
+
+
+/* T45 设置页：左侧分类导航 + 右侧分组 */
+QWidget#SettingsPage { background-color: #0F172A; }
+QWidget#SettingsSidebar {
+    background-color: #0F172A;
+    border-right: 1px solid #334155;
+}
+QLabel#SettingsNavTitle {
+    font-size: 24px;
+    font-weight: 700;
+    color: #F8FAFC;
+    padding-left: 4px;
+}
+QPushButton#SettingsNavButton {
+    text-align: left;
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #94A3B8;
+}
+QPushButton#SettingsNavButton:hover {
+    background-color: #334155;
+    color: #F8FAFC;
+}
+QPushButton#SettingsNavButton:checked {
+    background-color: #1E3A8A;
+    color: #60A5FA;
+    font-weight: 700;
+}
+QPushButton#SettingsNavButton:focus { border: 2px solid #60A5FA; }
+QLabel#SettingsNavHint {
+    font-size: 11px;
+    color: #64748B;
+    padding: 8px 4px 0 4px;
+}
+QScrollArea#SettingsScroll {
+    background: transparent;
+    border: none;
+}
+
+
+/* T45 设置页分组行距与对比度 */
+QGroupBox#SettingsGroup {
+    border-radius: 12px;
+    margin-top: 18px;
+    padding: 16px 16px 14px 16px;
+}
+QGroupBox#SettingsGroup::title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #94A3B8;
+    left: 16px;
+    padding: 0 8px;
+}
+QLabel#SettingName {
+    font-size: 14px;
+    color: #CBD5E1;
+}
+QLabel#SettingValue,
+QLabel#SettingsConnectionValue,
+QLabel#SettingsCacheUsageValue,
+QLabel#SettingsHardwareDecoderValue,
+QLabel#SettingsAppVersionValue,
+QLabel#SettingsQtVersionValue,
+QLabel#SettingsBuildTimeValue,
+QLabel#SettingsLibmpvVersionValue {
+    font-size: 13px;
+    color: #94A3B8;
+}
+QWidget#SettingsLibraryRow { padding: 8px 12px; }

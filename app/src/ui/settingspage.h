@@ -123,6 +123,7 @@ private:
     QPushButton *m_copyDiagnosticsButton = nullptr;
 
     bool m_loading = false;
+    QString m_activeCategory = QStringLiteral("server");
 };
 
 } // namespace ui

@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QGroupBox>
 #include <QGuiApplication>
+#include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -99,19 +100,50 @@ SettingsPage::SettingsPage(QWidget *parent)
 
 void SettingsPage::buildUi()
 {
-    auto *root = new QVBoxLayout(this);
+    auto *root = new QHBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
+
+    // T45：qEmby 式左侧分类导航 + 右侧分组内容。
+    auto *nav = new QWidget(this);
+    nav->setObjectName(QStringLiteral("SettingsSidebar"));
+    nav->setFixedWidth(232);
+    auto *navLayout = new QVBoxLayout(nav);
+    navLayout->setContentsMargins(18, 24, 18, 20);
+    navLayout->setSpacing(6);
+    auto *navTitle = new QLabel(QStringLiteral("设置"), nav);
+    navTitle->setObjectName(QStringLiteral("SettingsNavTitle"));
+    navLayout->addWidget(navTitle);
+    navLayout->addSpacing(18);
+    auto makeNavButton = [nav, navLayout](const QString &title) {
+        auto *button = new QPushButton(title, nav);
+        button->setObjectName(QStringLiteral("SettingsNavButton"));
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        navLayout->addWidget(button);
+        return button;
+    };
+    auto *serverNav = makeNavButton(QStringLiteral("服务器"));
+    auto *playbackNav = makeNavButton(QStringLiteral("播放"));
+    auto *libraryNav = makeNavButton(QStringLiteral("媒体库"));
+    auto *storageNav = makeNavButton(QStringLiteral("存储"));
+    auto *aboutNav = makeNavButton(QStringLiteral("关于"));
+    navLayout->addStretch(1);
+    auto *navHint = new QLabel(QStringLiteral("设置保存在本机"), nav);
+    navHint->setObjectName(QStringLiteral("SettingsNavHint"));
+    navLayout->addWidget(navHint);
+    root->addWidget(nav);
 
     auto *scroll = new QScrollArea(this);
     scroll->setObjectName(QStringLiteral("SettingsScroll"));
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
+    root->addWidget(scroll, 1);
 
     auto *content = new QWidget();
     auto *layout = new QVBoxLayout(content);
-    layout->setContentsMargins(34, 24, 34, 40);
-    layout->setSpacing(18);
+    layout->setContentsMargins(32, 24, 32, 40);
+    layout->setSpacing(20);
 
     auto *title = new QLabel(QStringLiteral("设置"), content);
     title->setObjectName(QStringLiteral("PageTitle"));
@@ -307,7 +339,34 @@ void SettingsPage::buildUi()
     layout->addStretch(1);
 
     scroll->setWidget(content);
-    root->addWidget(scroll);
+
+    // 左侧分类只切换右侧分组可见性；控件实例/信号保持不变，QSettings 键不受影响。
+    const QList<QPushButton *> navButtons = {serverNav, playbackNav, libraryNav, storageNav,
+                                             aboutNav};
+    const auto activateCategory = [=, this](QPushButton *active, const QList<QWidget *> &groups) {
+        for (QPushButton *button : navButtons)
+            button->setChecked(button == active);
+        const QList<QWidget *> allGroups = {account, playback, ui, m_libraryGroup, storage, about};
+        for (QWidget *group : allGroups)
+            group->setVisible(groups.contains(group));
+        m_activeCategory = (active == libraryNav) ? QStringLiteral("library")
+                            : (active == playbackNav) ? QStringLiteral("playback")
+                            : (active == storageNav) ? QStringLiteral("storage")
+                            : (active == aboutNav) ? QStringLiteral("about")
+                                                   : QStringLiteral("server");
+        title->setText(active->text());
+    };
+    connect(serverNav, &QPushButton::clicked, this,
+            [=, this]() { activateCategory(serverNav, {account, ui}); });
+    connect(playbackNav, &QPushButton::clicked, this,
+            [=, this]() { activateCategory(playbackNav, {playback}); });
+    connect(libraryNav, &QPushButton::clicked, this,
+            [=, this]() { activateCategory(libraryNav, {m_libraryGroup}); });
+    connect(storageNav, &QPushButton::clicked, this,
+            [=, this]() { activateCategory(storageNav, {storage}); });
+    connect(aboutNav, &QPushButton::clicked, this,
+            [=, this]() { activateCategory(aboutNav, {about}); });
+    activateCategory(serverNav, {account, ui});
 
     connect(m_loginButton, &QPushButton::clicked, this, &SettingsPage::loginRequested);
     connect(m_logoutButton, &QPushButton::clicked, this, &SettingsPage::logoutRequested);
@@ -419,15 +478,9 @@ void SettingsPage::setSession(const emby::ServerProfile &profile, const emby::Se
     }
     m_versionValue->setText(version.isEmpty() ? QStringLiteral("—") : version);
 
-    const QString product = serverInfo.productName.isEmpty()
-                                ? (profile.serverType == emby::ServerType::Jellyfin
-                                       ? QStringLiteral("Jellyfin")
-                                       : QStringLiteral("Emby"))
-                                : serverInfo.productName;
-    m_accountHint->setText(QStringLiteral("已连接 %1（%2）。Token 仅保存在本机。")
+    m_accountHint->setText(QStringLiteral("已连接 %1")
                                .arg(profile.userName.isEmpty() ? QStringLiteral("当前用户")
-                                                               : profile.userName,
-                                    product));
+                                                               : profile.userName));
     m_loginButton->setText(QStringLiteral("重新登录…"));
     m_logoutButton->setEnabled(true);
 }
@@ -448,7 +501,11 @@ void SettingsPage::clearSession()
 
 void SettingsPage::setTokenBackendName(const QString &backendName)
 {
-    m_tokenValue->setText(backendName);
+    // T45：设置页只显示存储类型，完整实现细节保留在 tooltip。
+    m_tokenValue->setText(backendName.contains(QStringLiteral("DPAPI"))
+                              ? QStringLiteral("DPAPI")
+                              : QStringLiteral("QSettings"));
+    m_tokenValue->setToolTip(backendName);
 }
 
 void SettingsPage::setMockMode(bool enabled)
@@ -546,7 +603,8 @@ void SettingsPage::rebuildLibraryRows()
     m_libraryRows.clear();
     if (!m_libraryGroup || !m_libraryEmpty)
         return;
-    m_libraryGroup->setVisible(!m_librarySections.isEmpty());
+    m_libraryGroup->setVisible(!m_librarySections.isEmpty()
+                               && m_activeCategory == QLatin1String("library"));
     m_libraryEmpty->setVisible(m_librarySections.isEmpty());
     if (m_librarySections.isEmpty())
         return;

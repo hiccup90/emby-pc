@@ -625,11 +625,17 @@ int runSelfTest(QApplication &app)
     if (auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton")))
         check(subtitleButton->text().contains(QStringLiteral("中文")),
               QStringLiteral("字幕按钮反映当前轨道：%1").arg(subtitleButton->text()));
+    auto *playButton = player->findChild<QPushButton *>(QStringLiteral("PlayPauseButton"));
+    auto *prevButton = player->findChild<QPushButton *>(QStringLiteral("PrevButton"));
+    auto *nextButton = player->findChild<QPushButton *>(QStringLiteral("NextButton"));
+    auto *seekSlider = player->findChild<QSlider *>(QStringLiteral("SeekSlider"));
+    check(prevButton && playButton && nextButton && seekSlider
+              && prevButton->geometry().center().x() < playButton->geometry().center().x()
+              && playButton->geometry().center().x() < nextButton->geometry().center().x(),
+          QStringLiteral("T45 播放/上下集居中，seek 滑杆存在"));
 
     // T32：FullscreenButton clicked -> fullscreenRequested -> MainWindow::toggleFullscreen。
     auto *fullscreenButton = player->findChild<QPushButton *>(QStringLiteral("FullscreenButton"));
-    auto *prevButton = player->findChild<QPushButton *>(QStringLiteral("PrevButton"));
-    auto *nextButton = player->findChild<QPushButton *>(QStringLiteral("NextButton"));
     int fullscreenSignals = 0;
     QObject::connect(player, &ui::PlayerPage::fullscreenRequested,
                      [&fullscreenSignals]() { ++fullscreenSignals; });
@@ -1075,6 +1081,27 @@ int runLibraryLayoutTests(QApplication &app)
     libraries << movies << series;
     page.show();
     settle(app, 80);
+    auto navButtons = page.findChildren<QPushButton *>(QStringLiteral("SettingsNavButton"));
+    bool playedCategory = false;
+    for (auto *nav : navButtons) {
+        if (nav->text() == QStringLiteral("播放")) {
+            nav->click();
+            playedCategory = true;
+            break;
+        }
+    }
+    settle(app, 60);
+    auto *playbackCombo = page.findChild<QComboBox *>(
+        QStringLiteral("SettingsSubtitleLanguageCombo"));
+    check(navButtons.size() == 5 && playedCategory && playbackCombo
+              && playbackCombo->isVisible(),
+          QStringLiteral("T45 设置页左侧 5 个分类+切换播放分组"));
+    for (auto *nav : page.findChildren<QPushButton *>(QStringLiteral("SettingsNavButton"))) {
+        if (nav->text() == QStringLiteral("媒体库")) {
+            nav->click();
+            break;
+        }
+    }
     page.setLibrarySections(libraries);
     settle(app, 80);
     auto rows = page.findChildren<QWidget *>(QStringLiteral("SettingsLibraryRow"));

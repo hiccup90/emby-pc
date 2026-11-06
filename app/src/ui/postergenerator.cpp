@@ -165,33 +165,6 @@ void paintBase(QPainter &p, const QRectF &r, const QString &key)
     p.fillRect(r, vignette);
 }
 
-void drawPosterTitle(QPainter &p, const QRectF &r, const QString &title)
-{
-    if (title.isEmpty())
-        return;
-
-    QLinearGradient shade(r.left(), r.bottom() - r.height() * 0.42, r.left(), r.bottom());
-    shade.setColorAt(0.0, QColor(0, 0, 0, 0));
-    shade.setColorAt(1.0, QColor(0, 0, 0, 185));
-    p.fillRect(QRectF(r.left(), r.bottom() - r.height() * 0.42, r.width(), r.height() * 0.42), shade);
-
-    QFont font;
-    font.setFamilies({QStringLiteral("Microsoft YaHei UI"), QStringLiteral("Noto Sans CJK SC"),
-                      QStringLiteral("Noto Serif CJK SC"), QStringLiteral("Segoe UI")});
-    font.setPixelSize(qMax(9, qRound(r.width() * 0.082)));
-    font.setWeight(QFont::DemiBold);
-    p.setFont(font);
-
-    const QRectF textRect = r.adjusted(r.width() * 0.08, 0, -r.width() * 0.08, -r.height() * 0.065);
-    const QRectF titleRect(textRect.left(), textRect.bottom() - r.height() * 0.32,
-                           textRect.width(), r.height() * 0.32);
-
-    p.setPen(QColor(0, 0, 0, 160));
-    p.drawText(titleRect.translated(0, 1), Qt::AlignLeft | Qt::AlignBottom | Qt::TextWordWrap, title);
-    p.setPen(QColor(248, 250, 252, 235));
-    p.drawText(titleRect, Qt::AlignLeft | Qt::AlignBottom | Qt::TextWordWrap, title);
-}
-
 } // namespace
 
 QPixmap makePosterArt(const QString &key, const QSize &size, const QString &title)
@@ -203,8 +176,8 @@ QPixmap makePosterArt(const QString &key, const QSize &size, const QString &titl
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QRectF r(0, 0, size.width(), size.height());
+    Q_UNUSED(title);
     paintBase(p, r, key);
-    drawPosterTitle(p, r, title);
     p.end();
     return pm;
 }
@@ -218,9 +191,8 @@ QPixmap makeBackdropArt(const QString &key, const QSize &size, const QString &ti
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QRectF r(0, 0, size.width(), size.height());
+    Q_UNUSED(title);
     paintBase(p, r, key);
-    if (!title.isEmpty())
-        drawPosterTitle(p, r, title);
     p.end();
     return pm;
 }

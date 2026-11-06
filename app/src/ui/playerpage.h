@@ -121,6 +121,7 @@ private:
     void startAutoHideTimer();
     void stopAutoHideTimer();
     void showTrackMenu(QPushButton *button, const QList<TrackInfo> &tracks, bool audio);
+    void updateResponsiveControls();
 
     QWidget *m_topBar = nullptr;
     QWidget *m_controlBar = nullptr;
