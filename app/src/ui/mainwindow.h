@@ -136,6 +136,8 @@ private:
     void syncTitleBarGeometry();
     bool titleBarVisible() const;
     void updateWindowChrome();
+    // T57：退出播放/全屏后统一恢复最小尺寸、标题栏和 chrome。
+    void restoreWindowedChrome();
     void restoreWindowState();
     void saveWindowState();
     void rememberFullscreenWindowState();

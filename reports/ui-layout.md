@@ -97,3 +97,11 @@
 - HomeView resize：debounce 后仅 relayout 已建预览卡、重新激活 section/content 布局、更新滚动范围并增量补建可见 section；不整页重建。
 - 回归测试：全屏/播放模式退出 `splitter/sidebar` 宽度恢复（240→240）；窗口 1280→960 时首页海报宽度变小、垂直滚动范围 >0。
 - 验证：`emby-ui-demo --selftest` **183 项 ALL PASS**；干净目录 Release 构建 exit 0；0 warning。
+
+## 18. T57 小窗口退出播放模式标题栏恢复
+
+- 根因：播放模式最小 320×180，退出时先 `updateWindowChrome()`、后 `setMinimumSize(800×480)`，标题栏按 320 宽度布局；窗口随后放大但三按钮尚未重排，close/min/max 落在窗口外/不可见。
+- 新增 `MainWindow::restoreWindowedChrome()` 统一四条路径（进/出播放、进/出全屏）：恢复 800×480 最小尺寸 → 必要时 resize → 显示 sidebar/topbar/statusbar → updateWindowChrome → syncTitleBarGeometry + layout activate + titleBar raise → 0ms 再 sync。
+- `syncTitleBarGeometry()` 增加 TitleBar layout activate，确保按钮按新宽度重排。
+- 日志：`MainWindow::restoreWindowedChrome size/minimum/titleBar/minButton/maxButton/closeButton`。
+- 回归：播放模式缩到 320×180 后返回，断言窗口≥800×480、TitleBar 可见且宽度=窗口宽、close/min/max rect 在窗口内；总计 **190 项 ALL PASS**。

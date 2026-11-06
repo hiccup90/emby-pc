@@ -255,11 +255,58 @@ void MainWindow::syncTitleBarGeometry()
     if (!m_titleBar)
         return;
     m_titleBar->setGeometry(0, 0, width(), kWindowTitleBarHeight);
+    if (m_titleBar->layout())
+        m_titleBar->layout()->activate();
     m_titleBar->raise();
     if (m_windowFrame) {
         m_windowFrame->setTitleBarHeight(titleBarVisible() ? kWindowTitleBarHeight : 0);
         m_windowFrame->setMaximizeButtonRect(m_titleBar->maximizeButtonRect());
     }
+}
+
+void MainWindow::restoreWindowedChrome()
+{
+    // T57：退出播放模式/全屏时窗口可能还是 320x180；先恢复 800x480 最小尺寸，
+    // 再 resize/显示 chrome/重排标题栏，避免 close/min/max 被排到窗口外。
+    updateWindowMinimumSize(false);
+    const QSize minimum = minimumSize();
+    if (width() < minimum.width() || height() < minimum.height()) {
+        resize(qMax(width(), minimum.width()), qMax(height(), minimum.height()));
+    }
+    if (m_sidebar)
+        m_sidebar->show();
+    if (m_topBar)
+        m_topBar->show();
+    if (statusBar())
+        statusBar()->show();
+    updateWindowChrome();
+    syncTitleBarGeometry();
+    if (m_titleBar) {
+        m_titleBar->raise();
+        m_titleBar->updateGeometry();
+    }
+    QTimer::singleShot(0, this, [this]() {
+        if (!titleBarVisible())
+            return;
+        syncTitleBarGeometry();
+        if (m_titleBar)
+            m_titleBar->raise();
+    });
+
+    QRect closeRect;
+    QRect minRect;
+    QRect maxRect;
+    if (m_titleBar) {
+        if (auto *close = m_titleBar->findChild<QPushButton *>(QStringLiteral("TitleBarCloseButton")))
+            closeRect = QRect(close->mapTo(this, QPoint(0, 0)), close->size());
+        if (auto *minButton = m_titleBar->findChild<QPushButton *>(QStringLiteral("TitleBarMinimizeButton")))
+            minRect = QRect(minButton->mapTo(this, QPoint(0, 0)), minButton->size());
+        if (auto *maxButton = m_titleBar->findChild<QPushButton *>(QStringLiteral("TitleBarMaximizeButton")))
+            maxRect = QRect(maxButton->mapTo(this, QPoint(0, 0)), maxButton->size());
+    }
+    qInfo() << "MainWindow::restoreWindowedChrome size=" << size()
+            << "minimum=" << minimumSize() << "titleBar=" << (m_titleBar ? m_titleBar->geometry() : QRect())
+            << "minButton=" << minRect << "maxButton=" << maxRect << "closeButton=" << closeRect;
 }
 
 bool MainWindow::titleBarVisible() const
@@ -1329,16 +1376,12 @@ void MainWindow::setPlayerMode(bool enabled)
     }
     m_playerMode = false;
     m_player->setPlayerModeActive(false);
-    m_sidebar->show();
-    m_topBar->show();
-    statusBar()->show();
-    updateWindowChrome();
+    restoreWindowedChrome();
     const int returnIndex = qBound(static_cast<int>(StackHome), m_playerReturnIndex,
                                    static_cast<int>(StackPlayer));
     m_stack->setCurrentIndex(returnIndex);
     m_player->setFullscreen(m_fullscreen);
     restoreSidebarLayoutAfterChrome();
-    updateWindowMinimumSize(false);
     emit playerModeChanged(false);
 }
 
@@ -1380,10 +1423,7 @@ void MainWindow::toggleFullscreen()
         m_player->setFullscreen(false);
         if (!m_playerMode) {
             m_player->setPlayerModeActive(false);
-            m_sidebar->show();
-            m_topBar->show();
-            statusBar()->show();
-            updateWindowChrome();
+            restoreWindowedChrome();
             m_stack->setCurrentIndex(m_fullscreenReturnIndex);
             restoreSidebarLayoutAfterChrome();
         } else {
