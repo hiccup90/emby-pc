@@ -1,6 +1,7 @@
 #include "sidebar.h"
 
 #include "icons.h"
+#include "tokens.h"
 
 #include <QButtonGroup>
 #include <QHBoxLayout>
@@ -87,8 +88,8 @@ Sidebar::Sidebar(QWidget *parent)
 {
     setObjectName(QStringLiteral("Sidebar"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setMinimumWidth(180);
-    setMaximumWidth(320);
+    setMinimumWidth(tokens::SidebarMinWidth);
+    setMaximumWidth(tokens::SidebarMaxWidth);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     buildUi();
     rebuildNavigation();
@@ -110,10 +111,7 @@ void Sidebar::buildUi()
     brandText->setSpacing(0);
     auto *title = new QLabel(QStringLiteral("Emby PC"), brand);
     title->setObjectName(QStringLiteral("BrandTitle"));
-    auto *sub = new QLabel(QStringLiteral("自研客户端"), brand);
-    sub->setObjectName(QStringLiteral("BrandSub"));
     brandText->addWidget(title);
-    brandText->addWidget(sub);
     brandLayout->addLayout(brandText);
     brandLayout->addStretch(1);
     root->addWidget(brand);

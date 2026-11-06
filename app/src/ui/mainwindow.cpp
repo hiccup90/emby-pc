@@ -13,6 +13,7 @@
 #include "settingspage.h"
 #include "sidebar.h"
 #include "theme.h"
+#include "tokens.h"
 #include "thumbnailcache.h"
 #include "titlebar.h"
 #include "tokenstore.h"
@@ -141,22 +142,21 @@ void MainWindow::buildUi()
     // 顶栏
     m_topBar = new QWidget(column);
     m_topBar->setObjectName(QStringLiteral("TopBar"));
-    m_topBar->setFixedHeight(64);
+    m_topBar->setFixedHeight(tokens::TopBarHeight);
     auto *topLayout = new QHBoxLayout(m_topBar);
-    topLayout->setContentsMargins(24, 0, 20, 0);
+    topLayout->setContentsMargins(tokens::TopBarHorizontalPadding, 0,
+                                  tokens::TopBarHorizontalPadding, 0);
     topLayout->setSpacing(14);
 
+    topLayout->addStretch(1);
     m_search = new QLineEdit(m_topBar);
     m_search->setObjectName(QStringLiteral("SearchBox"));
     m_search->setPlaceholderText(QStringLiteral("搜索电影、剧集、类型…"));
     m_search->setClearButtonEnabled(true);
-    m_search->setMaximumWidth(460);
-    m_search->setMinimumWidth(260);
-    m_search->setFixedHeight(38);
+    m_search->setFixedSize(380, 34);
     m_search->addAction(icon(Icon::Search, QColor(0x94, 0xA3, 0xB8), 18),
                         QLineEdit::LeadingPosition);
     topLayout->addWidget(m_search);
-
     topLayout->addStretch(1);
 
     m_sessionStatus = new QLabel(m_topBar);
@@ -337,7 +337,10 @@ void MainWindow::restoreSidebarWidth()
     if (!m_splitter || m_splitter->count() < 2)
         return;
     QSettings settings;
-    const int width = qBound(180, settings.value(QStringLiteral("ui/sidebarWidth"), 224).toInt(), 320);
+    const int width = qBound(tokens::SidebarMinWidth,
+                             settings.value(QStringLiteral("ui/sidebarWidth"),
+                                            tokens::SidebarDefaultWidth).toInt(),
+                             tokens::SidebarMaxWidth);
     const int total = qMax(width, m_splitter->width());
     m_splitter->setSizes({width, qMax(1, total - width)});
     QTimer::singleShot(0, this, [this, width]() {

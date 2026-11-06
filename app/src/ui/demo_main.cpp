@@ -20,6 +20,7 @@
 #include "sidebar.h"
 #include "theme.h"
 #include "titlebar.h"
+#include "tokens.h"
 #include "tokenstore.h"
 #include "windowframe.h"
 
@@ -333,6 +334,23 @@ int runSelfTest(QApplication &app)
     check(window.currentStackIndex() == 0, QStringLiteral("默认页面为首页（stack=0）"));
     check(qApp->styleSheet().contains(QStringLiteral("QWidget#Sidebar")),
           QStringLiteral("深色 QSS 已加载"));
+
+    // T43：qEmby token/QSS 基础。
+    const QString qss = ui::Theme::styleSheet();
+    const bool tokenOk = QString::fromLatin1(ui::tokens::ColorBg) == QStringLiteral("#0F172A")
+                         && QString::fromLatin1(ui::tokens::ColorSurface) == QStringLiteral("#1E293B")
+                         && ui::tokens::TopBarHeight == 56
+                         && ui::tokens::SidebarDefaultWidth == 240
+                         && ui::tokens::PageGutter == 32;
+    check(tokenOk, QStringLiteral("T43 qEmby token 常量（bg/surface/topbar/sidebar/gutter）"));
+    check(qss.contains(QStringLiteral("QScrollBar::handle:vertical"))
+              && qss.contains(QStringLiteral(":focus"))
+              && qss.contains(QStringLiteral("#0F172A"))
+              && qss.contains(QStringLiteral("#1E293B")),
+          QStringLiteral("T43 dark.qss 加载 token/焦点环/滚动条"));
+    auto *topBar = window.findChild<QWidget *>(QStringLiteral("TopBar"));
+    check(topBar && topBar->height() == ui::tokens::TopBarHeight,
+          QStringLiteral("T43 顶栏高度 56"));
 
     // T27：自绘 TitleBar + WindowFrame 连接。
     auto *titleBar = window.findChild<ui::TitleBar *>(QStringLiteral("TitleBar"));
