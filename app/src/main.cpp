@@ -220,7 +220,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // 播放层：VideoHost + MpvPlayer（--wid 嵌入），接到 PlayerPage 的控制信号。
+    // 播放层：VideoHost（QRhiWidget）+ MpvPlayer（render API 渲染进 D3D11 纹理），
+    // 接到 PlayerPage 的控制信号。
     PlayerController controller(&window, playerPage);
     controller.installMenus();
 

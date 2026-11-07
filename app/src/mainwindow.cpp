@@ -385,8 +385,12 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         if (m_playerPage && m_window->isFullScreen()) {
             QMetaObject::invokeMethod(m_playerPage, "fullscreenRequested", Qt::DirectConnection);
         } else if (m_window->isPlayerMode()) {
-            // 焦点在 mpv 子窗口时 Qt 的 Esc 快捷键收不到；由 mpv 的 ESC
-            // 绑定回到这里，行为与 UI 一致：没全屏才退出播放页。
+            // 兼容路径：mpv 已不再接收键盘事件（vo=libmpv render API 渲染进
+            // Qt 的 D3D11 纹理，且未设 input-vo-keyboard）。ESC/F11 统一由
+            // ui::MainWindow 的 QShortcut → handleEscape()/toggleFullscreen()
+            // 处理，其余按键走 PlayerPage::handlePlayerKey()。这里只在 mpv 侧
+            // 显式 script-message app-exit-fullscreen 时生效；行为与 UI 一致：
+            // 没全屏才退出播放页。
             m_window->setPlayerMode(false);
             updatePlayerWindowChrome();
         }

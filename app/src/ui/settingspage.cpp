@@ -225,7 +225,7 @@ void SettingsPage::buildUi()
                                          QStringLiteral("未初始化"),
                                          QStringLiteral("SettingsHardwareDecoderValue"), playback);
     addValueRow(playbackLayout, QStringLiteral("视频渲染"),
-                QStringLiteral("libmpv · --wid 子窗口（方案 A）"),
+                QStringLiteral("libmpv · D3D11 纹理（render API）"),
                 QStringLiteral("SettingsVideoRendererValue"), playback);
     addValueRow(playbackLayout, QStringLiteral("HDR / DV"),
                 QStringLiteral("tone-map 到 SDR"), QStringLiteral("SettingsHdrValue"),
