@@ -121,6 +121,9 @@ private:
     void tryNextPlaybackCandidate(const QString &reason);
     void handlePlaybackTimeout();
     void handlePlaybackFailure(const QString &reason);
+    // T48：候选启动看门狗（single-shot）+ 等待时长计时，日志用。
+    void armCandidateWatchdog(int timeoutMs);
+    qint64 playbackWaitMs() const;
     void showPlaybackErrorDialog(const QString &code, const QString &detail, bool retryable);
     void retryPlaybackAfterFailure();
     void leavePlaybackAfterFailure();
@@ -160,6 +163,10 @@ private:
     bool m_playbackFileLoaded = false;
     bool m_playbackFailurePrompted = false;
     int m_playbackRetryCount = 0;
+    // 当前候选对应的 mpv load generation（与 END_FILE/START_FILE 比对）。
+    quint64 m_candidateLoadGeneration = 0;
+    // 本次看门狗等待的起点（毫秒）；用于 "waitedMs" 诊断。
+    qint64 m_playbackWaitStartedMs = 0;
     QString m_lastPlaybackErrorCode;
     QString m_lastPlaybackErrorDetail;
     QStringList m_localFiles;

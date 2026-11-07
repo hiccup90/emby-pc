@@ -53,7 +53,21 @@
 #include <QWidget>
 #include <QWindow>
 
+#include <mpv/client.h>
+
 namespace {
+
+QString endFileReasonName(int reason)
+{
+    switch (reason) {
+    case MPV_END_FILE_REASON_EOF: return QStringLiteral("eof");
+    case MPV_END_FILE_REASON_STOP: return QStringLiteral("stop");
+    case MPV_END_FILE_REASON_QUIT: return QStringLiteral("quit");
+    case MPV_END_FILE_REASON_ERROR: return QStringLiteral("error");
+    case MPV_END_FILE_REASON_REDIRECT: return QStringLiteral("redirect");
+    default: return QStringLiteral("unknown");
+    }
+}
 
 QString hwdecMpvValue(const QString &mode)
 {
@@ -262,10 +276,11 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // 下没有 VO 窗口，不需要再激活/回焦 mpv 子窗口。
     preparePlayerOverlays();
 
-    // T48：Emby 播放 8 秒无 file-loaded 视为失败，自动尝试备选 URL。
+    // T48：Emby 候选启动看门狗（single-shot）。首候选 30s；start-file 到达后
+    // 重置为 25s；重试候选 8s。
     m_playbackWatchdog = new QTimer(this);
     m_playbackWatchdog->setSingleShot(true);
-    m_playbackWatchdog->setInterval(8000);
+    m_playbackWatchdog->setInterval(30000);
     connect(m_playbackWatchdog, &QTimer::timeout, this,
             &PlayerController::handlePlaybackTimeout);
 
@@ -354,7 +369,41 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         QTimer::singleShot(150, this, &PlayerController::refreshTracks);
         QTimer::singleShot(700, this, &PlayerController::refreshTracks);
     });
-    connect(m_player, &MpvPlayer::endReached, this, [this]() {
+    connect(m_player, &MpvPlayer::loadStarted, this, [this](quint64 generation) {
+        if (m_playbackFileLoaded || m_playbackFailurePrompted
+            || m_playbackCandidates.isEmpty())
+            return; // 本地播放/已加载/已失败：不动看门狗。
+        if (generation != m_candidateLoadGeneration) {
+            qInfo() << "PlayerController::start-file ignored (stale generation)"
+                    << generation << "current" << m_candidateLoadGeneration;
+            return;
+        }
+        if (m_playbackWatchdog && m_playbackWatchdog->isActive()) {
+            // mpv 已开始打开/探测：剩余等待重置为 25s 再等 file-loaded。
+            // 比 network-timeout(15s) 晚 10s，让 curl 超时日志先到。
+            m_playbackWaitStartedMs = QDateTime::currentMSecsSinceEpoch();
+            m_playbackWatchdog->start(25000);
+            qInfo() << "PlayerController::watchdog reset after start-file; 25000 ms"
+                    << "generation" << generation << "candidate"
+                    << m_playbackCandidateIndex + 1 << "/" << m_playbackCandidates.size();
+        }
+    });
+    connect(m_player, &MpvPlayer::endReached, this,
+            [this](quint64 generation, int reason, const QString &errorText) {
+        qInfo() << "PlayerController::end-file event; reason" << endFileReasonName(reason)
+                << reason << "error" << errorText << "generation" << generation
+                << "current" << m_player->loadGeneration()
+                << "candidateGeneration" << m_candidateLoadGeneration
+                << "url" << sanitizedPlaybackUrl(m_currentPlaybackUrl);
+        // 换候选后，上一个候选被 replace 的 END_FILE 属于旧 generation，忽略。
+        if (!m_playbackCandidates.isEmpty() && generation != m_candidateLoadGeneration) {
+            qInfo() << "PlayerController::endReached ignored (stale generation)"
+                    << generation << "current" << m_candidateLoadGeneration
+                    << "reason" << endFileReasonName(reason);
+            return;
+        }
+        if (m_playbackFailurePrompted)
+            return; // 失败/提示已处理，避免 END_FILE 再触发切集/重复上报。
         const bool hadLoaded = m_playbackFileLoaded;
         if (m_playbackWatchdog)
             m_playbackWatchdog->stop();
@@ -856,6 +905,7 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
         m_playbackWatchdog->stop();
     m_playbackCandidates.clear();
     m_playbackCandidateIndex = 0;
+    m_candidateLoadGeneration = 0;
     m_currentPlaybackUrl.clear();
     m_playbackFileLoaded = false;
     m_playbackFailurePrompted = false;
@@ -870,8 +920,15 @@ void PlayerController::playFiles(const QStringList &files, int startIndex)
                             .arg(files.size())
                             .arg(firstInfo.absolutePath());
     m_player->loadPlaylist(files, qBound(0, startIndex, static_cast<int>(files.size()) - 1));
-    if (m_playbackWatchdog)
+    // 本地播放的 generation 只用于诊断；endReached 的陈旧过滤只对 Emby 候选生效。
+    m_candidateLoadGeneration = m_player->loadGeneration();
+    qInfo() << "PlayerController::local loadfile issued; generation"
+            << m_candidateLoadGeneration << "files" << files.size()
+            << "startIndex" << m_localStartIndex;
+    if (m_playbackWatchdog) {
+        m_playbackWaitStartedMs = QDateTime::currentMSecsSinceEpoch();
         m_playbackWatchdog->start(15000);
+    }
     if (m_playerPage) {
         const bool multiple = files.size() > 1;
         m_playerPage->setEpisodeNavigationEnabled(multiple && startIndex > 0,
@@ -1472,10 +1529,14 @@ void PlayerController::startPlaybackCandidate(int index)
             << m_playbackCandidates.size() << "url"
             << sanitizedPlaybackUrl(m_currentPlaybackUrl);
     m_player->loadPlaylist({m_currentPlaybackUrl}, 0);
-    if (m_playbackWatchdog) {
-        // A-P1-21：首次起播给 15s 宽限（冷启动/大文件），重试候选 8s。
-        m_playbackWatchdog->start(index == 0 ? 15000 : 8000);
-    }
+    m_candidateLoadGeneration = m_player->loadGeneration();
+    qInfo() << "PlayerController::playback loadfile issued; generation"
+            << m_candidateLoadGeneration << "candidate" << index + 1 << "/"
+            << m_playbackCandidates.size()
+            << "url" << sanitizedPlaybackUrl(m_currentPlaybackUrl);
+    // A-P1-21：首候选 30s（冷启动/大文件/慢 CDN），重试候选 8s；
+    // 若收到 mpv start-file（已连上、在探测）再重置为 25s。
+    armCandidateWatchdog(index == 0 ? 30000 : 8000);
 }
 
 void PlayerController::tryNextPlaybackCandidate(const QString &reason)
@@ -1501,9 +1562,35 @@ void PlayerController::handlePlaybackTimeout()
     if (m_embyItemId.isEmpty() && !m_localPlayback)
         return;
     qWarning() << "PlayerController::playback watchdog no file-loaded item"
-               << m_embyItemId << "local=" << m_localPlayback << "url"
-               << sanitizedPlaybackUrl(m_currentPlaybackUrl);
+               << m_embyItemId << "local=" << m_localPlayback
+               << "waitedMs" << playbackWaitMs()
+               << "generation" << m_candidateLoadGeneration
+               << "currentGeneration" << (m_player ? m_player->loadGeneration() : 0)
+               << "idle-active"
+               << (m_player ? m_player->getPropertyString("idle-active") : QString())
+               << "core-idle"
+               << (m_player ? m_player->getPropertyString("core-idle") : QString())
+               << "url" << sanitizedPlaybackUrl(m_currentPlaybackUrl);
     tryNextPlaybackCandidate(QStringLiteral("watchdog timeout without file-loaded"));
+}
+
+void PlayerController::armCandidateWatchdog(int timeoutMs)
+{
+    if (!m_playbackWatchdog)
+        return;
+    // 单次定时器；每次 arm/reset 都重新计 waitedMs。
+    m_playbackWaitStartedMs = QDateTime::currentMSecsSinceEpoch();
+    m_playbackWatchdog->start(timeoutMs);
+    qInfo() << "PlayerController::playback watchdog armed" << timeoutMs << "ms"
+            << "generation" << m_candidateLoadGeneration << "candidate"
+            << m_playbackCandidateIndex + 1 << "/" << m_playbackCandidates.size();
+}
+
+qint64 PlayerController::playbackWaitMs() const
+{
+    if (m_playbackWaitStartedMs <= 0)
+        return 0;
+    return qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_playbackWaitStartedMs);
 }
 
 void PlayerController::handlePlaybackFailure(const QString &reason)
@@ -1544,6 +1631,9 @@ void PlayerController::handlePlaybackFailure(const QString &reason)
                << "item" << m_embyItemId << "mediaSourceId" << m_mediaSourceId
                << "method" << m_playMethod << "candidate"
                << m_playbackCandidateIndex + 1 << "/" << m_playbackCandidates.size()
+               << "generation" << m_candidateLoadGeneration
+               << "currentGeneration" << (m_player ? m_player->loadGeneration() : 0)
+               << "waitedMs" << playbackWaitMs()
                << "url" << sanitizedPlaybackUrl(m_currentPlaybackUrl)
                << "mpvError" << mpvError << "httpStatus" << httpStatus
                << "retryCount" << m_playbackRetryCount;
@@ -1639,6 +1729,7 @@ void PlayerController::resetLocalPlaybackState()
     m_localPlayback = false;
     m_localFiles.clear();
     m_localStartIndex = 0;
+    m_playbackWaitStartedMs = 0;
 }
 
 void PlayerController::showPlayerPage()
@@ -2168,6 +2259,8 @@ void PlayerController::clearEmbySession()
         m_playbackWatchdog->stop();
     m_playbackCandidates.clear();
     m_playbackCandidateIndex = 0;
+    m_candidateLoadGeneration = 0;
+    m_playbackWaitStartedMs = 0;
     m_currentPlaybackUrl.clear();
     m_playbackFileLoaded = false;
     m_playbackFailurePrompted = false;

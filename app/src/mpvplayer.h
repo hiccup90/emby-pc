@@ -51,6 +51,10 @@ public:
     bool hasRenderContext() const { return m_renderContext != nullptr; }
     quintptr renderDevice() const { return m_renderDevice; }
 
+    // 每次 loadPlaylist（候选/本地片源）分配一个自增 generation；deferred 的
+    // loadfile 也先占用，用于过滤换候选后到达的上一条目 END_FILE。
+    quint64 loadGeneration() const { return m_loadGeneration; }
+
     // 把当前视频帧渲染进 texture（ID3D11Texture2D*，由 Qt 的 QRhi 创建并合成）。
     // forceRedraw=true 用于纹理刚重建（首帧/窗口缩放/DPR 变化）；
     // 返回 true 表示这一帧已提交，调用方不要再用自己的命令覆盖该纹理。
@@ -83,7 +87,12 @@ signals:
     void pausedChanged(bool paused);
     void titleChanged(const QString &title);
     void fileLoaded();
-    void endReached();
+    // START_FILE：mpv 已开始打开/探测该条目（网络请求已发出）。
+    void loadStarted(quint64 generation);
+    // END_FILE：generation 是“触发该事件的条目所属的 load 请求”。换候选后
+    // 上一个条目被 abort 的 END_FILE 会用旧 generation，调用方应忽略。
+    // reason 为 mpv_end_file_reason，error 为 END_FILE(ERROR) 的文本（可能为空）。
+    void endReached(quint64 generation, int reason, const QString &error);
     // T29：设置/关于页只读信息。hwdec-current 可能随片源变化。
     void hardwareDecoderChanged(const QString &hwdecCurrent, const QString &vo,
                                 const QString &gpuApi);
@@ -130,6 +139,15 @@ private:
     bool m_pendingLoad = false;
     QStringList m_pendingFiles;
     int m_pendingStartIndex = 0;
+
+    // load generation：loadPlaylist 入口自增；START_FILE 记录实际开播的
+    // generation，END_FILE 用它区分“上一条目被 replace 掉”的陈旧事件。
+    quint64 m_loadGeneration = 0;
+    quint64 m_startedGeneration = 0;
+    bool m_loadStartPending = false;
+    // 本 generation 内最后一条流层 timeout 错误（mpv.log 里的 curl 文本），
+    // end->error 只有 "loading failed"，靠它识别 NETWORK_TIMEOUT。
+    QString m_lastStreamError;
 
     // 是否已经真正渲染过视频帧：纹理重建但 mpv 还没出帧时，不要用 dummy
     // frame 去“重画”，交给 VideoHost 清黑更可靠。

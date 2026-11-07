@@ -29,6 +29,9 @@ struct MpvApi
     decltype(&::mpv_get_property_string) getPropertyString = nullptr;
     decltype(&::mpv_command) command = nullptr;
     decltype(&::mpv_observe_property) observeProperty = nullptr;
+    // 只为把流层错误（curl "Timeout was reached"）送到 app.log/用于
+    // NETWORK_TIMEOUT 判定；不在必需符号列表里，老构建缺失时降级。
+    decltype(&::mpv_request_log_messages) requestLogMessages = nullptr;
     decltype(&::mpv_wait_event) waitEvent = nullptr;
     decltype(&::mpv_free) freeString = nullptr;
     decltype(&::mpv_terminate_destroy) terminateDestroy = nullptr;
@@ -71,6 +74,8 @@ bool loadApi(QString *error)
     a.getPropertyString = reinterpret_cast<decltype(a.getPropertyString)>(a.library.resolve("mpv_get_property_string"));
     a.command = reinterpret_cast<decltype(a.command)>(a.library.resolve("mpv_command"));
     a.observeProperty = reinterpret_cast<decltype(a.observeProperty)>(a.library.resolve("mpv_observe_property"));
+    a.requestLogMessages = reinterpret_cast<decltype(a.requestLogMessages)>(
+        a.library.resolve("mpv_request_log_messages"));
     a.waitEvent = reinterpret_cast<decltype(a.waitEvent)>(a.library.resolve("mpv_wait_event"));
     a.freeString = reinterpret_cast<decltype(a.freeString)>(a.library.resolve("mpv_free"));
     a.terminateDestroy = reinterpret_cast<decltype(a.terminateDestroy)>(a.library.resolve("mpv_terminate_destroy"));
@@ -162,6 +167,19 @@ QString redactSensitiveLog(const QString &text)
     return redacted;
 }
 
+// MPV_END_FILE_REASON_* -> 稳定可 grep 的名字（日志验收用）。
+QString endFileReasonName(int reason)
+{
+    switch (reason) {
+    case MPV_END_FILE_REASON_EOF: return QStringLiteral("eof");
+    case MPV_END_FILE_REASON_STOP: return QStringLiteral("stop");
+    case MPV_END_FILE_REASON_QUIT: return QStringLiteral("quit");
+    case MPV_END_FILE_REASON_ERROR: return QStringLiteral("error");
+    case MPV_END_FILE_REASON_REDIRECT: return QStringLiteral("redirect");
+    default: return QStringLiteral("unknown");
+    }
+}
+
 // mpv.log 与 app.log 同目录（QStandardPaths::AppLocalDataLocation），
 // 便于 Windows 实机验收时整个日志目录直接打包回传。
 QString mpvLogFilePath()
@@ -228,6 +246,8 @@ void MpvPlayer::shutdown()
     m_pendingLoad = false;
     m_pendingFiles.clear();
     m_pendingStartIndex = 0;
+    m_loadStartPending = false;
+    m_lastStreamError.clear();
     m_updatePosted.store(false);
     m_renderErrorLogged = false;
     m_hasVideoFrame = false;
@@ -380,6 +400,11 @@ bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderL
     setOption("msg-level", verboseLog ? QStringLiteral("all=v") : QStringLiteral("info"));
     setOption("cache", QStringLiteral("yes"));
     setOption("demuxer-max-bytes", QStringLiteral("512MiB"));
+    // T48 后续：连接/读取超时 15s（mpv 默认 60s），比 start-file 后看门狗
+    // 重置的 25s 早 10s，保证 curl 的 "Timeout was reached" 先到；失败时
+    // 不再拉起 yt-dlp 子进程。
+    setOption("network-timeout", QStringLiteral("15"));
+    setOption("ytdl", QStringLiteral("no"));
 
     const int initResult = a.initialize(m_mpv);
     if (initResult < 0) {
@@ -392,6 +417,13 @@ bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderL
         m_mpv = nullptr;
         return false;
     }
+
+    // libmpv 默认不投递任何 log-message 事件（min level = "no"）。不打开的话
+    // handleEvent 里的 MPV_EVENT_LOG_MESSAGE 分支永远不会触发，end-file 的
+    // error 又只有 "loading failed"，网络超时会被误判成普通失败。这里只要
+    // error/fatal 级（terminal=no 不影响客户端日志），避免刷屏。
+    if (a.requestLogMessages)
+        a.requestLogMessages(m_mpv, "error");
 
     a.observeProperty(m_mpv, 1, "time-pos", MPV_FORMAT_DOUBLE);
     a.observeProperty(m_mpv, 2, "duration", MPV_FORMAT_DOUBLE);
@@ -615,6 +647,12 @@ void MpvPlayer::loadPlaylist(const QStringList &files, int startIndex)
     if (!m_mpv || files.isEmpty())
         return;
 
+    // 每次 loadfile 请求一个自增 generation。deferred 时也先占用（否则 flush
+    // 前 Controller 记下的 generation 会与 START_FILE/END_FILE 对不上）。
+    ++m_loadGeneration;
+    m_loadStartPending = true;
+    m_lastStreamError.clear();
+
     // render context 未就绪（例如首次播放时 PlayerPage 还没 paint，QRhi 的
     // ID3D11Device 尚不可用）时不能 loadfile：vo=libmpv 的 preinit 会因为没有
     // render context 直接失败。先挂起，等 attachRenderDevice() 后原样执行。
@@ -622,8 +660,9 @@ void MpvPlayer::loadPlaylist(const QStringList &files, int startIndex)
         m_pendingLoad = true;
         m_pendingFiles = files;
         m_pendingStartIndex = startIndex;
-        qInfo() << "mpv loadfile deferred until render context is ready: files"
-                << files.size() << "startIndex" << startIndex;
+        qInfo() << "mpv loadfile deferred until render context is ready: generation"
+                << m_loadGeneration << "files" << files.size()
+                << "startIndex" << startIndex;
         return;
     }
 
@@ -639,7 +678,8 @@ void MpvPlayer::flushPendingLoad()
     const int startIndex = m_pendingStartIndex;
     m_pendingFiles.clear();
     m_pendingStartIndex = 0;
-    qInfo() << "mpv loadfile flush after render context ready: files" << files.size()
+    qInfo() << "mpv loadfile flush after render context ready: generation"
+            << m_loadGeneration << "files" << files.size()
             << "startIndex" << startIndex;
     loadPlaylistNow(files, startIndex);
 }
@@ -648,6 +688,9 @@ void MpvPlayer::loadPlaylistNow(const QStringList &files, int startIndex)
 {
     // 新片源的第一帧到达前不要把上一部的末帧当成“可重画帧”贴到新纹理上。
     m_hasVideoFrame = false;
+    m_loadStartPending = true;
+    qInfo() << "mpv loadfile issued: generation" << m_loadGeneration
+            << "startIndex" << startIndex << "files" << files.size();
     bool ok = command({QStringLiteral("loadfile"), files.first(), QStringLiteral("replace")});
     if (!ok) {
         emit errorOccurred(QStringLiteral("mpv loadfile failed: %1").arg(files.first()));
@@ -763,17 +806,56 @@ void MpvPlayer::handleEvent(mpv_event *event)
         }
         break;
     }
+    case MPV_EVENT_START_FILE: {
+        // 新条目的网络/探测已开始：从此 END_FILE 属于本 generation。
+        m_loadStartPending = false;
+        m_startedGeneration = m_loadGeneration;
+        m_lastStreamError.clear();
+        qInfo() << "mpv start-file: generation" << m_loadGeneration;
+        emit loadStarted(m_loadGeneration);
+        break;
+    }
     case MPV_EVENT_FILE_LOADED:
         emit fileLoaded();
         break;
     case MPV_EVENT_END_FILE: {
         auto *end = static_cast<mpv_event_end_file *>(event->data);
-        if (end && end->reason == MPV_END_FILE_REASON_ERROR && end->error < 0) {
-            const char *text = api().errorString ? api().errorString(end->error) : nullptr;
-            emit errorOccurred(QStringLiteral("mpv end-file error: %1")
-                                   .arg(QString::fromUtf8(text ? text : "unknown")));
+        const int reason = end ? static_cast<int>(end->reason) : int(MPV_END_FILE_REASON_EOF);
+        const int errorCode = end ? end->error : 0;
+        // 新 loadfile 已发出、START_FILE 尚未到达：这个 END_FILE 属于被
+        // replace 掉的上一个条目，不能作为当前候选的失败依据。
+        const bool stale = m_loadStartPending;
+        const quint64 generation = stale ? m_startedGeneration : m_loadGeneration;
+
+        QString errorText;
+        bool networkTimeout = false;
+        if (reason == MPV_END_FILE_REASON_ERROR && errorCode < 0) {
+            const char *text = api().errorString ? api().errorString(errorCode) : nullptr;
+            errorText = QString::fromUtf8(text ? text : "unknown");
+            // END_FILE 的 error 通常只有 "loading failed"；curl 的
+            // "Timeout was reached" 在 LOG_MESSAGE 里（m_lastStreamError）。
+            // 这里两处都看，避免把网络超时归成普通解码/加载失败。
+            const auto timeoutText = [](const QString &value) {
+                return value.contains(QLatin1String("timed out"), Qt::CaseInsensitive)
+                    || value.contains(QLatin1String("timeout"), Qt::CaseInsensitive);
+            };
+            networkTimeout = timeoutText(errorText) || timeoutText(m_lastStreamError);
+            if (!stale) {
+                QString message = QStringLiteral("mpv end-file error: %1").arg(errorText);
+                if (networkTimeout) {
+                    message.prepend(QStringLiteral("NETWORK_TIMEOUT: "));
+                    if (!m_lastStreamError.isEmpty())
+                        message += QStringLiteral(" [stream: %1]").arg(m_lastStreamError);
+                }
+                emit errorOccurred(message);
+            }
         }
-        emit endReached();
+
+        qInfo() << "mpv end-file: reason" << endFileReasonName(reason) << reason
+                << "error" << errorText << "networkTimeout" << networkTimeout
+                << "generation" << generation << "currentGeneration" << m_loadGeneration
+                << "stale" << stale;
+        emit endReached(generation, reason, errorText);
         break;
     }
     case MPV_EVENT_LOG_MESSAGE: {
@@ -785,6 +867,12 @@ void MpvPlayer::handleEvent(mpv_event *event)
             const QString prefix = message->prefix ? QString::fromUtf8(message->prefix) : QString();
             const QString text = redactSensitiveLog(QString::fromUtf8(message->text).trimmed());
             qWarning() << "mpv log" << prefix << level << text;
+            // 只记录流层超时文本，供 END_FILE(ERROR) 标记 NETWORK_TIMEOUT；
+            // 在每次 START_FILE / loadPlaylist 时清空，不跨条目串味。
+            if (text.contains(QLatin1String("timed out"), Qt::CaseInsensitive)
+                || text.contains(QLatin1String("timeout"), Qt::CaseInsensitive)) {
+                m_lastStreamError = text;
+            }
             // T63/A-P1-21：普通 error 日志（解码器/音频警告等）不触发候选切换；
             // 只有 END_FILE reason=ERROR 作为 fatal 错误 emit errorOccurred。
         }
