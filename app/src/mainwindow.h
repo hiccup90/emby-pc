@@ -118,7 +118,9 @@ private:
     void showPlaybackErrorDialog(const QString &code, const QString &detail, bool retryable);
     void retryPlaybackAfterFailure();
     void leavePlaybackAfterFailure();
+    // 观察 hwdec-current（去抖 1.5s 后才降级）；confirm 由复查定时器触发。
     void applyHardwareFallback(const QString &hwdec);
+    void confirmHwdecFallback();
     QString sanitizedPlaybackUrl(const QString &urlString) const;
     void startEmbyPlayback(const QString &itemId, const QString &title,
                            const emby::MediaSourceInfo &source, const QString &playSessionId,
@@ -162,6 +164,10 @@ private:
     bool m_autoResume = true;
     QString m_hwdecMode = QStringLiteral("auto");
     int m_hwdecFallbackStage = 0;
+    // hwdec-current 首次被判定为 bad 的时刻（0=当前无 pending 判定）。
+    qint64 m_hwdecBadSinceMs = 0;
+    // auto 模式：mpv 自己回退软解时只提示一次（每部片源重置）。
+    bool m_autoHwdecNoticeShown = false;
 
     QString m_currentSubtitle;
     bool m_surfaceAttached = false;

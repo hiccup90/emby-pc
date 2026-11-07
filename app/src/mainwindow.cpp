@@ -65,6 +65,10 @@ QString endFileReasonName(int reason)
     }
 }
 
+// hwdec-current 在加载、seek、解码器重建期间会短暂为空/no；连续这么久仍不可用
+// 才认为真的硬解失败，避免空值抖动触发降级。
+constexpr qint64 kHwdecBadPersistMs = 1500;
+
 QString hwdecMpvValue(const QString &mode)
 {
     if (mode == QLatin1String("off"))
@@ -224,7 +228,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
                         QStringLiteral("hwdec-current=%1 · vo=%2 · gpu-api=%3")
                             .arg(hwdec.isEmpty() ? QStringLiteral("no") : hwdec, vo, gpuApi));
                 }
-                // T63/A-P0-10：文件已加载后 hwdec 为空/no/-copy 时自动降级并提示。
+                // T63/A-P0-10：hwdec-current 在加载/seek 期间会短暂为空；统一做
+                // “播起来 + 连续 1.5s”去抖判定，不能立即降级。
                 if (m_playbackFileLoaded)
                     applyHardwareFallback(hwdec);
             });
@@ -279,7 +284,9 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         }
         logMpvState(QStringLiteral("file-loaded"));
         updateHardwareInfo();
-        QTimer::singleShot(150, this, [this]() {
+        QTimer::singleShot(1500, this, [this]() {
+            // 首帧解码器可能还没建好：只做观察，是否降级由 1.5s 持久化判定
+            // 决定（不直接走降级分支）。
             if (m_playbackFileLoaded && m_player)
                 applyHardwareFallback(m_player->getPropertyString("hwdec-current"));
         });
@@ -679,28 +686,130 @@ void PlayerController::updateHardwareInfo()
 
 void PlayerController::applyHardwareFallback(const QString &hwdec)
 {
-    if (m_hwdecMode == QLatin1String("off") || m_hwdecFallbackStage >= 2)
+    if (!m_player || !m_player->isReady())
         return;
+    if (m_hwdecMode == QLatin1String("off"))
+        return;
+
+    // bad 判定前置条件：文件已 loaded、已有播放进度（解码器真的跑起来）、
+    // 不在 seeking、不在 idle。任一不满足都不能判 bad。
     const QString current = hwdec.trimmed().toLower();
     const bool bad = current.isEmpty() || current == QLatin1String("no")
                      || current.contains(QLatin1String("-copy"));
+    const bool ready = m_playbackFileLoaded
+                       && m_player->position() > 0.0
+                       && m_player->getPropertyString("seeking") != QLatin1String("yes")
+                       && m_player->getPropertyString("idle-active") != QLatin1String("yes");
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
     if (!bad) {
+        if (m_hwdecBadSinceMs != 0) {
+            qInfo() << "hwdec watch:" << hwdec << "stage" << m_hwdecFallbackStage
+                    << "mode" << m_hwdecMode << "persistMs" << (now - m_hwdecBadSinceMs)
+                    << "recovered";
+        }
+        // 中途恢复（含空值之后变回 d3d11va）：清零判定与降级阶段。
+        m_hwdecBadSinceMs = 0;
         m_hwdecFallbackStage = 0;
         return;
     }
-    const QString next = m_hwdecFallbackStage == 0 ? QStringLiteral("auto-safe")
-                                                   : QStringLiteral("no");
-    const bool applied = m_player && m_player->setPropertyString("hwdec", next);
+
+    if (!ready)
+        return; // 还没真正开始解码：不记录，等下一次属性变化。
+
+    if (m_hwdecBadSinceMs != 0)
+        return; // 已在 1.5s 观察窗口内，等 confirmHwdecFallback。
+
+    m_hwdecBadSinceMs = now;
+    qInfo() << "hwdec watch:" << hwdec << "stage" << m_hwdecFallbackStage
+            << "mode" << m_hwdecMode << "persistMs" << (now - m_hwdecBadSinceMs)
+            << "pending";
+    QPointer<PlayerController> self(this);
+    QTimer::singleShot(kHwdecBadPersistMs, this, [self]() {
+        if (self)
+            self->confirmHwdecFallback();
+    });
+}
+
+void PlayerController::confirmHwdecFallback()
+{
+    if (m_hwdecBadSinceMs == 0)
+        return;
+    // 复查时已停止播放/切到 off：清掉 pending，避免 m_hwdecBadSinceMs 卡住后
+    // 后续 bad 事件以为“已有复查在排队”而不再安排。
+    if (!m_player || !m_player->isReady() || !m_playbackFileLoaded
+        || m_hwdecMode == QLatin1String("off")) {
+        m_hwdecBadSinceMs = 0;
+        return;
+    }
+
+    const QString hwdec = m_player->getPropertyString("hwdec-current");
+    const QString current = hwdec.trimmed().toLower();
+    const bool bad = current.isEmpty() || current == QLatin1String("no")
+                     || current.contains(QLatin1String("-copy"));
+    const bool ready = m_playbackFileLoaded
+                       && m_player->position() > 0.0
+                       && m_player->getPropertyString("seeking") != QLatin1String("yes")
+                       && m_player->getPropertyString("idle-active") != QLatin1String("yes");
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 persistMs = now - m_hwdecBadSinceMs;
+
+    if (!bad) {
+        qInfo() << "hwdec watch:" << hwdec << "stage" << m_hwdecFallbackStage
+                << "mode" << m_hwdecMode << "persistMs" << persistMs << "recovered";
+        m_hwdecBadSinceMs = 0;
+        m_hwdecFallbackStage = 0;
+        return;
+    }
+    if (!ready) {
+        // 复查时正在 seek/idle：无法判断，丢弃本次观察，等属性下次变化重新计时。
+        qInfo() << "hwdec watch:" << hwdec << "stage" << m_hwdecFallbackStage
+                << "mode" << m_hwdecMode << "persistMs" << persistMs << "inconclusive";
+        m_hwdecBadSinceMs = 0;
+        return;
+    }
+
+    qInfo() << "hwdec watch: confirmed" << hwdec << "stage" << m_hwdecFallbackStage
+            << "mode" << m_hwdecMode << "persistMs" << persistMs;
+    m_hwdecBadSinceMs = 0;
+
+    if (m_hwdecMode == QLatin1String("auto")) {
+        // auto-safe 已经由 mpv 自己回退，应用层不改任何选项，只提示一次。
+        m_hwdecFallbackStage = 0;
+        if (!m_autoHwdecNoticeShown) {
+            m_autoHwdecNoticeShown = true;
+            qWarning() << "PlayerController: hwdec unavailable; mpv already fell back"
+                       << "hwdec-current" << hwdec << "(auto mode: no option change)";
+            showStatus(tr("当前片源无法硬解，已由 mpv 回退到软解"), 5000);
+        }
+        return;
+    }
+
+    if (m_hwdecFallbackStage >= 2)
+        return;
+
+    const QString target = m_hwdecFallbackStage == 0 ? QStringLiteral("auto-safe")
+                                                     : QStringLiteral("no");
+    const QString appliedValue = m_player->getPropertyString("hwdec").trimmed().toLower();
+    if (appliedValue == target) {
+        // 已经是目标值：不 apply、不提示（stage 不递增，避免空操作刷提示）。
+        qInfo() << "hwdec watch: hwdec already" << appliedValue << "; skip apply";
+        return;
+    }
+    if (!m_player->setPropertyString("hwdec", target)) {
+        qWarning() << "PlayerController: hwdec fallback apply failed" << appliedValue
+                   << "->" << target;
+        return;
+    }
     ++m_hwdecFallbackStage;
-    qWarning() << "PlayerController: hwdec fallback" << hwdec << "->" << next
-               << "stage=" << m_hwdecFallbackStage << "applied=" << applied;
+    qWarning() << "PlayerController: hwdec fallback" << hwdec << "->" << target
+               << "stage=" << m_hwdecFallbackStage << "applied=true";
     const QString message = m_hwdecFallbackStage == 1
                                 ? tr("硬件解码不可用，已切换兼容模式（auto-safe）")
                                 : tr("硬件解码不可用，已切换软解");
     showStatus(message, 5000);
     // 播放模式状态栏隐藏，额外用 mpv OSD 保证用户能看到降级提示。
-    if (m_player && m_player->isReady() && m_player->command({QStringLiteral("show-text"), message,
-                                                              QStringLiteral("5000")}))
+    if (m_player->command({QStringLiteral("show-text"), message, QStringLiteral("5000")}))
         qInfo() << "hardware fallback OSD shown";
 }
 
@@ -1249,6 +1358,10 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
             << "autoResume=" << m_autoResume << "duration=" << source->runTimeTicks;
 
     m_playbackRetryCount = 0;
+    // 新播放开始：清掉上一部片源的 hwdec 去抖/降级/提示状态。
+    m_hwdecBadSinceMs = 0;
+    m_hwdecFallbackStage = 0;
+    m_autoHwdecNoticeShown = false;
 
     const QString playMethod = source->supportsDirectPlay
                                    ? QStringLiteral("DirectPlay")
@@ -2072,6 +2185,9 @@ void PlayerController::clearEmbySession()
     if (m_playerPage)
         m_playerPage->setEpisodeNavigationEnabled(false, false);
     m_pendingSeekSeconds = 0.0;
+    m_hwdecBadSinceMs = 0;
+    m_hwdecFallbackStage = 0;
+    m_autoHwdecNoticeShown = false;
     m_reporting = false;
 }
 
