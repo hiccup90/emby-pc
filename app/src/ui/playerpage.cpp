@@ -30,10 +30,10 @@
 namespace ui {
 namespace {
 
-// T31：播放模式下视频子 HWND 不能贴死顶层客户区，否则 Windows 的 WM_NCHITTEST
-// 会落在 mpv 子窗口上，WindowFrame 的四边/四角缩放命中失效。留 5px 给顶层窗口。
-// T56：边距去掉后，边缘缩放命中区仍保留 6px；布局 margin 不再使用它。
-constexpr int kPlayerResizeHit = 6;
+// P2：紧凑布局常量收口（原先 64 在两条几何函数里各写一份）。
+constexpr int kCompactControlBarHeight = 76;
+// 与 WindowFrame 的 10 逻辑像素边缘带一致，避免紧凑布局最底排按钮被缩放区吃掉。
+constexpr int kCompactControlsBottomInset = 10;
 
 QString formatTimeValue(qint64 milliseconds)
 {
@@ -76,7 +76,6 @@ public:
     explicit SeekSlider(QWidget *parent = nullptr)
         : QSlider(Qt::Horizontal, parent)
     {
-        setMouseTracking(true);
         setFixedHeight(28);
     }
 
@@ -211,11 +210,6 @@ PlayerPage::PlayerPage(QWidget *parent)
 {
     setObjectName(QStringLiteral("PlayerPage"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setMouseTracking(true); // T35：边缘 5px 需要 mouseMove 更新缩放光标
-
-    // EMBY_PC_PLAYER_OVERLAY=0 时退回页面内浮层（排障/无合成器环境）。
-    const QString overlayEnv = qEnvironmentVariable("EMBY_PC_PLAYER_OVERLAY");
-    m_topLevelOverlay = overlayEnv != QLatin1String("0");
 
     buildUi();
 
@@ -228,28 +222,20 @@ PlayerPage::PlayerPage(QWidget *parent)
 
 PlayerPage::~PlayerPage() = default;
 
-void PlayerPage::createOverlayWindows()
+void PlayerPage::createOverlayBars()
 {
-    const Qt::WindowFlags overlayFlags =
-        Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus;
-    auto makeOverlay = [this, overlayFlags](const QString &objectName) {
-        QWidget *overlay = m_topLevelOverlay ? new QWidget(this, overlayFlags) : new QWidget(this);
+    // P2：两条 bar 是 PlayerPage 的普通子控件（不带任何窗口标志）。顶层窗口
+    // 会在 Windows 上各成一个独立 HWND，吃掉 WindowFrame 的边缘命中，还需要
+    // 全局几何同步；现在只做页面内几何 + raise()。
+    auto makeOverlay = [this](const QString &objectName) {
+        QWidget *overlay = new QWidget(this);
         overlay->setObjectName(objectName);
         overlay->setAttribute(Qt::WA_StyledBackground, true);
-        if (m_topLevelOverlay) {
-            // T55：Windows 分层窗口按像素 alpha 命中，透明区域会穿透导致只有图标中心能点；
-            // 控制条改为不透明顶层窗口 + QSS 不透明深色背景，整块按钮都可命中。
-            overlay->setAttribute(Qt::WA_TranslucentBackground, false);
-            overlay->setAttribute(Qt::WA_NoSystemBackground, false);
-            overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
-            overlay->setAutoFillBackground(true);
-            overlay->setFocusPolicy(Qt::NoFocus);
-        }
         overlay->hide();
         return overlay;
     };
     m_topBar = makeOverlay(QStringLiteral("PlayerTopBar"));
-    m_topBar->installEventFilter(this); // T46：顶层/页内顶栏空白区拖动窗口
+    m_topBar->installEventFilter(this); // T46：顶栏空白区拖动窗口
     m_controlBar = makeOverlay(QStringLiteral("PlayerControlBar"));
 }
 
@@ -259,7 +245,16 @@ void PlayerPage::buildUi()
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    createOverlayWindows();
+    // 视频区域（先建 stack，再建 bar：bar 是同一父控件下的兄弟，创建顺序在后
+    // 且显式 raise，保证压在 VideoHost 之上）。
+    m_surfaceStack = new QStackedWidget(this);
+    m_surfaceStack->setObjectName(QStringLiteral("VideoArea"));
+    m_surfaceStack->installEventFilter(this); // T46：VideoArea 空白区拖动/按压兜底
+    m_placeholder = new VideoHostPlaceholder(m_surfaceStack);
+    m_surfaceStack->addWidget(m_placeholder);
+    root->addWidget(m_surfaceStack, 1);
+
+    createOverlayBars();
 
     // 顶部信息栏：不加入布局，作为浮层压在视频上。
     auto *topLayout = new QHBoxLayout(m_topBar);
@@ -273,20 +268,14 @@ void PlayerPage::buildUi()
     titles->setSpacing(1);
     m_titleLabel = new QLabel(QStringLiteral("未选择影片"), m_topBar);
     m_titleLabel->setObjectName(QStringLiteral("PlayerTitle"));
+    m_titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_subtitleLabel = new QLabel(QStringLiteral("—"), m_topBar);
     m_subtitleLabel->setObjectName(QStringLiteral("PlayerSubtitle"));
+    m_subtitleLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     titles->addWidget(m_titleLabel);
     titles->addWidget(m_subtitleLabel);
     topLayout->addLayout(titles);
     topLayout->addStretch(1);
-
-    // 视频区域
-    m_surfaceStack = new QStackedWidget(this);
-    m_surfaceStack->setObjectName(QStringLiteral("VideoArea"));
-    m_surfaceStack->installEventFilter(this); // T35：VideoArea 边缘双击/按压兜底
-    m_placeholder = new VideoHostPlaceholder(m_surfaceStack);
-    m_surfaceStack->addWidget(m_placeholder);
-    root->addWidget(m_surfaceStack, 1);
 
     // 底部控制条：同样作为浮层，不占视频布局高度。
     auto *controls = new QVBoxLayout(m_controlBar);
@@ -298,9 +287,11 @@ void PlayerPage::buildUi()
     m_positionLabel = new QLabel(QStringLiteral("00:00"), m_controlBar);
     m_positionLabel->setObjectName(QStringLiteral("PlayerTimeLabel"));
     m_positionLabel->setMinimumWidth(48);
+    m_positionLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_durationLabel = new QLabel(QStringLiteral("00:00"), m_controlBar);
     m_durationLabel->setObjectName(QStringLiteral("PlayerTimeLabel"));
     m_durationLabel->setMinimumWidth(48);
+    m_durationLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_durationLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_seekSlider = new SeekSlider(m_controlBar);
     m_seekSlider->setObjectName(QStringLiteral("SeekSlider"));
@@ -356,6 +347,7 @@ void PlayerPage::buildUi()
 
     m_volumeIcon = new QLabel(m_controlBar);
     m_volumeIcon->setPixmap(iconPixmap(Icon::Volume, QColor(0x94, 0xA3, 0xB8), 20));
+    m_volumeIcon->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_volumeSlider = new QSlider(Qt::Horizontal, m_controlBar);
     m_volumeSlider->setObjectName(QStringLiteral("VolumeSlider"));
     m_volumeSlider->setRange(0, 100);
@@ -458,50 +450,10 @@ void PlayerPage::buildUi()
         });
     }
 
-    if (!m_topLevelOverlay)
-        updateDockedOverlayGeometry();
-
     updateResponsiveControls();
+    relayoutOverlays();
     // 初始没有剧集队列上下文，避免用户误点。
     setEpisodeNavigationEnabled(false, false);
-}
-
-Qt::Edges PlayerPage::edgeResizeEdgesAt(const QPoint &position) const
-{
-    // 只在实际播放器模式且非全屏时启用；全屏没有 5px 边距。
-    if (!m_playerModeActive || m_fullscreen)
-        return {};
-    if (!rect().contains(position))
-        return {};
-    const int margin = kPlayerResizeHit;
-    Qt::Edges edges;
-    if (position.x() < margin)
-        edges |= Qt::LeftEdge;
-    if (position.x() >= width() - margin)
-        edges |= Qt::RightEdge;
-    if (position.y() < margin)
-        edges |= Qt::TopEdge;
-    if (position.y() >= height() - margin)
-        edges |= Qt::BottomEdge;
-    return edges;
-}
-
-bool PlayerPage::tryStartEdgeResize(const QPoint &globalPosition)
-{
-    const Qt::Edges edges = edgeResizeEdgesAt(mapFromGlobal(globalPosition));
-    return startEdgeResize(edges, globalPosition);
-}
-
-bool PlayerPage::startEdgeResize(Qt::Edges edges, const QPoint &globalPosition)
-{
-    if (!edges || !m_playerModeActive || m_fullscreen)
-        return false;
-    QWindow *handle = window() ? window()->windowHandle() : nullptr;
-    const bool started = handle && handle->startSystemResize(edges);
-    qInfo() << "PlayerPage::edgeResize: edges" << static_cast<int>(edges)
-            << "global" << globalPosition << "startSystemResize" << started;
-    // T65：startSystemResize 失败时不要吞掉 press，交回调用方继续走拖动/mpv 点击。
-    return started;
 }
 
 bool PlayerPage::windowDragThresholdExceeded(const QPoint &pressGlobal,
@@ -545,45 +497,9 @@ void PlayerPage::resetWindowDrag()
     m_dragStarted = false;
 }
 
-void PlayerPage::mouseMoveEvent(QMouseEvent *event)
-{
-    const Qt::Edges edges = edgeResizeEdgesAt(event->position().toPoint());
-    if (!edges) {
-        unsetCursor();
-    } else if ((edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::TopEdge))
-               || (edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::BottomEdge))) {
-        setCursor(Qt::SizeFDiagCursor);
-    } else if ((edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::TopEdge))
-               || (edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::BottomEdge))) {
-        setCursor(Qt::SizeBDiagCursor);
-    } else if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge)) {
-        setCursor(Qt::SizeHorCursor);
-    } else {
-        setCursor(Qt::SizeVerCursor);
-    }
-    QWidget::mouseMoveEvent(event);
-}
-
-void PlayerPage::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton
-        && tryStartEdgeResize(event->globalPosition().toPoint())) {
-        event->accept();
-        return;
-    }
-    QWidget::mousePressEvent(event);
-}
-
-void PlayerPage::leaveEvent(QEvent *event)
-{
-    unsetCursor();
-    QWidget::leaveEvent(event);
-}
-
 void PlayerPage::paintEvent(QPaintEvent *event)
 {
     QWidget::paintEvent(event);
-    // 播放模式的 5px 可缩放边缘保持纯黑，避免主题底色或视频边缘露出杂色。
     if (m_playerModeActive && !m_fullscreen) {
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
@@ -593,7 +509,7 @@ void PlayerPage::paintEvent(QPaintEvent *event)
 void PlayerPage::updateResponsiveControls()
 {
     // T53：控制条默认/所有宽度均使用纯图标模式；文字只放在 tooltip。
-    // T64：宽度 <520 或高度 <400 进入 compact：顶栏 44、控制条 64、次要按钮进「更多」。
+    // T64：宽度 <520 或高度 <400 进入 compact：顶栏 44、控制条 76、次要按钮进「更多」。
     const bool compact = width() < 520 || height() < 400;
     m_compactLayout = compact;
     const auto setButtonText = [](QPushButton *button, const QString &fallback) {
@@ -643,7 +559,8 @@ void PlayerPage::updateResponsiveControls()
     }
     if (auto *controls = qobject_cast<QVBoxLayout *>(m_controlBar ? m_controlBar->layout() : nullptr)) {
         controls->setContentsMargins(compact ? 8 : 24, compact ? 4 : 10,
-                                     compact ? 8 : 24, compact ? 4 : 12);
+                                     compact ? 8 : 24,
+                                     compact ? kCompactControlsBottomInset : 12);
         controls->setSpacing(compact ? 2 : 8);
     }
 }
@@ -652,18 +569,12 @@ void PlayerPage::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     updateResponsiveControls();
-    if (m_topLevelOverlay) {
-        if (m_playerModeActive)
-            syncOverlayGeometry();
-    } else {
-        updateDockedOverlayGeometry();
-    }
+    relayoutOverlays();
 }
 
 void PlayerPage::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    ensureHostWindow();
     if (m_playerModeActive) {
         m_lastCursorPos = currentCursorPosition();
         m_lastInteraction.restart();
@@ -728,44 +639,11 @@ bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    // T65：顶层 overlay 不透明化后会盖住窗口边缘的 6px 命中带：控制条贴底/两侧，
-    // 顶栏在页面内兜底模式贴顶、顶层模式距顶 6–10px。控制条按钮的扩展命中已在
-    // 上面 return true，所以这里只处理落在 overlay 自身空白/padding 上的左键 press。
-    if ((watched == m_topBar || watched == m_controlBar)
-        && event->type() == QEvent::MouseButtonPress) {
-        auto *mouseEvent = static_cast<QMouseEvent *>(event);
-        if (mouseEvent->button() == Qt::LeftButton) {
-            const QPoint globalPos = mouseEvent->globalPosition().toPoint();
-            Qt::Edges edges = edgeResizeEdgesAt(mapFromGlobal(globalPos));
-            // 顶层 overlay 的顶栏本身位于窗口顶边下方 6–10px，用户按“上边”拖时
-            // 落在顶栏上沿；把顶栏自身顶边 6px 也映射为 TopEdge（仅播放模式/非全屏）。
-            if (!edges && watched == m_topBar && m_playerModeActive && !m_fullscreen) {
-                const QPoint local = m_topBar->mapFromGlobal(globalPos);
-                const QRect host = hostGlobalRect();
-                const int topOffset = m_topBar->mapToGlobal(QPoint(0, 0)).y() - host.top();
-                if (local.y() >= 0 && local.y() < kPlayerResizeHit
-                    && qAbs(topOffset) <= 2 * kPlayerResizeHit) {
-                    edges |= Qt::TopEdge;
-                }
-            }
-            if (startEdgeResize(edges, globalPos)) {
-                mouseEvent->accept();
-                resetWindowDrag();
-                return true;
-            }
-        }
-    }
-
     if (watched == m_surface || watched == m_surfaceStack || watched == m_topBar) {
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->button() == Qt::LeftButton) {
-                if (tryStartEdgeResize(mouseEvent->globalPosition().toPoint())) {
-                    mouseEvent->accept();
-                    return true;
-                }
+            if (mouseEvent->button() == Qt::LeftButton)
                 handleWindowDragPress(mouseEvent->globalPosition().toPoint());
-            }
         } else if (event->type() == QEvent::MouseMove) {
             auto *mouseEvent = static_cast<QMouseEvent *>(event);
             if (mouseEvent->buttons() & Qt::LeftButton)
@@ -777,63 +655,7 @@ bool PlayerPage::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    if (watched == m_hostWindow) {
-        switch (event->type()) {
-        case QEvent::Move:
-        case QEvent::Resize:
-        case QEvent::ScreenChangeInternal:
-            if (m_playerModeActive)
-                syncOverlayGeometry();
-            break;
-        case QEvent::Show:
-            if (m_playerModeActive) {
-                showOverlays();
-                if (m_autoHide)
-                    startAutoHideTimer();
-            }
-            break;
-        case QEvent::Hide:
-        case QEvent::Close:
-            hideOverlays();
-            stopAutoHideTimer();
-            break;
-        case QEvent::WindowStateChange:
-            if (m_hostWindow && m_hostWindow->isMinimized()) {
-                hideOverlays();
-                stopAutoHideTimer();
-            } else if (m_playerModeActive) {
-                showOverlays();
-                if (m_autoHide)
-                    startAutoHideTimer();
-            }
-            break;
-        default:
-            break;
-        }
-    }
     return QWidget::eventFilter(watched, event);
-}
-
-void PlayerPage::ensureHostWindow()
-{
-    QWidget *host = window();
-    if (host == this)
-        host = nullptr;
-    if (host == m_hostWindow)
-        return;
-    if (m_hostWindow)
-        m_hostWindow->removeEventFilter(this);
-    m_hostWindow = host;
-    if (m_hostWindow)
-        m_hostWindow->installEventFilter(this);
-}
-
-QRect PlayerPage::hostGlobalRect() const
-{
-    QWidget *host = m_hostWindow ? m_hostWindow : window();
-    if (!host || host == this)
-        return QRect(mapToGlobal(QPoint(0, 0)), size());
-    return QRect(host->mapToGlobal(QPoint(0, 0)), host->size());
 }
 
 void PlayerPage::applyVideoMargins()
@@ -841,81 +663,53 @@ void PlayerPage::applyVideoMargins()
     auto *layout = qobject_cast<QVBoxLayout *>(this->layout());
     if (!layout)
         return;
-    // T56：播放模式/全屏都不再留黑边；边缘缩放由 VideoHost/PlayerPage 的 6px 命中区负责。
+    // P2：bar 是子控件，不占用视频布局边距；播放/非播放模式都保持 0 黑边。
     layout->setContentsMargins(0, 0, 0, 0);
-    if (m_topLevelOverlay && m_playerModeActive)
-        syncOverlayGeometry();
-    else if (!m_topLevelOverlay)
-        updateDockedOverlayGeometry();
+    relayoutOverlays();
 }
 
 void PlayerPage::refreshOverlayGeometry()
 {
-    applyVideoMargins();
-    if (m_playerModeActive)
-        syncOverlayGeometry();
+    relayoutOverlays();
 }
 
-void PlayerPage::syncOverlayGeometry()
+void PlayerPage::raiseOverlays()
+{
+    // VideoHost 是运行时才 addWidget 到 stack 的；stack 与 bar 同级，显式 raise
+    // 保证 bar 压在视频面之上（只在布局/显示/挂载时调用，不每帧）。
+    if (m_controlBar)
+        m_controlBar->raise();
+    if (m_topBar)
+        m_topBar->raise();
+}
+
+void PlayerPage::relayoutOverlays()
 {
     if (!m_topBar || !m_controlBar)
         return;
-    if (!m_topLevelOverlay) {
-        updateDockedOverlayGeometry();
-        return;
-    }
-
-    ensureHostWindow();
-    const QRect host = hostGlobalRect();
-    if (!host.isValid() || host.isEmpty())
-        return;
-
-    // T56：画面全铺满；T64 在 320×180 用 44px 顶栏 + 64px 控制条避免重叠。
+    // 只依赖自身 rect()：bar 是 PlayerPage 的子控件，不再做宿主窗口全局坐标换算。
     const bool compact = width() < 520 || height() < 400;
     const int topHeight = compact ? 44 : 76;
-    const int maxTopWidth = qMax(200, host.width() - 24);
+    const int maxTopWidth = qMax(200, width() - 24);
     const int topWidth = compact ? maxTopWidth
                                  : qMin(qMax(260, m_topBar->sizeHint().width()), maxTopWidth);
-    m_topBar->setGeometry(host.left() + 12, host.top() + (compact ? 6 : 10), topWidth, topHeight);
+    m_topBar->setGeometry(12, 10, topWidth, topHeight);
 
-    const int controlHeight = compact ? 64 : 108;
-    m_controlBar->setGeometry(host.left(),
-                              host.top() + host.height() - controlHeight,
-                              qMax(0, host.width()), controlHeight);
-
-    if (m_overlaysVisible) {
-        m_topBar->raise();
-        m_controlBar->raise();
-    }
-}
-
-void PlayerPage::updateDockedOverlayGeometry()
-{
-    if (!m_topBar || !m_controlBar)
-        return;
-    const bool compact = width() < 520 || height() < 400;
-    const int topHeight = compact ? 44 : qBound(58, height() / 9, 84);
-    const int controlHeight = compact ? 64 : qBound(108, height() / 7, 124);
-    m_topBar->setGeometry(0, 0, width(), topHeight);
+    const int controlHeight = compact ? kCompactControlBarHeight
+                                      : qBound(108, height() / 7, 124);
     m_controlBar->setGeometry(0, height() - controlHeight, width(), controlHeight);
-    if (m_overlaysVisible) {
-        m_topBar->raise();
-        m_controlBar->raise();
-    }
+    raiseOverlays();
 }
 
 void PlayerPage::showOverlays()
 {
     if (!m_controlsRequested || !m_playerModeActive || !isVisible())
         return;
-    syncOverlayGeometry();
-    m_topBar->setAttribute(Qt::WA_TransparentForMouseEvents, false);
-    m_controlBar->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+    relayoutOverlays();
     m_topBar->show();
     m_controlBar->show();
     m_overlaysVisible = true;
-    m_topBar->raise();
-    m_controlBar->raise();
+    raiseOverlays();
     qInfo() << "PlayerPage: overlays shown top=" << m_topBar->geometry()
             << "bottom=" << m_controlBar->geometry();
 }
@@ -927,14 +721,6 @@ void PlayerPage::hideOverlays()
         m_topBar->hide();
     if (m_controlBar)
         m_controlBar->hide();
-}
-
-void PlayerPage::applyOverlayVisibility()
-{
-    if (m_controlsRequested && m_playerModeActive)
-        showOverlays();
-    else
-        hideOverlays();
 }
 
 void PlayerPage::setPlayerModeActive(bool active)
@@ -951,7 +737,6 @@ void PlayerPage::setPlayerModeActive(bool active)
     m_playerModeActive = active;
     applyVideoMargins();
     if (active) {
-        ensureHostWindow();
         m_controlsRequested = true;
         m_lastCursorPos = currentCursorPosition();
         m_lastInteraction.restart();
@@ -1034,8 +819,8 @@ void PlayerPage::pollOverlayCursor()
         return;
 
     const QPoint position = currentCursorPosition();
-    const QRect host = hostGlobalRect();
-    const bool inside = host.contains(position);
+    // 子控件坐标系：直接用自身 rect()，不再做宿主窗口的全局矩形换算。
+    const bool inside = rect().contains(mapFromGlobal(position));
 
     // 鼠标在主窗口内移动：显示浮层并重置隐藏计时。
     if (inside && position != m_lastCursorPos) {
@@ -1062,10 +847,10 @@ void PlayerPage::attachVideoSurface(QWidget *surface)
     // T15：真实播放时也必须保留 Qt 控制条；mpv OSC 在部分 libmpv 构建里不可用。
     if (m_playerModeActive)
         showOverlays();
-    else
-        syncOverlayGeometry();
-    if (m_surface == surface)
+    if (m_surface == surface) {
+        raiseOverlays();
         return;
+    }
     if (m_surface) {
         m_surface->removeEventFilter(this);
         m_surfaceStack->removeWidget(m_surface);
@@ -1075,13 +860,15 @@ void PlayerPage::attachVideoSurface(QWidget *surface)
     }
     if (!surface) {
         m_surfaceStack->setCurrentWidget(m_placeholder);
+        raiseOverlays();
         return;
     }
     m_surface = surface;
-    m_surface->installEventFilter(this); // T35：子控件覆盖时也能命中边缘
+    m_surface->installEventFilter(this); // T46：视频面空白区拖动/按压兜底
     m_surfaceStack->addWidget(surface);
     m_surfaceStack->setCurrentWidget(surface);
     surface->show();
+    raiseOverlays();
 }
 
 void PlayerPage::releaseVideoSurface()
@@ -1099,7 +886,7 @@ void PlayerPage::setEpisodeInfo(const QString &title, const QString &subtitle)
     m_titleLabel->setText(title);
     m_subtitleLabel->setText(subtitle);
     if (m_playerModeActive)
-        syncOverlayGeometry();
+        relayoutOverlays();
 }
 
 void PlayerPage::setPosition(qint64 positionMs, qint64 durationMs)
@@ -1213,9 +1000,7 @@ void PlayerPage::setFullscreen(bool fullscreen)
             << "playerMode=" << m_playerModeActive
             << "windowFullScreen=" << (window() && window()->isFullScreen());
     m_fullscreen = fullscreen;
-    applyVideoMargins();
-    if (m_playerModeActive)
-        syncOverlayGeometry();
+    applyVideoMargins(); // 内部 relayoutOverlays()
     m_fullscreenButton->setIcon(icon(fullscreen ? Icon::ExitFullscreen : Icon::Fullscreen,
                                      QColor(0xE2, 0xE8, 0xF0), 22));
     m_fullscreenButton->setToolTip(fullscreen ? QStringLiteral("退出全屏") : QStringLiteral("全屏"));
@@ -1255,10 +1040,7 @@ void PlayerPage::showTrackMenu(QPushButton *button, const QList<TrackInfo> &trac
         if (m_autoHide)
             startAutoHideTimer();
         showOverlays();
-        if (m_controlBar)
-            m_controlBar->raise();
-        if (m_topBar)
-            m_topBar->raise();
+        raiseOverlays();
         qInfo() << "PlayerPage: popup closed, overlay raised";
     };
     if (tracks.isEmpty()) {

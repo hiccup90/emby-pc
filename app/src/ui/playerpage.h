@@ -8,7 +8,6 @@
 
 class QEvent;
 class QLabel;
-class QMouseEvent;
 class QPaintEvent;
 class QPushButton;
 class QResizeEvent;
@@ -54,7 +53,7 @@ public:
     // 由 ui::MainWindow(mock) 或 PlayerController(Emby 队列) 在切集/加载队列后调用。
     void setEpisodeNavigationEnabled(bool hasPrevious, bool hasNext);
 
-    // 播放器模式：显示/隐藏顶层 overlay，并启停自动隐藏轮询。
+    // 播放器模式：显示/隐藏浮层（PlayerPage 的子控件），并启停自动隐藏轮询。
     // MainWindow::setPlayerMode() 负责调用。
     void setPlayerModeActive(bool active);
     bool isPlayerModeActive() const { return m_playerModeActive; }
@@ -73,17 +72,14 @@ public:
     // 测试/无鼠标环境注入光标位置（全局坐标）。
     void setOverlayCursorPositionForTest(const QPoint &globalPos, bool hasPosition = true);
 
-    // T35：播放模式边缘 5px 的 Qt 层缩放命中。返回空表示不在边缘/全屏。
-    Qt::Edges edgeResizeEdgesAt(const QPoint &position) const;
-
     // T46：空白区左键拖动判定；移动超过 4px 才触发 startSystemMove。
     static bool windowDragThresholdExceeded(const QPoint &pressGlobal,
                                             const QPoint &currentGlobal);
     bool windowDragStartedForTest() const { return m_dragStarted; }
     void refreshOverlayGeometry();
 
-    // true：浮层是独立顶层窗口（默认）；false：EMBY_PC_PLAYER_OVERLAY=0 的页面内兜底。
-    bool usesTopLevelOverlay() const { return m_topLevelOverlay; }
+    // P2 后浮层是页面内子控件，恒为 false；保留签名给 demo（批次 4 删除）。
+    bool usesTopLevelOverlay() const { return false; }
     bool overlaysVisible() const { return m_overlaysVisible; }
     bool compactLayout() const { return m_compactLayout; }
     QWidget *topOverlay() const { return m_topBar; }
@@ -103,9 +99,6 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void leaveEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
@@ -113,22 +106,17 @@ protected:
 
 private:
     void buildUi();
-    void createOverlayWindows();
-    void ensureHostWindow();
+    void createOverlayBars();
+    void relayoutOverlays();
+    void raiseOverlays();
     void applyVideoMargins();
-    bool tryStartEdgeResize(const QPoint &globalPosition);
-    bool startEdgeResize(Qt::Edges edges, const QPoint &globalPosition);
     bool handleWindowDragPress(const QPoint &globalPosition);
     bool handleWindowDragMove(const QPoint &globalPosition, const char *source);
     void resetWindowDrag();
-    void syncOverlayGeometry();
-    void updateDockedOverlayGeometry();
     void showOverlays();
     void hideOverlays();
-    void applyOverlayVisibility();
     void pollOverlayCursor();
     QPoint currentCursorPosition() const;
-    QRect hostGlobalRect() const;
     void startAutoHideTimer();
     void stopAutoHideTimer();
     void showTrackMenu(QPushButton *button, const QList<TrackInfo> &tracks, bool audio);
@@ -165,15 +153,13 @@ private:
     bool m_fullscreen = false;
     bool m_updatingSlider = false;
 
-    // overlay 模式与自动隐藏状态
-    bool m_topLevelOverlay = true;
+    // 浮层与自动隐藏状态
     bool m_playerModeActive = false;
     bool m_autoHide = true;
     bool m_controlsRequested = true;
     bool m_overlaysVisible = false;
     int m_hideDelayMs = 2500;
     QTimer *m_overlayTimer = nullptr;
-    QWidget *m_hostWindow = nullptr;
     QPoint m_lastCursorPos;
     QElapsedTimer m_lastInteraction;
     bool m_hasTestCursor = false;
