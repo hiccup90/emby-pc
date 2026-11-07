@@ -44,6 +44,13 @@ public:
 
     QSize minimumSizeHint() const override;
 
+    // 性能采样（GUI 线程，普通计数器）：render() 被调用次数，以及 mpv 成功把一帧
+    // 提交进合成纹理的次数（FrameRenderer 返回 true）。resetRenderStats() 供
+    // PlayerController 每 2s 取增量。
+    quint64 renderCalls() const { return m_renderCalls; }
+    quint64 framesPresented() const { return m_framesPresented; }
+    void resetRenderStats();
+
     // 导出当前 D3D11/纹理/帧状态，供“帮助 → 导出诊断信息”使用。
     QString diagnosticSummary();
 
@@ -84,4 +91,6 @@ private:
     bool m_framePending = false;
     bool m_forceNextFrame = false;
     int m_mouseEventCount = 0;
+    quint64 m_renderCalls = 0;
+    quint64 m_framesPresented = 0;
 };

@@ -64,6 +64,12 @@ void VideoHost::requestFrame()
     update();
 }
 
+void VideoHost::resetRenderStats()
+{
+    m_renderCalls = 0;
+    m_framesPresented = 0;
+}
+
 void VideoHost::captureD3D11Device()
 {
 #ifdef Q_OS_WIN
@@ -101,6 +107,7 @@ void VideoHost::initialize(QRhiCommandBuffer *cb)
 
 void VideoHost::render(QRhiCommandBuffer *cb)
 {
+    ++m_renderCalls;
 #ifdef Q_OS_WIN
     captureD3D11Device();
 
@@ -135,6 +142,7 @@ void VideoHost::render(QRhiCommandBuffer *cb)
 
     if (shouldRender && m_frameRenderer
         && m_frameRenderer(reinterpret_cast<void *>(native.object), forceRedraw)) {
+        ++m_framesPresented;
         m_textureInitialized = true;
         return;
     }

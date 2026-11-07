@@ -221,6 +221,12 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     connect(m_playbackWatchdog, &QTimer::timeout, this,
             &PlayerController::handlePlaybackTimeout);
 
+    // 性能采样：每 2s 打印一行（renders/presented/vfps/dfps/drops/pixfmt/res），
+    // 用于对照 Emby Theater 的 GPU 占用；不改变任何渲染/解码参数。
+    m_perfTimer = new QTimer(this);
+    m_perfTimer->setInterval(2000);
+    connect(m_perfTimer, &QTimer::timeout, this, &PlayerController::logPerfSample);
+
     m_progressTimer = new QTimer(this);
     m_progressTimer->setInterval(10000); // T29：按规格 10 秒；pause/seek/切轨仍立即上报
     connect(m_progressTimer, &QTimer::timeout, this, [this]() {
@@ -292,9 +298,12 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         m_playbackFileLoaded = true;
         // 新片源从非暂停开始；重新同步暂停缓存，避免上一部片的暂停状态泄漏到熄屏判定。
         if (m_player)
-            m_paused = m_player->getPropertyString(QStringLiteral("pause"))
-                       == QLatin1String("yes");
+            m_paused = m_player->getPropertyString("pause") == QLatin1String("yes");
         updateDisplaySleepInhibition();
+        if (m_videoHost)
+            m_videoHost->resetRenderStats();
+        m_perfLastSampleMs = QDateTime::currentMSecsSinceEpoch();
+        m_perfTimer->start();
         if (m_playbackWatchdog)
             m_playbackWatchdog->stop();
         m_playerPage->setPlaying(true);
@@ -363,6 +372,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         }
         m_playbackFileLoaded = false;
         updateDisplaySleepInhibition();
+        m_perfTimer->stop();
         if (!m_embyItemId.isEmpty() && m_reporting) {
             reportPlaybackStopped();
             if (m_autoNextEpisode && m_episodeIndex >= 0
@@ -595,9 +605,11 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // 保留 size grip 与小屏初始尺寸收紧逻辑。
     const QSize uiMinimum = m_window->minimumSize();
     m_window->installEventFilter(this);
-    connect(m_window, &ui::MainWindow::playerModeChanged, this, [this](bool) {
+    connect(m_window, &ui::MainWindow::playerModeChanged, this, [this](bool enabled) {
         updatePlayerWindowChrome();
         updateDisplaySleepInhibition();
+        if (!enabled)
+            m_perfTimer->stop();
     });
     if (QCoreApplication *app = QCoreApplication::instance())
         app->installEventFilter(this);
@@ -869,6 +881,40 @@ void PlayerController::updateDisplaySleepInhibition()
     // 非 Windows 构建无此 API：保持空实现，字段置为未抑制。
     m_displaySleepInhibited = false;
 #endif
+}
+
+void PlayerController::logPerfSample()
+{
+    if (!m_player || !m_videoHost)
+        return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 interval = m_perfLastSampleMs > 0 ? now - m_perfLastSampleMs : 0;
+    m_perfLastSampleMs = now;
+    const quint64 renders = m_videoHost->renderCalls();
+    const quint64 presented = m_videoHost->framesPresented();
+    m_videoHost->resetRenderStats();
+
+    const auto read = [this](const char *name) {
+        const QString value = m_player->getPropertyString(name);
+        return value.isEmpty() ? QStringLiteral("-") : value;
+    };
+    const QString line =
+        QStringLiteral("perf: renders=%1 presented=%2 interval=%3 vfps=%4 dfps=%5 "
+                       "drops=%6 decDrops=%7 mistimed=%8 hwdec=%9 pixfmt=%10 res=%11x%12")
+            .arg(static_cast<qulonglong>(renders))
+            .arg(static_cast<qulonglong>(presented))
+            .arg(interval)
+            .arg(read("estimated-vf-fps"))
+            .arg(read("display-fps"))
+            .arg(read("vo-drop-frame-count"))
+            .arg(read("decoder-frame-drop-count"))
+            .arg(read("mistimed-frame-count"))
+            .arg(read("hwdec-current"))
+            .arg(read("video-params/pixelformat"))
+            .arg(read("video-params/w"))
+            .arg(read("video-params/h"));
+    qInfo().noquote() << line;
 }
 
 bool PlayerController::eventFilter(QObject *watched, QEvent *event)
@@ -1554,6 +1600,10 @@ void PlayerController::startPlaybackCandidate(int index)
     m_currentPlaybackUrl = m_playbackCandidates.at(index);
     m_playbackFileLoaded = false;
     updateDisplaySleepInhibition();
+    // 换候选不把上一段统计累计进同一条日志：停表并清零增量。
+    m_perfTimer->stop();
+    if (m_videoHost)
+        m_videoHost->resetRenderStats();
     // 候选可能跨 CDN host；重新确认该 URL 的 header（跨源为空，需要时重建 mpv）。
     if (m_emby && !m_embyItemId.isEmpty()
         && !ensurePlayer(m_emby->streamHeaderLines(QUrl(m_currentPlaybackUrl)))) {
@@ -1635,6 +1685,7 @@ void PlayerController::handlePlaybackFailure(const QString &reason)
         return;
     // 失败时 fileLoaded 必为 false；若上一部片仍处于抑制状态则在此放开。
     updateDisplaySleepInhibition();
+    m_perfTimer->stop();
     if (m_playbackWatchdog)
         m_playbackWatchdog->stop();
 
@@ -1751,6 +1802,7 @@ void PlayerController::leavePlaybackAfterFailure()
         m_window->setPlayerMode(false);
     updatePlayerWindowChrome();
     updateDisplaySleepInhibition();
+    m_perfTimer->stop();
     scheduleHomeRefresh(300);
 }
 
@@ -2268,6 +2320,7 @@ void PlayerController::clearEmbySession()
     m_hwdecFallbackStage = 0;
     m_autoHwdecNoticeShown = false;
     updateDisplaySleepInhibition();
+    m_perfTimer->stop();
     m_reporting = false;
 }
 

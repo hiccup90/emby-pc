@@ -123,6 +123,8 @@ private:
     void confirmHwdecFallback();
     // 依据播放页/播放中/暂停状态置位或恢复 ES_DISPLAY_REQUIRED（幂等）。
     void updateDisplaySleepInhibition();
+    // 每 2s 打印一行 renders/presented/fps/drop/video-params 性能采样。
+    void logPerfSample();
     QString sanitizedPlaybackUrl(const QString &urlString) const;
     void startEmbyPlayback(const QString &itemId, const QString &title,
                            const emby::MediaSourceInfo &source, const QString &playSessionId,
@@ -150,6 +152,9 @@ private:
     MpvPlayer *m_player = nullptr;
     emby::EmbyClient *m_emby = nullptr;
     QTimer *m_progressTimer = nullptr;
+    // 性能采样（2s）：只统计播放期间的 renders/presented/fps/drop。
+    QTimer *m_perfTimer = nullptr;
+    qint64 m_perfLastSampleMs = 0;
     QTimer *m_playbackWatchdog = nullptr;
     QStringList m_playbackCandidates;
     int m_playbackCandidateIndex = 0;
