@@ -15,6 +15,8 @@
 #include "ui/settingspage.h"
 
 #include <QAction>
+#include <QAbstractSpinBox>
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
@@ -29,10 +31,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMetaObject>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -43,11 +48,20 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QSysInfo>
+#include <QTextEdit>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
 #include <QWidget>
 #include <QWindow>
+
+#ifdef Q_OS_WIN
+// 熄屏抑制（SetThreadExecutionState）需要 windows.h；阻止它引入 min/max 宏。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <mpv/client.h>
 
@@ -264,6 +278,8 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     });
     connect(m_player, &MpvPlayer::durationChanged, this, [this](double) { updatePositionUi(); });
     connect(m_player, &MpvPlayer::pausedChanged, this, [this](bool paused) {
+        m_paused = paused;
+        updateDisplaySleepInhibition();
         m_playerPage->setPlaying(!paused);
         if (m_reporting && !m_embyItemId.isEmpty())
             reportPlaybackProgress(paused ? QStringLiteral("Pause") : QStringLiteral("Unpause"));
@@ -274,6 +290,11 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     });
     connect(m_player, &MpvPlayer::fileLoaded, this, [this]() {
         m_playbackFileLoaded = true;
+        // 新片源从非暂停开始；重新同步暂停缓存，避免上一部片的暂停状态泄漏到熄屏判定。
+        if (m_player)
+            m_paused = m_player->getPropertyString(QStringLiteral("pause"))
+                       == QLatin1String("yes");
+        updateDisplaySleepInhibition();
         if (m_playbackWatchdog)
             m_playbackWatchdog->stop();
         m_playerPage->setPlaying(true);
@@ -341,6 +362,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
             return;
         }
         m_playbackFileLoaded = false;
+        updateDisplaySleepInhibition();
         if (!m_embyItemId.isEmpty() && m_reporting) {
             reportPlaybackStopped();
             if (m_autoNextEpisode && m_episodeIndex >= 0
@@ -573,8 +595,10 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     // 保留 size grip 与小屏初始尺寸收紧逻辑。
     const QSize uiMinimum = m_window->minimumSize();
     m_window->installEventFilter(this);
-    connect(m_window, &ui::MainWindow::playerModeChanged, this,
-            [this](bool) { updatePlayerWindowChrome(); });
+    connect(m_window, &ui::MainWindow::playerModeChanged, this, [this](bool) {
+        updatePlayerWindowChrome();
+        updateDisplaySleepInhibition();
+    });
     if (QCoreApplication *app = QCoreApplication::instance())
         app->installEventFilter(this);
     m_window->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
@@ -603,6 +627,15 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
 
 PlayerController::~PlayerController()
 {
+    // 兜底恢复熄屏策略：析构时不能再依赖 isPlayerMode()/fileLoaded 推导状态。
+#ifdef Q_OS_WIN
+    if (m_displaySleepInhibited) {
+        SetThreadExecutionState(ES_CONTINUOUS);
+        m_displaySleepInhibited = false;
+        qInfo() << "display sleep inhibited" << false;
+    }
+#endif
+
     // T29/SYN-03：窗口关闭/Controller 析构时兜底上报 Stopped；aboutToQuit 和
     // MainWindow closeEvent 路径也会调用，reportPlaybackStopped() 自身有 m_reporting 防重。
     if (m_reporting)
@@ -813,8 +846,50 @@ void PlayerController::confirmHwdecFallback()
         qInfo() << "hardware fallback OSD shown";
 }
 
+void PlayerController::updateDisplaySleepInhibition()
+{
+#ifdef Q_OS_WIN
+    // 仅在“播放页 + 真正在播 + 未暂停”时阻止熄屏；暂停即放开。
+    const bool inhibit = m_window && m_window->isPlayerMode() && m_player
+                         && m_player->isReady() && m_playbackFileLoaded && !m_paused;
+    if (inhibit == m_displaySleepInhibited)
+        return;
+    const EXECUTION_STATE flags =
+        inhibit ? static_cast<EXECUTION_STATE>(ES_CONTINUOUS | ES_DISPLAY_REQUIRED
+                                               | ES_SYSTEM_REQUIRED)
+                : ES_CONTINUOUS;
+    if (SetThreadExecutionState(flags) == 0) {
+        // 调用失败（极少见）：保持缓存状态不变，下次事件再重试。
+        qWarning() << "display sleep inhibition call failed; want inhibited" << inhibit;
+        return;
+    }
+    m_displaySleepInhibited = inhibit;
+    qInfo() << "display sleep inhibited" << inhibit;
+#else
+    // 非 Windows 构建无此 API：保持空实现，字段置为未抑制。
+    m_displaySleepInhibited = false;
+#endif
+}
+
 bool PlayerController::eventFilter(QObject *watched, QEvent *event)
 {
+    // P2：播放页快捷键不依赖焦点 —— 应用级过滤器优先投递给 PlayerPage 的 KeyMap。
+    // 文本输入控件/弹出菜单在场时不吞键；handlePlayerKey 返回 false 时继续正常分发。
+    if (event->type() == QEvent::KeyPress && m_window && m_window->isPlayerMode()
+        && m_playerPage && m_playerPage->isVisible()
+        && !QApplication::activePopupWidget()) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        QWidget *focus = QApplication::focusWidget();
+        const bool textInput = qobject_cast<QLineEdit *>(focus)
+                               || qobject_cast<QTextEdit *>(focus)
+                               || qobject_cast<QPlainTextEdit *>(focus)
+                               || qobject_cast<QAbstractSpinBox *>(focus);
+        if (!textInput && m_playerPage->handlePlayerKey(keyEvent)) {
+            qInfo() << "PlayerController: key handled at app level" << keyEvent->key();
+            return true;
+        }
+    }
+
     // T29/SYN-03：窗口 closeEvent 先于对象析构；保证上报最后已知位置而不是 0。
     if (watched == m_window && event->type() == QEvent::Close) {
         if (m_reporting)
@@ -1478,6 +1553,7 @@ void PlayerController::startPlaybackCandidate(int index)
     m_playbackCandidateIndex = index;
     m_currentPlaybackUrl = m_playbackCandidates.at(index);
     m_playbackFileLoaded = false;
+    updateDisplaySleepInhibition();
     // 候选可能跨 CDN host；重新确认该 URL 的 header（跨源为空，需要时重建 mpv）。
     if (m_emby && !m_embyItemId.isEmpty()
         && !ensurePlayer(m_emby->streamHeaderLines(QUrl(m_currentPlaybackUrl)))) {
@@ -1557,6 +1633,8 @@ void PlayerController::handlePlaybackFailure(const QString &reason)
 {
     if (m_playbackFileLoaded)
         return;
+    // 失败时 fileLoaded 必为 false；若上一部片仍处于抑制状态则在此放开。
+    updateDisplaySleepInhibition();
     if (m_playbackWatchdog)
         m_playbackWatchdog->stop();
 
@@ -1672,6 +1750,7 @@ void PlayerController::leavePlaybackAfterFailure()
     if (m_window->isPlayerMode())
         m_window->setPlayerMode(false);
     updatePlayerWindowChrome();
+    updateDisplaySleepInhibition();
     scheduleHomeRefresh(300);
 }
 
@@ -2188,6 +2267,7 @@ void PlayerController::clearEmbySession()
     m_hwdecBadSinceMs = 0;
     m_hwdecFallbackStage = 0;
     m_autoHwdecNoticeShown = false;
+    updateDisplaySleepInhibition();
     m_reporting = false;
 }
 

@@ -121,6 +121,8 @@ private:
     // 观察 hwdec-current（去抖 1.5s 后才降级）；confirm 由复查定时器触发。
     void applyHardwareFallback(const QString &hwdec);
     void confirmHwdecFallback();
+    // 依据播放页/播放中/暂停状态置位或恢复 ES_DISPLAY_REQUIRED（幂等）。
+    void updateDisplaySleepInhibition();
     QString sanitizedPlaybackUrl(const QString &urlString) const;
     void startEmbyPlayback(const QString &itemId, const QString &title,
                            const emby::MediaSourceInfo &source, const QString &playSessionId,
@@ -168,6 +170,10 @@ private:
     qint64 m_hwdecBadSinceMs = 0;
     // auto 模式：mpv 自己回退软解时只提示一次（每部片源重置）。
     bool m_autoHwdecNoticeShown = false;
+    // 暂停缓存：由 pausedChanged 更新，fileLoaded 时与 mpv 的 pause 属性重新同步。
+    bool m_paused = false;
+    // 当前线程是否已置 ES_DISPLAY_REQUIRED（false=未抑制）。
+    bool m_displaySleepInhibited = false;
 
     QString m_currentSubtitle;
     bool m_surfaceAttached = false;
