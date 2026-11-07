@@ -6,11 +6,13 @@
 #include <QDebug>
 #include <QActionGroup>
 #include <climits>
+#include <QApplication>
 #include <QCursor>
 #include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHideEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
@@ -66,6 +68,7 @@ QPushButton *makeIconButton(Icon iconKind, const QString &tooltip, const QString
     button->setToolTip(tooltip);
     button->setAccessibleName(tooltip);
     button->setCursor(Qt::PointingHandCursor);
+    button->setFocusPolicy(Qt::NoFocus);
     return button;
 }
 
@@ -210,6 +213,8 @@ PlayerPage::PlayerPage(QWidget *parent)
 {
     setObjectName(QStringLiteral("PlayerPage"));
     setAttribute(Qt::WA_StyledBackground, true);
+    // P2：播放页是唯一键盘入口；默认 QWidget 不收焦点，KeyMap 会被按钮/滑杆抢走。
+    setFocusPolicy(Qt::StrongFocus);
 
     buildUi();
 
@@ -297,6 +302,7 @@ void PlayerPage::buildUi()
     m_seekSlider->setObjectName(QStringLiteral("SeekSlider"));
     m_seekSlider->setRange(0, 0);
     m_seekSlider->setCursor(Qt::PointingHandCursor);
+    m_seekSlider->setFocusPolicy(Qt::NoFocus);
     seekRow->addWidget(m_positionLabel);
     seekRow->addWidget(m_seekSlider, 1);
     seekRow->addWidget(m_durationLabel);
@@ -312,6 +318,7 @@ void PlayerPage::buildUi()
     m_playButton->setFixedSize(48, 48);
     m_playButton->setToolTip(QStringLiteral("播放 / 暂停"));
     m_playButton->setCursor(Qt::PointingHandCursor);
+    m_playButton->setFocusPolicy(Qt::NoFocus);
     m_prevButton = makeIconButton(Icon::Prev, QStringLiteral("上一集"), QStringLiteral("PrevButton"),
                                   m_controlBar);
     m_nextButton = makeIconButton(Icon::Next, QStringLiteral("下一集"), QStringLiteral("NextButton"),
@@ -340,6 +347,7 @@ void PlayerPage::buildUi()
     for (QPushButton *button : {m_subtitleButton, m_audioButton, m_statsButton}) {
         button->setFixedSize(36, 36);
         button->setIconSize(QSize(18, 18));
+        button->setFocusPolicy(Qt::NoFocus);
     }
     buttonRow->addWidget(m_subtitleButton);
     buttonRow->addWidget(m_audioButton);
@@ -354,6 +362,7 @@ void PlayerPage::buildUi()
     m_volumeSlider->setValue(80);
     m_volumeSlider->setFixedWidth(96);
     m_volumeSlider->setCursor(Qt::PointingHandCursor);
+    m_volumeSlider->setFocusPolicy(Qt::NoFocus);
     buttonRow->addWidget(m_volumeIcon);
     buttonRow->addWidget(m_volumeSlider);
     buttonRow->addSpacing(6);
@@ -497,6 +506,85 @@ void PlayerPage::resetWindowDrag()
     m_dragStarted = false;
 }
 
+bool PlayerPage::handlePlayerKey(QKeyEvent *event)
+{
+    if (!event || !m_playerModeActive)
+        return false;
+    if (QApplication::activeModalWidget())
+        return false;
+    // Ctrl/Alt/Meta 留给 QShortcut/菜单；Shift 是组合键的一部分（Left/Right ∓1s）。
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return false;
+
+    const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
+    switch (event->key()) {
+    case Qt::Key_Space:
+        emit playPauseRequested();
+        break;
+    case Qt::Key_Left:
+        emit seekRelativeRequested(shift ? -1 : -5);
+        break;
+    case Qt::Key_Right:
+        emit seekRelativeRequested(shift ? 1 : 5);
+        break;
+    case Qt::Key_J:
+        emit seekRelativeRequested(-10);
+        break;
+    case Qt::Key_L:
+        emit seekRelativeRequested(10);
+        break;
+    case Qt::Key_Up:
+        emit volumeStepRequested(5);
+        break;
+    case Qt::Key_Down:
+        emit volumeStepRequested(-5);
+        break;
+    case Qt::Key_PageUp:
+        emit volumeStepRequested(10);
+        break;
+    case Qt::Key_PageDown:
+        emit volumeStepRequested(-10);
+        break;
+    case Qt::Key_M:
+        emit muteToggleRequested();
+        break;
+    case Qt::Key_F:
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        emit fullscreenRequested();
+        break;
+    case Qt::Key_N:
+        emit nextEpisodeRequested();
+        break;
+    case Qt::Key_P:
+        emit previousEpisodeRequested();
+        break;
+    case Qt::Key_I:
+        emit statsRequested();
+        break;
+    case Qt::Key_Backspace:
+        emit backRequested();
+        break;
+    default:
+        return false;
+    }
+
+    // 与鼠标操作一致：消费后重置自动隐藏计时；不在这里 showOverlays（键盘操作
+    // 不应把刚隐藏的控制条弹出来）。
+    m_lastInteraction.restart();
+    if (m_autoHide && m_playerModeActive)
+        startAutoHideTimer();
+    event->accept();
+    return true;
+}
+
+void PlayerPage::keyPressEvent(QKeyEvent *event)
+{
+    if (handlePlayerKey(event))
+        return;
+    QWidget::keyPressEvent(event);
+}
+
 void PlayerPage::paintEvent(QPaintEvent *event)
 {
     QWidget::paintEvent(event);
@@ -581,6 +669,7 @@ void PlayerPage::showEvent(QShowEvent *event)
         showOverlays();
         if (m_autoHide)
             startAutoHideTimer();
+        setFocus(Qt::OtherFocusReason);
     }
 }
 
@@ -730,6 +819,7 @@ void PlayerPage::setPlayerModeActive(bool active)
             showOverlays();
             if (m_autoHide)
                 startAutoHideTimer();
+            setFocus(Qt::OtherFocusReason);
         }
         return;
     }
@@ -745,6 +835,7 @@ void PlayerPage::setPlayerModeActive(bool active)
             startAutoHideTimer();
         else
             stopAutoHideTimer();
+        setFocus(Qt::OtherFocusReason);
     } else {
         stopAutoHideTimer();
         hideOverlays();
@@ -864,6 +955,7 @@ void PlayerPage::attachVideoSurface(QWidget *surface)
         return;
     }
     m_surface = surface;
+    m_surface->setFocusPolicy(Qt::NoFocus);
     m_surface->installEventFilter(this); // T46：视频面空白区拖动/按压兜底
     m_surfaceStack->addWidget(surface);
     m_surfaceStack->setCurrentWidget(surface);
@@ -1015,6 +1107,7 @@ void PlayerPage::showCompactMenu(QPushButton *button)
     QAction *stats = menu.addAction(QStringLiteral("统计"));
     QAction *fullscreen = menu.addAction(QStringLiteral("全屏"));
     QAction *chosen = menu.exec(button->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+    setFocus(Qt::OtherFocusReason);
     m_lastInteraction.restart();
     if (m_autoHide)
         startAutoHideTimer();
@@ -1041,6 +1134,7 @@ void PlayerPage::showTrackMenu(QPushButton *button, const QList<TrackInfo> &trac
             startAutoHideTimer();
         showOverlays();
         raiseOverlays();
+        setFocus(Qt::OtherFocusReason);
         qInfo() << "PlayerPage: popup closed, overlay raised";
     };
     if (tracks.isEmpty()) {

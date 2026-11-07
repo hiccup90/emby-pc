@@ -30,10 +30,8 @@ class PlayerPage;
 
 // 播放控制层：把 libmpv（render API → QRhiWidget 的 D3D11 纹理）接到 ui::PlayerPage。
 //
-// 两种来源：
-//  - 本地文件/文件夹（文件菜单）；
-//  - Emby 条目（T8）：PlaybackInfo -> 直连 URL + Authorization 头 -> mpv，
-//    并上报 Playing/Progress/Stopped。
+// P2 起只保留 Emby 条目（T8）：PlaybackInfo -> 直连 URL + Authorization 头 -> mpv，
+// 并上报 Playing/Progress/Stopped；本地文件播放已删除。
 class PlayerController : public QObject
 {
     Q_OBJECT
@@ -42,7 +40,7 @@ public:
                               QObject *parent = nullptr);
     ~PlayerController() override;
 
-    // 在 ui::MainWindow 的菜单栏上安装“文件”菜单（打开文件/打开文件夹/退出）。
+    // P2：只安装应用级 QAction（退出 Ctrl+Q、导出诊断），不建菜单栏。
     void installMenus();
 
     // T17 自测：从 mpv track-list JSON 解析可用音轨，过滤 codec 为空/非 audio 的轨道。
@@ -65,10 +63,6 @@ public:
     int episodeQueueSizeForTest() const { return m_episodeQueue.size(); }
     int episodeIndexForTest() const { return m_episodeIndex; }
 
-public slots:
-    void openFile();
-    void openFolder();
-
 private:
     struct EpisodeEntry {
         QString itemId;
@@ -83,7 +77,6 @@ private:
         qint64 fetchedAtMs = 0;
     };
 
-    void playFiles(const QStringList &files, int startIndex = 0);
     bool ensurePlayer(const QStringList &httpHeaderLines = QStringList());
     void updatePositionUi();
     void showStatus(const QString &message, int timeoutMs = 3000);
@@ -101,8 +94,6 @@ private:
     void applyMpvSettings();
     QString normalizedSubtitleLanguage() const;
     void updateHardwareInfo();
-    bool isDuplicateKeyForward(const QString &name, int source);
-    void forwardKeyPressToMpv(const QString &name);
     void logMpvState(const QString &reason);
     void exportDiagnostics();
     QString diagnosticSummary();
@@ -127,7 +118,6 @@ private:
     void showPlaybackErrorDialog(const QString &code, const QString &detail, bool retryable);
     void retryPlaybackAfterFailure();
     void leavePlaybackAfterFailure();
-    void resetLocalPlaybackState();
     void applyHardwareFallback(const QString &hwdec);
     QString sanitizedPlaybackUrl(const QString &urlString) const;
     void startEmbyPlayback(const QString &itemId, const QString &title,
@@ -169,9 +159,6 @@ private:
     qint64 m_playbackWaitStartedMs = 0;
     QString m_lastPlaybackErrorCode;
     QString m_lastPlaybackErrorDetail;
-    QStringList m_localFiles;
-    int m_localStartIndex = 0;
-    bool m_localPlayback = false;
     bool m_autoResume = true;
     QString m_hwdecMode = QStringLiteral("auto");
     int m_hwdecFallbackStage = 0;
@@ -195,9 +182,6 @@ private:
     QString m_subtitleLanguage;
     int m_requestSerial = 0;
     int m_audioSwitchSerial = 0;
-    QString m_lastForwardedKeyName;
-    qint64 m_lastForwardedKeyMs = 0;
-    int m_lastForwardedKeySource = -1;
     double m_lastKnownPositionSeconds = 0.0;
     double m_pendingSeekSeconds = 0.0;
     qint64 m_lastWindowResizeLogMs = 0;

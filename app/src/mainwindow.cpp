@@ -15,7 +15,6 @@
 #include "ui/settingspage.h"
 
 #include <QAction>
-#include <QApplication>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
@@ -23,8 +22,6 @@
 #include <QDir>
 #include <QEvent>
 #include <QFile>
-#include <QFileDialog>
-#include <QFileInfo>
 #include <QAbstractButton>
 #include <QEventLoop>
 #include <QPushButton>
@@ -32,7 +29,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
 #include <QMetaObject>
@@ -108,24 +104,6 @@ bool copyRedactedLog(const QString &source, const QString &target)
     return true;
 }
 
-QStringList videoFilesInFolder(const QString &folder)
-{
-    static const QStringList filters = {
-        QStringLiteral("*.mkv"), QStringLiteral("*.mp4"), QStringLiteral("*.m4v"),
-        QStringLiteral("*.avi"), QStringLiteral("*.mov"), QStringLiteral("*.ts"),
-        QStringLiteral("*.m2ts"), QStringLiteral("*.webm"), QStringLiteral("*.wmv")
-    };
-
-    QDir dir(folder);
-    const QFileInfoList entries =
-        dir.entryInfoList(filters, QDir::Files | QDir::Readable, QDir::Name);
-    QStringList files;
-    files.reserve(entries.size());
-    for (const QFileInfo &info : entries)
-        files.append(info.absoluteFilePath());
-    return files;
-}
-
 qint64 ticksFromSeconds(double seconds)
 {
     return static_cast<qint64>(qMax(0.0, seconds) * 10000000.0);
@@ -147,63 +125,6 @@ QString displayTrackTitle(const QJsonObject &track, int id)
     if (!codec.isEmpty())
         title += QStringLiteral(" · %1").arg(codec);
     return title;
-}
-
-QString mpvKeyNameFromEvent(const QKeyEvent *event)
-{
-    if (!event)
-        return {};
-
-    // Qt 自己的快捷键优先：Esc/F11 由 ui::MainWindow 处理，不转发给 mpv，
-    // 避免同一次按键既退出全屏又触发 mpv 的 ESC 绑定。
-    const int key = event->key();
-    if (key == Qt::Key_Escape || key == Qt::Key_F11)
-        return {};
-
-    // Ctrl/Alt 组合留给 Qt（文件菜单等），只转发无修饰键或 Shift 组合。
-    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
-        return {};
-
-    QString base;
-    switch (key) {
-    case Qt::Key_Space: base = QStringLiteral("SPACE"); break;
-    case Qt::Key_Left: base = QStringLiteral("LEFT"); break;
-    case Qt::Key_Right: base = QStringLiteral("RIGHT"); break;
-    case Qt::Key_Up: base = QStringLiteral("UP"); break;
-    case Qt::Key_Down: base = QStringLiteral("DOWN"); break;
-    case Qt::Key_Return:
-    case Qt::Key_Enter: base = QStringLiteral("ENTER"); break;
-    case Qt::Key_Backspace: base = QStringLiteral("BACKSPACE"); break;
-    case Qt::Key_Delete: base = QStringLiteral("DELETE"); break;
-    case Qt::Key_Insert: base = QStringLiteral("INSERT"); break;
-    case Qt::Key_Home: base = QStringLiteral("HOME"); break;
-    case Qt::Key_End: base = QStringLiteral("END"); break;
-    case Qt::Key_PageUp: base = QStringLiteral("PGUP"); break;
-    case Qt::Key_PageDown: base = QStringLiteral("PGDN"); break;
-    case Qt::Key_Tab: base = QStringLiteral("TAB"); break;
-    default:
-        break;
-    }
-
-    if (base.isEmpty()) {
-        if (key >= Qt::Key_A && key <= Qt::Key_Z)
-            base = QString(QChar('a' + key - Qt::Key_A));
-        else if (key >= Qt::Key_0 && key <= Qt::Key_9)
-            base = QString(QChar('0' + key - Qt::Key_0));
-        else if (key >= Qt::Key_F1 && key <= Qt::Key_F10)
-            base = QStringLiteral("F%1").arg(key - Qt::Key_F1 + 1);
-        else {
-            const QString text = event->text();
-            if (text.size() == 1 && text.at(0).isPrint())
-                base = text.toLower();
-        }
-    }
-    if (base.isEmpty())
-        return {};
-
-    if (event->modifiers() & Qt::ShiftModifier)
-        return QStringLiteral("Shift+") + base;
-    return base;
 }
 
 } // namespace
@@ -272,8 +193,6 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     connect(m_videoHost, &VideoHost::d3d11DeviceReady, this,
             &PlayerController::handleRenderDeviceReady, Qt::QueuedConnection);
 
-    // 键盘继续走 Qt 的 eventFilter（mpvKeyNameFromEvent → keypress），render API
-    // 下没有 VO 窗口，不需要再激活/回焦 mpv 子窗口。
     preparePlayerOverlays();
 
     // T48：Emby 候选启动看门狗（single-shot）。首候选 30s；start-file 到达后
@@ -372,7 +291,7 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
     connect(m_player, &MpvPlayer::loadStarted, this, [this](quint64 generation) {
         if (m_playbackFileLoaded || m_playbackFailurePrompted
             || m_playbackCandidates.isEmpty())
-            return; // 本地播放/已加载/已失败：不动看门狗。
+            return; // 已加载/已失败：不动看门狗。
         if (generation != m_candidateLoadGeneration) {
             qInfo() << "PlayerController::start-file ignored (stale generation)"
                     << generation << "current" << m_candidateLoadGeneration;
@@ -434,10 +353,6 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         if (!m_playbackFileLoaded) {
             if (!m_embyItemId.isEmpty() && !m_playbackCandidates.isEmpty()) {
                 tryNextPlaybackCandidate(QStringLiteral("fatal mpv error: %1").arg(message));
-                return;
-            }
-            if (m_localPlayback && !m_localFiles.isEmpty()) {
-                handlePlaybackFailure(QStringLiteral("local mpv fatal error: %1").arg(message));
                 return;
             }
         }
@@ -517,6 +432,42 @@ PlayerController::PlayerController(ui::MainWindow *window, ui::PlayerPage *playe
         m_player->seekAbsolute(static_cast<double>(positionMs) / 1000.0);
         if (m_reporting && !m_embyItemId.isEmpty())
             reportPlaybackProgress(QStringLiteral("Seek"), positionMs);
+    });
+    connect(m_playerPage, &ui::PlayerPage::seekRelativeRequested, this,
+            [this](int seconds) {
+                if (!m_player || !m_player->isReady())
+                    return;
+                // seek 是异步命令：先按“当前位置 + 步长”算出目标，供进度上报。
+                const double target = qMax(0.0, m_player->position() + seconds);
+                m_player->seekRelative(seconds);
+                qInfo() << "PlayerController: seek relative" << seconds
+                        << "target" << target;
+                if (m_reporting && !m_embyItemId.isEmpty())
+                    reportPlaybackProgress(QStringLiteral("Seek"),
+                                           qRound64(target * 1000.0));
+            });
+    connect(m_playerPage, &ui::PlayerPage::volumeStepRequested, this,
+            [this](int delta) {
+                if (!m_player || !m_player->isReady())
+                    return;
+                m_player->addVolume(delta);
+                // P2-2 历史坑：mpv 的 volume 异步生效；50ms 后从 mpv 回填 UI。
+                // PlayerPage::setVolume 内部 blockSignals，不会回环到 mpv。
+                QPointer<PlayerController> self(this);
+                QTimer::singleShot(50, this, [self]() {
+                    if (!self || !self->m_player || !self->m_player->isReady()
+                        || !self->m_playerPage)
+                        return;
+                    bool ok = false;
+                    const double volume =
+                        self->m_player->getPropertyString("volume").toDouble(&ok);
+                    if (ok)
+                        self->m_playerPage->setVolume(qRound(volume));
+                });
+            });
+    connect(m_playerPage, &ui::PlayerPage::muteToggleRequested, this, [this]() {
+        if (m_player && m_player->isReady())
+            m_player->toggleMute();
     });
     connect(m_playerPage, &ui::PlayerPage::volumeChanged, this, [this](int volume) {
         if (m_player->isReady())
@@ -757,20 +708,6 @@ bool PlayerController::eventFilter(QObject *watched, QEvent *event)
             reportPlaybackStopped(true);
     }
 
-    // 键盘转发：render API 下视频没有独立的 VO 窗口，Qt 主窗口把按键转成
-    // mpv `keypress`，空格/方向键/F/n/p/i 等 input.conf 绑定才会生效。
-    // Esc/F11 留给 Qt 自己的快捷键；Ctrl/Alt 组合也不转发。
-    // T63/A-P1-20：同时安装在 QApplication 和 MainWindow 上的过滤器会对同一
-    // KeyPress 各转发一次；只允许 app 层转发，消除空格/F/N/P 的双触发。
-    if (event->type() == QEvent::KeyPress && watched == QCoreApplication::instance()
-        && m_window && m_window->isPlayerMode() && m_window->isActiveWindow() && m_player
-        && m_player->isReady() && !QApplication::activeModalWidget()) {
-        auto *keyEvent = static_cast<QKeyEvent *>(event);
-        const QString keyName = mpvKeyNameFromEvent(keyEvent);
-        if (!keyName.isEmpty())
-            forwardKeyPressToMpv(keyName);
-    }
-
     if (watched == m_window && event->type() == QEvent::WindowStateChange)
         updatePlayerWindowChrome();
 
@@ -841,18 +778,8 @@ void PlayerController::connectUiPlaybackSignals()
 
 void PlayerController::installMenus()
 {
-    // T40：不再创建 QMenuBar；保留文件动作的快捷键和诊断导出 QAction，
-    // 供设置页按钮触发。Ctrl+O / Ctrl+Shift+O / Ctrl+Q 仍然可用。
-    auto *openFileAction = new QAction(tr("打开文件…"), m_window);
-    openFileAction->setShortcut(QKeySequence::Open);
-    m_window->addAction(openFileAction);
-    connect(openFileAction, &QAction::triggered, this, &PlayerController::openFile);
-
-    auto *openFolderAction = new QAction(tr("打开文件夹（作为播放列表）…"), m_window);
-    openFolderAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
-    m_window->addAction(openFolderAction);
-    connect(openFolderAction, &QAction::triggered, this, &PlayerController::openFolder);
-
+    // P2：本地文件播放已删除（Ctrl+O / Ctrl+Shift+O 不再存在）；只保留
+    // Ctrl+Q 退出与设置页使用的导出诊断 QAction，不创建 QMenuBar。
     auto *quitAction = new QAction(tr("退出"), m_window);
     quitAction->setShortcut(QKeySequence::Quit);
     m_window->addAction(quitAction);
@@ -862,87 +789,6 @@ void PlayerController::installMenus()
     exportAction->setObjectName(QStringLiteral("ExportDiagnosticsAction"));
     m_window->addAction(exportAction);
     connect(exportAction, &QAction::triggered, this, &PlayerController::exportDiagnostics);
-}
-
-void PlayerController::openFile()
-{
-    const QString file = QFileDialog::getOpenFileName(
-        m_window, tr("打开视频"), QString(),
-        tr("视频文件 (*.mkv *.mp4 *.m4v *.avi *.mov *.ts *.m2ts *.webm *.wmv);;所有文件 (*.*)"));
-    if (file.isEmpty())
-        return;
-    playFiles({file}, 0);
-}
-
-void PlayerController::openFolder()
-{
-    const QString folder = QFileDialog::getExistingDirectory(m_window, tr("选择文件夹"));
-    if (folder.isEmpty())
-        return;
-    const QStringList files = videoFilesInFolder(folder);
-    if (files.isEmpty()) {
-        QMessageBox::information(m_window, tr("打开文件夹"),
-                                 tr("这个文件夹里没有找到视频文件。"));
-        return;
-    }
-    playFiles(files, 0);
-}
-
-void PlayerController::playFiles(const QStringList &files, int startIndex)
-{
-    if (files.isEmpty())
-        return;
-
-    if (!m_embyItemId.isEmpty() || m_reporting)
-        clearEmbySession();
-
-    // T65：本地播放不再携带旧 Emby Authorization（空值 setter 不含 token）。
-    if (m_player && m_player->isReady() && !m_player->httpHeaderLines().isEmpty())
-        m_player->clearHttpHeaderFields();
-    if (!ensurePlayer())
-        return;
-    if (m_playbackWatchdog)
-        m_playbackWatchdog->stop();
-    m_playbackCandidates.clear();
-    m_playbackCandidateIndex = 0;
-    m_candidateLoadGeneration = 0;
-    m_currentPlaybackUrl.clear();
-    m_playbackFileLoaded = false;
-    m_playbackFailurePrompted = false;
-    m_playbackRetryCount = 0;
-    m_localPlayback = true;
-    m_localFiles = files;
-    m_localStartIndex = qBound(0, startIndex, static_cast<int>(files.size()) - 1);
-    m_lastKnownPositionSeconds = 0.0;
-
-    const QFileInfo firstInfo(files.first());
-    m_currentSubtitle = tr("本地播放 · %1 个文件 · %2")
-                            .arg(files.size())
-                            .arg(firstInfo.absolutePath());
-    m_player->loadPlaylist(files, qBound(0, startIndex, static_cast<int>(files.size()) - 1));
-    // 本地播放的 generation 只用于诊断；endReached 的陈旧过滤只对 Emby 候选生效。
-    m_candidateLoadGeneration = m_player->loadGeneration();
-    qInfo() << "PlayerController::local loadfile issued; generation"
-            << m_candidateLoadGeneration << "files" << files.size()
-            << "startIndex" << m_localStartIndex;
-    if (m_playbackWatchdog) {
-        m_playbackWaitStartedMs = QDateTime::currentMSecsSinceEpoch();
-        m_playbackWatchdog->start(15000);
-    }
-    if (m_playerPage) {
-        const bool multiple = files.size() > 1;
-        m_playerPage->setEpisodeNavigationEnabled(multiple && startIndex > 0,
-                                                  multiple && startIndex + 1 < files.size());
-    }
-    m_player->setPropertyString("force-media-title", firstInfo.fileName());
-    showPlayerPage();
-    m_playerPage->setEpisodeInfo(firstInfo.fileName(), m_currentSubtitle);
-    m_playerPage->setPlaying(true);
-    m_playerPage->setVolume(m_playerPage->volume());
-    ensurePlayerControlsVisible();
-
-    m_window->setWindowTitle(QStringLiteral("Emby PC — %1").arg(firstInfo.fileName()));
-    showStatus(tr("已加载 %1 个文件").arg(files.size()), 3000);
 }
 
 bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
@@ -1023,10 +869,10 @@ void PlayerController::handleRenderDeviceReady(quintptr device)
     QString error;
     if (!m_player->attachRenderDevice(device, &error)) {
         qWarning() << "PlayerController: attach D3D11 render device failed" << error;
-        // 正在起播（已有 item/本地文件/候选）才走失败弹窗；否则只提示。
+        // 正在起播（已有 item/候选）才走失败弹窗；否则只提示。
         const bool playbackStarting =
             !m_playbackFileLoaded
-            && (!m_embyItemId.isEmpty() || m_localPlayback || !m_playbackCandidates.isEmpty());
+            && (!m_embyItemId.isEmpty() || !m_playbackCandidates.isEmpty());
         if (playbackStarting)
             handlePlaybackFailure(tr("D3D11 渲染上下文创建失败：%1").arg(error));
         else
@@ -1070,7 +916,7 @@ void PlayerController::armRenderDeviceWaitDiagnostic()
 void PlayerController::onDetailPlayRequested(const QString &itemId, int season, int episode)
 {
     if (!m_window->hasSession() || !m_emby) {
-        showStatus(tr("未登录 Emby，无法播放该条目（可先用文件菜单播放本地视频）"), 4000);
+        showStatus(tr("未登录 Emby，无法播放该条目"), 4000);
         return;
     }
 
@@ -1398,9 +1244,6 @@ void PlayerController::handlePlaybackInfo(const QString &itemId, const QString &
     qInfo() << "PlaybackInfo: resume startPositionTicks=" << startPositionTicks
             << "autoResume=" << m_autoResume << "duration=" << source->runTimeTicks;
 
-    m_localPlayback = false;
-    m_localFiles.clear();
-    m_localStartIndex = 0;
     m_playbackRetryCount = 0;
 
     const QString playMethod = source->supportsDirectPlay
@@ -1559,10 +1402,10 @@ void PlayerController::handlePlaybackTimeout()
 {
     if (m_playbackFileLoaded)
         return;
-    if (m_embyItemId.isEmpty() && !m_localPlayback)
+    if (m_embyItemId.isEmpty())
         return;
     qWarning() << "PlayerController::playback watchdog no file-loaded item"
-               << m_embyItemId << "local=" << m_localPlayback
+               << m_embyItemId
                << "waitedMs" << playbackWaitMs()
                << "generation" << m_candidateLoadGeneration
                << "currentGeneration" << (m_player ? m_player->loadGeneration() : 0)
@@ -1606,9 +1449,7 @@ void PlayerController::handlePlaybackFailure(const QString &reason)
     mpvError.replace(tokenPattern, QStringLiteral("\\1<redacted>"));
     const QString httpStatus = m_player ? m_player->getPropertyString("http-status") : QString();
     QString code = QStringLiteral("PLAYBACK_FAILED");
-    if (m_localPlayback)
-        code = QStringLiteral("LOCAL_FILE_ERROR");
-    else if (httpStatus == QLatin1String("403"))
+    if (httpStatus == QLatin1String("403"))
         code = QStringLiteral("HTTP_403");
     else if (httpStatus == QLatin1String("404"))
         code = QStringLiteral("HTTP_404");
@@ -1687,12 +1528,6 @@ void PlayerController::showPlaybackErrorDialog(const QString &code, const QStrin
 void PlayerController::retryPlaybackAfterFailure()
 {
     m_playbackFailurePrompted = false;
-    if (m_localPlayback && !m_localFiles.isEmpty()) {
-        const int retryCount = m_playbackRetryCount;
-        playFiles(m_localFiles, m_localStartIndex);
-        m_playbackRetryCount = retryCount;
-        return;
-    }
     if (!m_playbackCandidates.isEmpty()) {
         if (!m_reporting && !m_embyItemId.isEmpty())
             reportPlaybackStart();
@@ -1713,7 +1548,6 @@ void PlayerController::leavePlaybackAfterFailure()
     if (m_reporting)
         reportPlaybackStopped(false);
     clearEmbySession();
-    resetLocalPlaybackState();
     if (m_playerPage)
         m_playerPage->setPlaying(false);
     if (m_window->isFullScreen())
@@ -1722,14 +1556,6 @@ void PlayerController::leavePlaybackAfterFailure()
         m_window->setPlayerMode(false);
     updatePlayerWindowChrome();
     scheduleHomeRefresh(300);
-}
-
-void PlayerController::resetLocalPlaybackState()
-{
-    m_localPlayback = false;
-    m_localFiles.clear();
-    m_localStartIndex = 0;
-    m_playbackWaitStartedMs = 0;
 }
 
 void PlayerController::showPlayerPage()
@@ -1934,31 +1760,6 @@ void PlayerController::scheduleHomeRefresh(int delayMs)
         // 播放停止/返回首页后重新拉 Resume；navigateTo(Home) 会在首页重新 fetchHome。
         m_window->navigateTo(ui::MainWindow::Page::Home);
     });
-}
-
-bool PlayerController::isDuplicateKeyForward(const QString &name, int source)
-{
-    if (name.isEmpty())
-        return true;
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // 只抑制“另一个来源”在极短时间内的同名按键；同一来源的自动重复要放行。
-    if (name == m_lastForwardedKeyName && source != m_lastForwardedKeySource
-        && now - m_lastForwardedKeyMs < 60) {
-        return true;
-    }
-    m_lastForwardedKeyName = name;
-    m_lastForwardedKeyMs = now;
-    m_lastForwardedKeySource = source;
-    return false;
-}
-
-void PlayerController::forwardKeyPressToMpv(const QString &name)
-{
-    if (!m_player || !m_player->isReady() || isDuplicateKeyForward(name, 0))
-        return;
-    m_player->command({QStringLiteral("keypress"), name});
-    if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_INPUT"))
-        qInfo() << "forward key to mpv (qt)" << name;
 }
 
 void PlayerController::preparePlayerOverlays()
@@ -2240,7 +2041,7 @@ void PlayerController::clearEmbySession()
 {
     if (m_reporting)
         reportPlaybackStopped();
-    // T65/A-P0-02：logout/切账号/本地播放统一清掉 mpv 旧 Authorization 头。
+    // T65/A-P0-02：logout/切账号统一清掉 mpv 旧 Authorization 头。
     if (m_player && m_player->isReady())
         m_player->clearHttpHeaderFields();
     m_progressTimer->stop();

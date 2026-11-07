@@ -105,24 +105,11 @@ bool loadApi(QString *error)
     return true;
 }
 
+// P2：键盘统一由 PlayerPage 的 KeyMap 处理，不再给 mpv 写键位（否则同一按键
+// 既进 KeyMap 又进 mpv，Space/N/P 会双触发）。这里只保留鼠标中键探针。
 const char kInputConf[] =
-    "SPACE      cycle pause\n"
-    "LEFT       seek -5\n"
-    "RIGHT      seek 5\n"
-    "Shift+LEFT seek -1\n"
-    "Shift+RIGHT seek 1\n"
-    "UP         add volume 5\n"
-    "DOWN       add volume -5\n"
-    "n          script-message app-next-episode\n"
-    "p          script-message app-prev-episode\n"
-    "i          script-binding stats/display-stats-toggle\n"
-    "f          script-message app-toggle-fullscreen\n"
-    "ESC        script-message app-exit-fullscreen\n"
-    // 用中键做探针，避免覆盖 OSC 的左键点击绑定。
     "MBTN_MID script-message app-mouse-probe\n";
-// spike/render-d3d11：双击不再经 mpv `mouse ... double` 转发，改由 VideoHost
-// 直接把双击交给 Qt（PlayerPage::fullscreenRequested），所以这里删掉了
-// MBTN_LEFT_DBL 绑定，避免“同一手势两套全屏状态机”。
+// 双击不绑定：由 VideoHost 直接交给 Qt（PlayerPage::fullscreenRequested）。
 
 QString writeInputConf()
 {
@@ -213,11 +200,6 @@ void sanitizeExistingMpvLog()
 }
 
 } // namespace
-
-QString MpvPlayer::inputConfForTest()
-{
-    return QString::fromUtf8(kInputConf);
-}
 
 MpvPlayer::MpvPlayer(QObject *parent)
     : QObject(parent)
@@ -715,6 +697,11 @@ void MpvPlayer::loadPlaylistNow(const QStringList &files, int startIndex)
 void MpvPlayer::togglePause()
 {
     command({QStringLiteral("cycle"), QStringLiteral("pause")});
+}
+
+void MpvPlayer::toggleMute()
+{
+    command({QStringLiteral("cycle"), QStringLiteral("mute")});
 }
 
 void MpvPlayer::seekRelative(double seconds)

@@ -7,6 +7,7 @@
 #include <QWidget>
 
 class QEvent;
+class QKeyEvent;
 class QLabel;
 class QPaintEvent;
 class QPushButton;
@@ -24,8 +25,9 @@ class VideoHostPlaceholder;
 // attachVideoSurface() 传入（Windows 下是 mpv render API 的 QRhiWidget 视频面）。
 //
 // 本类只发信号，不直接调用 libmpv：playPauseRequested / previousEpisodeRequested /
-// nextEpisodeRequested / seekRequested / subtitleTrackSelected / audioTrackSelected /
-// fullscreenRequested / volumeChanged —— 由播放控制层连接。
+// nextEpisodeRequested / seekRequested / seekRelativeRequested / volumeStepRequested /
+// muteToggleRequested / subtitleTrackSelected / audioTrackSelected / fullscreenRequested /
+// volumeChanged —— 由播放控制层连接。
 class PlayerPage : public QWidget
 {
     Q_OBJECT
@@ -78,6 +80,10 @@ public:
     bool windowDragStartedForTest() const { return m_dragStarted; }
     void refreshOverlayGeometry();
 
+    // P2：唯一键盘入口（由 keyPressEvent 调用）。手写 KeyMap，不认识/守卫不满足
+    // 的键返回 false 交给 Qt；Esc/F11 仍由 ui::MainWindow 的 QShortcut 处理。
+    bool handlePlayerKey(QKeyEvent *event);
+
     // P2 后浮层是页面内子控件，恒为 false；保留签名给 demo（批次 4 删除）。
     bool usesTopLevelOverlay() const { return false; }
     bool overlaysVisible() const { return m_overlaysVisible; }
@@ -91,6 +97,10 @@ signals:
     void previousEpisodeRequested();
     void nextEpisodeRequested();
     void seekRequested(qint64 positionMs);
+    // P2 KeyMap：相对 seek（秒，可负）与音量步进（±5/±10）。由 PlayerController 落点。
+    void seekRelativeRequested(int seconds);
+    void volumeStepRequested(int delta);
+    void muteToggleRequested();
     void subtitleTrackSelected(const QString &trackId);
     void audioTrackSelected(const QString &trackId);
     void statsRequested();
@@ -98,6 +108,7 @@ signals:
     void volumeChanged(int volume);
 
 protected:
+    void keyPressEvent(QKeyEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;

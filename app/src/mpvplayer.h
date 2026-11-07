@@ -34,7 +34,7 @@ public:
     // T63/A-P0-02：不要在运行中设置 http-header-fields（mpv 日志会记录 token）。
     // 头变化时由 Controller 用 reinitialize 在 log-file 之前重新注入。
     const QStringList &httpHeaderLines() const { return m_httpHeaderLines; }
-    // 清空运行时 http-header-fields（空值不含 token；用于本地播放/退出登录）。
+    // 清空运行时 http-header-fields（空值不含 token；用于退出登录/清空会话）。
     bool clearHttpHeaderFields();
     bool reinitialize(quintptr renderDevice, const QStringList &httpHeaderLines, QString *error);
     void shutdown();
@@ -42,16 +42,13 @@ public:
     // T63/A-P0-10：hwdec 配置（d3d11va / auto-safe / no），初始化前设置。
     void setHardwareDecoderMode(const QString &mode) { m_hwdecMode = mode; }
     QString hardwareDecoderMode() const { return m_hwdecMode; }
-    // T63 自测：input.conf 的 N/P/I/F/ESC 绑定（不启动 mpv；双击已移到 Qt 侧）。
-    static QString inputConfForTest();
-
     // spike/render-d3d11：Qt/QRhi 的 ID3D11Device 就绪（或换了设备）时挂接
     // mpv_render_context。重复调用同一设备是 no-op。
     bool attachRenderDevice(quintptr renderDevice, QString *error = nullptr);
     bool hasRenderContext() const { return m_renderContext != nullptr; }
     quintptr renderDevice() const { return m_renderDevice; }
 
-    // 每次 loadPlaylist（候选/本地片源）分配一个自增 generation；deferred 的
+    // 每次 loadPlaylist（Emby 候选）分配一个自增 generation；deferred 的
     // loadfile 也先占用，用于过滤换候选后到达的上一条目 END_FILE。
     quint64 loadGeneration() const { return m_loadGeneration; }
 
@@ -62,6 +59,7 @@ public:
 
     void loadPlaylist(const QStringList &files, int startIndex = 0);
     void togglePause();
+    void toggleMute();
     void seekRelative(double seconds);
     void seekAbsolute(double seconds);
     void addVolume(int delta);
