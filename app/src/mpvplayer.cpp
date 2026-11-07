@@ -315,18 +315,20 @@ bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderL
     setOption("target-colorspace-hint", QStringLiteral("no"));
     setOption("target-trc", QStringLiteral("srgb"));
     setOption("target-prim", QStringLiteral("bt.709"));
-    // ---- 性能实验（第二步：缩放回到默认，只保留 tone/dither 实验值）----
-    // PERF-EXPERIMENT: 第一步（全关）已证明 GPU 会下降；本步只恢复缩放滤镜组，
-    // 用来回答：掉下来的那部分是不是缩放造成的？
-    //   - GPU 回升到 30%+ -> 缩放滤镜（scale/dscale/cscale 及
-    //     correct-downscaling/linear-downscaling）是主因；
-    //   - GPU 仍低 -> 主因在 tone-mapping/hdr-compute-peak/dither 三项。
-    // 当前只保留 tone-mapping=clip、hdr-compute-peak=no、dither-depth=no；
-    // 缩放 5 项（scale/dscale/cscale/correct-downscaling/linear-downscaling）
-    // 全部回到 mpv 默认（未设置）。blend-subtitles/sub-ass-override/target-* 不动。
+    // ---- 性能实验（第三步：只开 cscale + 两个下采样修正的二分）----
+    // PERF-EXPERIMENT: 前两步已确认片源是 SDR（prim=bt.709/gamma=bt.1886/sig=0），
+    // 且「缩放恢复默认后 GPU 回到 30%」说明约 15% 成本在缩放相关 pass 上。
+    // 本步保留 tone-mapping=clip、hdr-compute-peak=no、dither-depth=no（SDR 下
+    // tone/peak 本来就是 no-op），只打开三项：cscale=bilinear、
+    // correct-downscaling=no、linear-downscaling=no；scale/dscale 保持默认不动。
+    // 要回答：GPU 明显下降 -> 成本在色度上采样与两个修正 pass；
+    //         仍 30% -> 成本在 dscale 主缩放滤镜本身。
     setOption("tone-mapping", QStringLiteral("clip"));
     setOption("hdr-compute-peak", QStringLiteral("no"));
     setOption("dither-depth", QStringLiteral("no"));
+    setOption("cscale", QStringLiteral("bilinear"));
+    setOption("correct-downscaling", QStringLiteral("no"));
+    setOption("linear-downscaling", QStringLiteral("no"));
 
     // ---- 字幕 ----
     // 4K 片源下 blend-subtitles=video 会先按视频分辨率（如 3840x2160）把字幕
