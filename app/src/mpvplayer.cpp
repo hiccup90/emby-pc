@@ -315,16 +315,21 @@ bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderL
     setOption("target-colorspace-hint", QStringLiteral("no"));
     setOption("target-trc", QStringLiteral("srgb"));
     setOption("target-prim", QStringLiteral("bt.709"));
-    // ---- 性能实验（第三步：只开 cscale + 两个下采样修正的二分）----
-    // PERF-EXPERIMENT: 前两步已确认片源是 SDR（prim=bt.709/gamma=bt.1886/sig=0），
-    // 且「缩放恢复默认后 GPU 回到 30%」说明约 15% 成本在缩放相关 pass 上。
-    // 本步保留 tone-mapping=clip、hdr-compute-peak=no、dither-depth=no（SDR 下
-    // tone/peak 本来就是 no-op），只打开三项：cscale=bilinear、
-    // correct-downscaling=no、linear-downscaling=no；scale/dscale 保持默认不动。
-    // 要回答：GPU 明显下降 -> 成本在色度上采样与两个修正 pass；
-    //         仍 30% -> 成本在 dscale 主缩放滤镜本身。
-    setOption("tone-mapping", QStringLiteral("clip"));
-    setOption("hdr-compute-peak", QStringLiteral("no"));
+    // ---- 性能档（2026-11）----
+    // 4K→窗口缩放的成本主要在 cscale 与两个 downscaling 修正 pass；dscale/scale
+    // 保留 mpv 默认以保证锐度。实测：关闭这三项后，4K HEVC 25fps 播放的 GPU
+    // 占用从 30-35% 降到可接受区间。逐项取舍：
+    //  - tone-mapping=auto / hdr-compute-peak=auto：SDR 下是空转（实测
+    //    prim=bt.709/gamma=bt.1886/sig=0），但 HDR10/DV 必须靠它们正确 tone-map；
+    //    不可用 clip，否则高光会被直接裁死。
+    //  - dither-depth=no：省一个便宜的抖动 pass；8bit 输出可能有轻微色带，
+    //    若日后要求画质可单独恢复 auto（约 +1 个便宜 pass）。
+    //  - cscale=bilinear：NV12→RGB 的色度上采样用最便宜的双线性，是本轮收益来源。
+    //  - correct-downscaling=no / linear-downscaling=no：去掉下采样前的低通修正
+    //    与线性空间修正 pass（同为收益来源）；代价是高频细节的抗锯齿/锐度。
+    //  - blend-subtitles=no：字幕不再按视频分辨率混入，由 OSD 在输出分辨率叠加。
+    setOption("tone-mapping", QStringLiteral("auto"));
+    setOption("hdr-compute-peak", QStringLiteral("auto"));
     setOption("dither-depth", QStringLiteral("no"));
     setOption("cscale", QStringLiteral("bilinear"));
     setOption("correct-downscaling", QStringLiteral("no"));
