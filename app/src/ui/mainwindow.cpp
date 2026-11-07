@@ -365,6 +365,17 @@ void MainWindow::updateWindowChrome()
         syncTitleBarGeometry();
         m_titleBar->raise();
     }
+    // 改 margin 只会 post 一个 LayoutRequest，默认要等下一个事件循环才生效：
+    // 播放页是黑底，标题栏条带区域会多保留一帧旧内容（退出播放时表现为顶部黑带）。
+    // 这里同帧把几何与重绘推完；只刷 centralWidget，不 repaint() 整窗
+    // （播放/全屏时整窗重绘会明显拖慢出帧）。
+    if (QWidget *central = centralWidget()) {
+        central->updateGeometry();
+        if (layout())
+            layout()->activate();
+        central->update();
+    }
+    qInfo() << "MainWindow::chrome margins=" << contentsMargins() << "size=" << size();
 }
 
 void MainWindow::restoreWindowState()
@@ -485,16 +496,25 @@ void MainWindow::restoreSidebarLayoutAfterChrome()
         m_sidebarSaveTimer->stop();
 
     m_sidebar->show();
+    // show() 本身只会 post 布局请求；先跑一次 splitter 布局，后面的 width() 才是真值。
+    if (m_splitter->layout())
+        m_splitter->layout()->activate();
     const int width = qBound(tokens::SidebarMinWidth,
                              m_sidebarWidthBeforeHide > 0 ? m_sidebarWidthBeforeHide
                                                           : tokens::SidebarDefaultWidth,
                              tokens::SidebarMaxWidth);
-    // 退出全屏后 splitter 可能仍按全屏尺寸/隐藏状态分配，先把 sidebar 固定回原宽，
-    // 再在下一次事件循环重新按当前窗口宽度校正；不重建内容。
+    // 退出播放/全屏后 splitter 可能仍按播放尺寸/隐藏状态分配，先把 sidebar 固定回原宽，
+    // 再在下一次事件循环按当前窗口宽度校正；不重建内容。
     const auto applyWidth = [this, width]() {
         if (!m_splitter || m_splitter->count() < 2 || !m_sidebar || m_sidebar->isHidden())
             return;
-        const int total = qMax(width + 1, m_splitter->width());
+        // 读 width() 前先激活布局，避免拿到上一帧（播放页）的尺寸。
+        if (m_splitter->layout())
+            m_splitter->layout()->activate();
+        // setSizes() 要的是“子控件宽度之和”，而 splitter->width() 还包含
+        // count-1 个 handle；不减掉会让内容列比可用宽度多出一段，表现为错位。
+        const int handleTotal = m_splitter->handleWidth() * (m_splitter->count() - 1);
+        const int total = qMax(width + 1, m_splitter->width() - handleTotal);
         m_splitter->setSizes({width, qMax(1, total - width)});
         if (m_splitter->layout())
             m_splitter->layout()->activate();
@@ -505,7 +525,6 @@ void MainWindow::restoreSidebarLayoutAfterChrome()
     };
     applyWidth();
     QTimer::singleShot(0, this, applyWidth);
-    QTimer::singleShot(60, this, applyWidth);
     qInfo() << "MainWindow: restore sidebar layout width=" << width
             << "splitterWidth=" << m_splitter->width()
             << "sizes=" << m_splitter->sizes();
@@ -1443,6 +1462,12 @@ void MainWindow::setPlayerMode(bool enabled)
     m_stack->setCurrentIndex(returnIndex);
     m_player->setFullscreen(m_fullscreen);
     restoreSidebarLayoutAfterChrome();
+    // 实机诊断：确认退出时用的是缩放后的真实窗口尺寸，且 splitter/sidebar 已复原。
+    qInfo() << "MainWindow::exitPlayerMode geometry=" << geometry()
+            << "splitterWidth=" << (m_splitter ? m_splitter->width() : -1)
+            << "handle=" << (m_splitter ? m_splitter->handleWidth() : -1)
+            << "sidebarVisible=" << (m_sidebar && !m_sidebar->isHidden())
+            << "sizes=" << (m_splitter ? m_splitter->sizes() : QList<int>());
     emit playerModeChanged(false);
 }
 
