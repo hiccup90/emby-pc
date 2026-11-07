@@ -315,9 +315,22 @@ bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderL
     setOption("target-colorspace-hint", QStringLiteral("no"));
     setOption("target-trc", QStringLiteral("srgb"));
     setOption("target-prim", QStringLiteral("bt.709"));
-    setOption("tone-mapping", QStringLiteral("auto"));
-    setOption("hdr-compute-peak", QStringLiteral("auto"));
-    setOption("dither-depth", QStringLiteral("auto"));
+    // ---- 性能实验（一次性配置，不是最终画质）----
+    // PERF-EXPERIMENT: 关闭 mpv 侧所有高成本画面处理，用于二分定位 30-35%
+    // GPU 占用来自 mpv shader 链还是 Qt 合成路径。整块回滚方式 = 把下面 6 条
+    // 改回原值并删除 scale/dscale/cscale/correct-downscaling/linear-downscaling：
+    //   tone-mapping: auto -> clip；hdr-compute-peak: auto -> no；
+    //   dither-depth: auto -> no；scale/dscale/cscale: 默认 -> bilinear；
+    //   correct-downscaling/linear-downscaling: 默认 -> no。
+    // blend-subtitles 保持 no、sub-ass-override 保持 no、target-trc/target-prim 不动。
+    setOption("tone-mapping", QStringLiteral("clip"));
+    setOption("hdr-compute-peak", QStringLiteral("no"));
+    setOption("dither-depth", QStringLiteral("no"));
+    setOption("scale", QStringLiteral("bilinear"));
+    setOption("dscale", QStringLiteral("bilinear"));
+    setOption("cscale", QStringLiteral("bilinear"));
+    setOption("correct-downscaling", QStringLiteral("no"));
+    setOption("linear-downscaling", QStringLiteral("no"));
 
     // ---- 字幕 ----
     // 4K 片源下 blend-subtitles=video 会先按视频分辨率（如 3840x2160）把字幕
