@@ -2,11 +2,13 @@
 
 #include <QDebug>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPalette>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QStringList>
 #include <QWheelEvent>
+#include <QWindow>
 
 #include <utility>
 
@@ -173,11 +175,42 @@ void VideoHost::resizeEvent(QResizeEvent *event)
     requestFrame();
 }
 
+void VideoHost::paintEvent(QPaintEvent *event)
+{
+    QRhiWidget::paintEvent(event);
+
+    // 诊断：若顶层窗口在 VideoHost 进树之前创建，q_evaluateRhiConfig() 会把
+    // surfaceType 定成 RasterSurface，QRhiWidget::paintEvent 里 ensureRhi()
+    // 拿不到 d->rhi，initialize()/render() 永远不会被调用。只报一次，避免刷屏。
+    if (!rhi()) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            QWindow *handle = window() ? window()->windowHandle() : nullptr;
+            qCritical() << "VideoHost: QRhiWidget has no QRhi; surfaceType"
+                        << (handle ? int(handle->surfaceType()) : -1)
+                        << "nativeWindow" << testAttribute(Qt::WA_NativeWindow)
+                        << "topLevel"
+                        << (window() ? window()->metaObject()->className() : "null")
+                        << "api" << int(api());
+        }
+    }
+}
+
 void VideoHost::showEvent(QShowEvent *event)
 {
     QRhiWidget::showEvent(event);
+    QWindow *handle = window() ? window()->windowHandle() : nullptr;
+    // 排查 render-d3d11 设备不来的第一现场：surfaceType 是否为 Direct3DSurface、
+    // rhi() 是否已经可用。
+    qInfo() << "VideoHost: show event; size" << size()
+            << "surfaceType" << (handle ? int(handle->surfaceType()) : -1)
+            << "rhi" << (rhi() ? "ready" : "null")
+            << "nativeWindow" << testAttribute(Qt::WA_NativeWindow)
+            << "topLevel" << (window() ? window()->metaObject()->className() : "null");
     if (qEnvironmentVariableIsSet("EMBY_PC_DEBUG_GEOMETRY"))
-        qInfo() << "VideoHost: show event" << size();
+        qInfo() << "VideoHost: show event geometry" << size()
+                << "dpr" << devicePixelRatioF();
     m_forceNextFrame = true;
     requestFrame();
 }

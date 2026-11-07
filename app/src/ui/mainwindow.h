@@ -18,6 +18,7 @@ class QTimer;
 class QWidget;
 class QCloseEvent;
 class QResizeEvent;
+class QShowEvent;
 class WindowFrame;
 
 namespace emby {
@@ -103,6 +104,10 @@ public:
     // T27：自绘标题栏 / 原生窗口层（用于自测和诊断）。
     TitleBar *titleBar() const { return m_titleBar; }
     WindowFrame *windowFrame() const { return m_windowFrame; }
+    // spike/render-d3d11：把 WindowFrame（含 winId() 原生窗口创建）推迟到
+    // VideoHost（QRhiWidget）进入控件树之后再执行。
+    // 必须在 show() 之前调用；构造期不再创建原生窗口。
+    void prepareWindowFrame();
     // T28/T29：设置页（T29 可写硬件解码/libmpv 状态并读 QSettings 键）。
     SettingsPage *settingsPage() const { return m_settings; }
     // T38：侧边栏可拖动分隔器（180–320，默认 224）。
@@ -220,6 +225,9 @@ private:
     QList<MediaItem> m_mockLibrary;
     TitleBar *m_titleBar = nullptr;
     WindowFrame *m_windowFrame = nullptr;
+    // 构造期不能 setWindowState(WindowMaximized)（会提前 create() 原生窗口），
+    // 暂存到 prepareWindowFrame() 再应用。
+    bool m_restoreMaximizedPending = false;
     QHash<QString, int> m_mockIndex;
     QHash<QString, MediaItem> m_knownItems;
 
@@ -254,6 +262,7 @@ private:
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 };
 

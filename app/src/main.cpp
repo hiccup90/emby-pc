@@ -224,6 +224,12 @@ int main(int argc, char *argv[])
     PlayerController controller(&window, playerPage);
     controller.installMenus();
 
+    // spike/render-d3d11：WindowFrame::attach() 会 winId() 创建原生窗口，
+    // QWidgetWindow 构造时用 q_evaluateRhiConfig() 采样控件树决定 surfaceType。
+    // 必须在 PlayerController（VideoHost/QRhiWidget）构造之后、show() 之前调用，
+    // 否则顶层会被定成 RasterSurface，QRhiWidget::initialize() 不会执行。
+    window.prepareWindowFrame();
+
     window.show();
 
     // 上次异常退出提示：窗口显示后弹一次；GUI 启动只提示一次。

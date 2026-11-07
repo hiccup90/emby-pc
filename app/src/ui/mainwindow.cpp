@@ -38,11 +38,13 @@
 #include <QScreen>
 #include <QSettings>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <algorithm>
 
@@ -232,14 +234,11 @@ void MainWindow::setupTitleBar()
                     m_windowFrame->setMaximizeButtonRect(rect);
             });
 
-    m_windowFrame = WindowFrame::attach(this);
-    if (m_windowFrame) {
-        m_windowFrame->setTitleBarHeight(kWindowTitleBarHeight);
-        m_windowFrame->setTitleBarWidget(m_titleBar);
-        m_windowFrame->setMaximizeButtonRect(m_titleBar->maximizeButtonRect());
-        connect(m_windowFrame, &WindowFrame::maximizedChanged, this,
-                [this](bool maximized) { m_titleBar->setMaximized(maximized); });
-    }
+    // 不要在这里 attach WindowFrame：WindowFrame 构造函数会 winId() 创建原生
+    // 窗口，而 QWidgetWindow 构造时用 q_evaluateRhiConfig() 决定 surfaceType。
+    // 构造期 VideoHost（QRhiWidget）还没进树，会把顶层定成 RasterSurface，
+    // QRhiWidget::initialize() 永远不会执行。改由 main.cpp 在 PlayerController
+    // 创建之后、show() 之前调用 prepareWindowFrame()。
 
     // T30/WIN-01：UI 与原生层统一 800x480。
     setMinimumSize(800, 480);
@@ -248,6 +247,40 @@ void MainWindow::setupTitleBar()
     m_titleBar->setMaximized(isMaximized());
     m_titleBar->show();
     m_titleBar->raise();
+}
+
+void MainWindow::prepareWindowFrame()
+{
+    if (m_windowFrame)
+        return;
+    if (!m_titleBar)
+        return;
+
+    // attach 里的 winId() 是原生窗口/QWidgetWindow 的创建点，也是
+    // q_evaluateRhiConfig() 唯一一次采样控件树（找 QRhiWidget）的时机。
+    // 调用方必须保证此刻 VideoHost 已经是本窗口的后代控件。
+    m_windowFrame = WindowFrame::attach(this);
+    if (!m_windowFrame)
+        return;
+
+    m_windowFrame->setTitleBarHeight(kWindowTitleBarHeight);
+    m_windowFrame->setTitleBarWidget(m_titleBar);
+    m_windowFrame->setMaximizeButtonRect(m_titleBar->maximizeButtonRect());
+    connect(m_windowFrame, &WindowFrame::maximizedChanged, this,
+            [this](bool maximized) { m_titleBar->setMaximized(maximized); });
+
+    // restoreWindowState() 里暂存的最大化状态，等窗口句柄建好后再应用；
+    // show() 时生效，changeEvent(WindowStateChange) 会同步标题栏按钮。
+    if (m_restoreMaximizedPending) {
+        m_restoreMaximizedPending = false;
+        setWindowState(Qt::WindowMaximized);
+    }
+
+    syncTitleBarGeometry();
+    m_titleBar->setMaximized(isMaximized());
+    qInfo() << "MainWindow: window frame prepared; windowHandle"
+            << (windowHandle() != nullptr) << "surfaceType"
+            << (windowHandle() ? int(windowHandle()->surfaceType()) : -1);
 }
 
 void MainWindow::syncTitleBarGeometry()
@@ -358,8 +391,17 @@ void MainWindow::restoreWindowState()
             setGeometry(bounded);
         }
     }
-    if (settings.value(QStringLiteral("window/maximized"), false).toBool())
-        setWindowState(Qt::WindowMaximized);
+    const bool restoreMaximized =
+        settings.value(QStringLiteral("window/maximized"), false).toBool();
+    if (restoreMaximized) {
+        // 不要在构造期 setWindowState()：QWidget::setWindowState() 会为了应用
+        // 状态而 create() 顶层原生窗口（qtbase qwidget.cpp），使 surfaceType 在
+        // VideoHost 进树之前就被定成 RasterSurface。推迟到 prepareWindowFrame()。
+        if (testAttribute(Qt::WA_WState_Created))
+            setWindowState(Qt::WindowMaximized);
+        else
+            m_restoreMaximizedPending = true;
+    }
     if (m_titleBar)
         m_titleBar->setMaximized(isMaximized());
 }
@@ -513,6 +555,19 @@ void MainWindow::changeEvent(QEvent *event)
         updateWindowChrome();
         if (m_titleBar)
             m_titleBar->setMaximized(isMaximized());
+    }
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    // 兜底：正常路径由 main.cpp 在 show() 之前调用 prepareWindowFrame()。
+    // 走到这里才 attach 时原生窗口已创建，q_evaluateRhiConfig() 早就执行过，
+    // VideoHost 可能拿不到 QRhi；保留 attach 只是避免 windowFrame() 为空。
+    if (!m_windowFrame) {
+        qWarning() << "MainWindow: WindowFrame attached in showEvent;"
+                   << "QRhi backingstore may already be configured without VideoHost";
+        prepareWindowFrame();
     }
 }
 

@@ -9,6 +9,7 @@
 #include <functional>
 
 class QMouseEvent;
+class QPaintEvent;
 class QResizeEvent;
 class QShowEvent;
 class QWheelEvent;
@@ -62,6 +63,7 @@ protected:
     void initialize(QRhiCommandBuffer *cb) override;
     void render(QRhiCommandBuffer *cb) override;
     void releaseResources() override;
+    void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;

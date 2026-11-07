@@ -91,6 +91,9 @@ private:
     // spike/render-d3d11：VideoHost 的 QRhi 就绪后，用同一个 ID3D11Device
     // 创建 mpv render context；首次播放时 device 可能晚于 ensurePlayer。
     void handleRenderDeviceReady(quintptr device);
+    // spike/render-d3d11 诊断：ensurePlayer 后 2 秒仍拿不到 QRhi 设备
+    // （通常意味着 QRhiWidget::initialize() 从未执行）时打一条明确日志。
+    void armRenderDeviceWaitDiagnostic();
     void preparePlayerOverlays();
     void updatePlayerWindowChrome();
     void scheduleHomeRefresh(int delayMs = 0);
@@ -168,6 +171,7 @@ private:
 
     QString m_currentSubtitle;
     bool m_surfaceAttached = false;
+    bool m_renderDeviceWaitArmed = false;
     QWidget *m_backButton = nullptr;
 
     // Emby 播放会话状态（m_embyItemId 非空表示当前是 Emby 播放）。

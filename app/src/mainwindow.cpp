@@ -51,6 +51,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QWidget>
+#include <QWindow>
 
 namespace {
 
@@ -919,6 +920,7 @@ bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
             }
             logMpvState(QStringLiteral("render-context-attached"));
         }
+        armRenderDeviceWaitDiagnostic();
         return true;
     }
 
@@ -943,6 +945,7 @@ bool PlayerController::ensurePlayer(const QStringList &httpHeaderLines)
     applyMpvSettings();
     updateHardwareInfo();
     logMpvState(QStringLiteral("initialized"));
+    armRenderDeviceWaitDiagnostic();
     return true;
 }
 
@@ -979,6 +982,32 @@ void PlayerController::handleRenderDeviceReady(quintptr device)
     logMpvState(QStringLiteral("render-context-ready"));
     if (m_videoHost)
         m_videoHost->requestFrame();
+}
+
+void PlayerController::armRenderDeviceWaitDiagnostic()
+{
+    // 同类问题（顶层 surfaceType 定成 RasterSurface → QRhiWidget::initialize()
+    // 不执行 → d3d11DeviceReady 不发）下次要能一眼定位，而不是只看到 8s 超时。
+    if (!m_videoHost || m_videoHost->d3d11Device() != 0 || m_renderDeviceWaitArmed)
+        return;
+    m_renderDeviceWaitArmed = true;
+    QPointer<PlayerController> self(this);
+    QTimer::singleShot(2000, this, [self]() {
+        if (!self)
+            return;
+        self->m_renderDeviceWaitArmed = false;
+        if (!self->m_videoHost || self->m_videoHost->d3d11Device() != 0)
+            return;
+        QWindow *handle = self->m_window ? self->m_window->windowHandle() : nullptr;
+        qWarning() << "PlayerController: QRhi D3D11 device still not ready 2s after ensurePlayer;"
+                   << "QRhiWidget::initialize() probably never ran; windowHandle"
+                   << (handle != nullptr) << "surfaceType"
+                   << (handle ? int(handle->surfaceType()) : -1)
+                   << "playerReady" << (self->m_player && self->m_player->isReady())
+                   << "videoHostVisible" << (self->m_videoHost && self->m_videoHost->isVisible());
+        if (self->m_videoHost)
+            qWarning().noquote() << self->m_videoHost->diagnosticSummary();
+    });
 }
 
 void PlayerController::onDetailPlayRequested(const QString &itemId, int season, int episode)
