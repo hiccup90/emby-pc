@@ -37,6 +37,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QLineEdit>
@@ -568,7 +569,7 @@ int runSelfTest(QApplication &app)
     auto *player = window.findChild<ui::PlayerPage *>();
     check(player != nullptr && player->isPlaying(), QStringLiteral("播放页处于播放状态（mock）"));
 
-    // T16/T18：播放器模式 = 视频铺满客户区，顶层半透明浮层跟随主窗口并自动隐藏。
+    // T16/T18/P2：播放器模式 = 视频铺满客户区，页面内浮层跟随播放页并自动隐藏。
     auto *playerSidebar = window.findChild<QWidget *>(QStringLiteral("Sidebar"));
     auto *playerTopBar = window.findChild<QWidget *>(QStringLiteral("TopBar"));
     check(window.isPlayerMode(), QStringLiteral("播放页进入播放器模式"));
@@ -577,38 +578,43 @@ int runSelfTest(QApplication &app)
     check(window.statusBar()->isHidden(), QStringLiteral("播放器模式隐藏状态栏"));
     check(player->layout() && player->layout()->count() == 1,
           QStringLiteral("播放页布局只保留视频区（浮层不占布局）"));
-    check(player->usesTopLevelOverlay(), QStringLiteral("默认使用顶层 overlay 窗口"));
+    window.activateWindow();
+    settle(app, 120);
+    check(QApplication::focusWidget() == player,
+          QStringLiteral("进入播放器模式后键盘焦点在 PlayerPage"));
+    check(!player->usesTopLevelOverlay(),
+          QStringLiteral("P2 浮层为页面内子控件（usesTopLevelOverlay=false）"));
     check(player->topOverlay() && player->bottomOverlay()
-              && player->topOverlay()->isWindow() && player->bottomOverlay()->isWindow()
-              && player->topOverlay()->parentWidget() == player,
-          QStringLiteral("顶部/底部浮层是 PlayerPage 的顶层子窗口"));
-    check(player->topOverlay()->windowFlags().testFlag(Qt::Tool)
-              && player->topOverlay()->windowFlags().testFlag(Qt::FramelessWindowHint)
+              && !player->topOverlay()->isWindow() && !player->bottomOverlay()->isWindow()
+              && player->topOverlay()->parentWidget() == player
+              && player->bottomOverlay()->parentWidget() == player,
+          QStringLiteral("顶部/底部浮层是 PlayerPage 的普通子控件"));
+    check(player->topOverlay()->windowType() == Qt::Widget
+              && player->bottomOverlay()->windowType() == Qt::Widget
               && !player->topOverlay()->testAttribute(Qt::WA_TranslucentBackground)
-              && !player->topOverlay()->testAttribute(Qt::WA_NoSystemBackground)
-              && player->topOverlay()->testAttribute(Qt::WA_ShowWithoutActivating),
-          QStringLiteral("T55 顶层 overlay 不透明且不抢焦点"));
+              && !player->topOverlay()->testAttribute(Qt::WA_NoSystemBackground),
+          QStringLiteral("P2 浮层为普通控件窗口且背景不透明"));
     const QImage topOverlayImage = player->topOverlay()->grab().toImage();
     check(topOverlayImage.pixelColor(2, 2).alpha() == 255,
-          QStringLiteral("T55 顶层浮层背景像素完全不透明"));
-    check(player->controlsVisible() && player->topOverlay()->isVisible()
-              && player->bottomOverlay()->isVisible(),
-          QStringLiteral("进入播放器模式浮层可见"));
+          QStringLiteral("T55 顶部浮层背景像素完全不透明"));
+    check(player->controlsVisible() && player->overlaysVisible()
+              && player->topOverlay()->isVisible() && player->bottomOverlay()->isVisible()
+              && !player->topOverlay()->testAttribute(Qt::WA_TransparentForMouseEvents)
+              && !player->bottomOverlay()->testAttribute(Qt::WA_TransparentForMouseEvents),
+          QStringLiteral("进入播放器模式后浮层可见且不穿透鼠标"));
 
     auto hostRect = [&window]() {
         return QRect(window.mapToGlobal(QPoint(0, 0)), window.size());
     };
-    // T56：播放模式不再留 5px 黑边，overlay 直接铺满客户区；边缘缩放由
-    // VideoHost/PlayerPage 6px 命中区负责。
-    const int playerInset = 0;
-    QRect host = hostRect();
-    check(player->topOverlay()->geometry().topLeft()
-              == host.topLeft() + QPoint(12 + playerInset, 10 + playerInset)
-              && player->topOverlay()->width() <= host.width() - 24 - 2 * playerInset
-              && player->bottomOverlay()->geometry().left() == host.left() + playerInset
-              && player->bottomOverlay()->geometry().width() == host.width() - 2 * playerInset
-              && player->bottomOverlay()->geometry().bottom() == host.bottom() - playerInset,
-          QStringLiteral("浮层跟随主窗口客户区（顶栏左上自适应/控制条贴底铺满）"));
+    // P2：bar 是 PlayerPage 的普通子控件，几何直接用页面本地坐标，不再做宿主全局映射。
+    check(player->rect().contains(player->topOverlay()->geometry())
+              && player->rect().contains(player->bottomOverlay()->geometry())
+              && player->topOverlay()->geometry().left() == 12
+              && player->topOverlay()->geometry().top() == 10
+              && player->bottomOverlay()->geometry().left() == 0
+              && player->bottomOverlay()->geometry().width() == player->width()
+              && player->bottomOverlay()->geometry().bottom() + 1 == player->height(),
+          QStringLiteral("浮层落在播放页内（顶栏左上自适应/控制条贴底铺满）"));
     check(player->size() == window.centralWidget()->size(),
           QStringLiteral("视频区铺满主窗口客户区（%1x%2）")
               .arg(player->width())
@@ -616,25 +622,24 @@ int runSelfTest(QApplication &app)
 
     window.resize(960, 600);
     settle(app, 120);
-    host = hostRect();
-    check(player->bottomOverlay()->geometry().width() == host.width() - 2 * playerInset
-              && player->bottomOverlay()->geometry().bottom() == host.bottom() - playerInset
-              && player->topOverlay()->geometry().left() == host.left() + 12 + playerInset,
-          QStringLiteral("窗口 resize 后顶层浮层跟随（960x600）"));
+    check(player->bottomOverlay()->geometry().width() == player->width()
+              && player->bottomOverlay()->geometry().bottom() + 1 == player->height()
+              && player->topOverlay()->geometry().left() == 12
+              && player->rect().contains(player->topOverlay()->geometry()),
+          QStringLiteral("窗口 resize 后子控件浮层按页面尺寸重排（960x600）"));
 
     window.move(window.pos() + QPoint(40, 30));
     settle(app, 120);
-    host = hostRect();
-    check(player->topOverlay()->geometry().left() == host.left() + 12 + playerInset
-              && player->bottomOverlay()->geometry().bottom() == host.bottom() - playerInset,
-          QStringLiteral("窗口 move 后顶层浮层跟随"));
+    check(player->topOverlay()->geometry().left() == 12
+              && player->bottomOverlay()->geometry().bottom() + 1 == player->height(),
+          QStringLiteral("窗口 move 后页面内浮层本地几何不变"));
 
     window.resize(1280, 760);
     settle(app, 120);
 
     // 自动隐藏：注入假光标位置，避免依赖 offscreen 的 QCursor::pos。
     player->setOverlayHideDelay(180);
-    host = hostRect();
+    QRect host = hostRect();
     player->setOverlayCursorPositionForTest(host.center());
     settle(app, 80);
     check(player->controlsVisible(), QStringLiteral("鼠标移动后浮层显示"));
@@ -653,6 +658,54 @@ int runSelfTest(QApplication &app)
     player->setControlsVisible(true);
     settle(app, 80);
     check(player->controlsVisible(), QStringLiteral("setControlsVisible(true) 显示浮层"));
+    check(player->overlaysVisible() && player->topOverlay()->isVisible()
+              && player->bottomOverlay()->isVisible()
+              && !player->topOverlay()->testAttribute(Qt::WA_TransparentForMouseEvents),
+          QStringLiteral("setControlsVisible(true) 后浮层可见且顶栏可接收鼠标"));
+
+    int keyPlaySignals = 0;
+    int keySeekSignals = 0;
+    int keySeekSeconds = 0;
+    int keyVolumeSignals = 0;
+    int keyVolumeDelta = 0;
+    int keyMuteSignals = 0;
+    QObject::connect(player, &ui::PlayerPage::playPauseRequested,
+                     [&keyPlaySignals]() { ++keyPlaySignals; });
+    QObject::connect(player, &ui::PlayerPage::seekRelativeRequested,
+                     [&keySeekSignals, &keySeekSeconds](int seconds) {
+                         ++keySeekSignals;
+                         keySeekSeconds = seconds;
+                     });
+    QObject::connect(player, &ui::PlayerPage::volumeStepRequested,
+                     [&keyVolumeSignals, &keyVolumeDelta](int delta) {
+                         ++keyVolumeSignals;
+                         keyVolumeDelta = delta;
+                     });
+    QObject::connect(player, &ui::PlayerPage::muteToggleRequested,
+                     [&keyMuteSignals]() { ++keyMuteSignals; });
+    const auto sendPlayerKey = [player](int key, Qt::KeyboardModifiers modifiers) {
+        QKeyEvent event(QEvent::KeyPress, key, modifiers);
+        return player->handlePlayerKey(&event);
+    };
+    check(sendPlayerKey(Qt::Key_Space, Qt::NoModifier) && keyPlaySignals == 1,
+          QStringLiteral("KeyMap Space 只发 1 次 playPauseRequested"));
+    keySeekSignals = 0;
+    keySeekSeconds = 0;
+    check(sendPlayerKey(Qt::Key_Left, Qt::NoModifier)
+              && keySeekSignals == 1 && keySeekSeconds == -5,
+          QStringLiteral("KeyMap Left 只发 1 次 seekRelativeRequested(-5)"));
+    keySeekSignals = 0;
+    keySeekSeconds = 0;
+    check(sendPlayerKey(Qt::Key_Left, Qt::ShiftModifier)
+              && keySeekSignals == 1 && keySeekSeconds == -1,
+          QStringLiteral("KeyMap Shift+Left 只发 1 次 seekRelativeRequested(-1)"));
+    check(sendPlayerKey(Qt::Key_Up, Qt::NoModifier)
+              && keyVolumeSignals == 1 && keyVolumeDelta == 5,
+          QStringLiteral("KeyMap Up 只发 1 次 volumeStepRequested(5)"));
+    check(sendPlayerKey(Qt::Key_M, Qt::NoModifier) && keyMuteSignals == 1,
+          QStringLiteral("KeyMap M 只发 1 次 muteToggleRequested"));
+    player->setPlaying(true);
+
     player->setOverlayAutoHide(false);
     player->setOverlayHideDelay(2500);
     player->setOverlayCursorPositionForTest(QPoint(), false);
@@ -663,7 +716,7 @@ int runSelfTest(QApplication &app)
               && playerTopBar && !playerTopBar->isHidden()
               && !window.statusBar()->isHidden() && titleBar && titleBar->isVisible()
               && !player->controlsVisible(),
-          QStringLiteral("退出播放器模式恢复 chrome/TitleBar 并隐藏顶层浮层"));
+          QStringLiteral("退出播放器模式恢复 chrome/TitleBar 并隐藏浮层"));
     window.setPlayerMode(true);
     player->setOverlayAutoHide(false);
     auto *subtitleButton = player->findChild<QPushButton *>(QStringLiteral("SubtitleButton"));
@@ -684,6 +737,14 @@ int runSelfTest(QApplication &app)
               && prevButton->geometry().center().x() < playButton->geometry().center().x()
               && playButton->geometry().center().x() < nextButton->geometry().center().x(),
           QStringLiteral("T45 播放/上下集居中，seek 滑杆存在"));
+    auto *focusPlay = player->findChild<QPushButton *>(QStringLiteral("PlayPauseButton"));
+    auto *focusSeek = player->findChild<QSlider *>(QStringLiteral("SeekSlider"));
+    auto *focusVolume = player->findChild<QSlider *>(QStringLiteral("VolumeSlider"));
+    check(focusPlay && focusSeek && focusVolume
+              && focusPlay->focusPolicy() == Qt::NoFocus
+              && focusSeek->focusPolicy() == Qt::NoFocus
+              && focusVolume->focusPolicy() == Qt::NoFocus,
+          QStringLiteral("播放按钮/进度条/音量条不抢键盘焦点"));
 
     // T32：FullscreenButton clicked -> fullscreenRequested -> MainWindow::toggleFullscreen。
     auto *fullscreenButton = player->findChild<QPushButton *>(QStringLiteral("FullscreenButton"));
@@ -709,8 +770,8 @@ int runSelfTest(QApplication &app)
         QObject::connect(player, &ui::PlayerPage::playPauseRequested,
                          [&extendedClicks]() { ++extendedClicks; });
         const QPoint edge = playButton->mapTo(controlBar, QPoint(-3, playButton->height() / 2));
-        QMouseEvent hit(QEvent::MouseButtonPress, edge, controlBar->mapToGlobal(edge),
-                        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent hit(QEvent::MouseButtonPress, edge, Qt::LeftButton, Qt::LeftButton,
+                        Qt::NoModifier);
         QApplication::sendEvent(controlBar, &hit);
         check(extendedClicks == 1, QStringLiteral("T51 控制条按钮边缘扩展命中"));
     }
@@ -737,7 +798,7 @@ int runSelfTest(QApplication &app)
                   && !controlBar->testAttribute(Qt::WA_TransparentForMouseEvents),
               QStringLiteral("T51 菜单关闭后控制条恢复可点"));
     }
-    // T55：顶层浮层必须是不透明窗口，四个角点击都能命中按钮。
+    // T55：浮层必须不透明，四个角点击都能命中按钮。
     auto *t55ControlBar = player->findChild<QWidget *>(QStringLiteral("PlayerControlBar"));
     auto *t55TopBar = player->findChild<QWidget *>(QStringLiteral("PlayerTopBar"));
     check(t55ControlBar && !t55ControlBar->testAttribute(Qt::WA_TranslucentBackground)
@@ -754,11 +815,9 @@ int runSelfTest(QApplication &app)
                                        QPoint(1, playButton->height() - 2),
                                        QPoint(playButton->width() - 2, playButton->height() - 2)};
         for (const QPoint &corner : corners) {
-            QMouseEvent press(QEvent::MouseButtonPress, corner,
-                              playButton->mapToGlobal(corner), Qt::LeftButton,
+            QMouseEvent press(QEvent::MouseButtonPress, corner, Qt::LeftButton,
                               Qt::LeftButton, Qt::NoModifier);
-            QMouseEvent release(QEvent::MouseButtonRelease, corner,
-                                playButton->mapToGlobal(corner), Qt::LeftButton,
+            QMouseEvent release(QEvent::MouseButtonRelease, corner, Qt::LeftButton,
                                 Qt::LeftButton, Qt::NoModifier);
             QApplication::sendEvent(playButton, &press);
             QApplication::sendEvent(playButton, &release);
@@ -819,10 +878,10 @@ int runSelfTest(QApplication &app)
                                       && compactNext->mapTo(compactBottom, QPoint(0, 0)).x()
                                              + compactNext->width() <= compactBottom->width();
     check(player->compactLayout() && compactTop && compactBottom
-              && compactTop->height() == 44 && compactBottom->height() == 64
+              && compactTop->height() == 44 && compactBottom->height() == 76
               && compactTop->geometry().bottom() < compactBottom->geometry().top()
               && moreButton && moreButton->isVisible() && compactButtonsInside,
-          QStringLiteral("T64 320×180 compact 顶栏/控制条不重叠且按钮可见"));
+          QStringLiteral("T64 320×180 compact 顶栏 44/控制条 76 不重叠且按钮可见"));
     player->findChild<QPushButton *>(QStringLiteral("PlayerBackButton"))->click();
     settle(app, 260);
     const auto titleButtonRect = [&window](const QString &name) {
@@ -878,27 +937,6 @@ int runSelfTest(QApplication &app)
               && window.findChild<QLabel *>(QStringLiteral("VideoHostTitle")) == nullptr
               && window.findChild<QLabel *>(QStringLiteral("VideoHostDesc")) == nullptr,
           QStringLiteral("T40：无演示徽标/VideoHost 说明文字"));
-
-    // EMBY_PC_PLAYER_OVERLAY=0 兜底：浮层回到页面内。
-    qputenv("EMBY_PC_PLAYER_OVERLAY", QByteArrayLiteral("0"));
-    {
-        ui::PlayerPage docked;
-        docked.resize(800, 600);
-        docked.show();
-        settle(app, 80);
-        check(!docked.usesTopLevelOverlay()
-                  && docked.topOverlay()->parentWidget() == &docked
-                  && !docked.topOverlay()->isWindow(),
-              QStringLiteral("EMBY_PC_PLAYER_OVERLAY=0 回退页面内浮层"));
-        docked.setPlayerModeActive(true);
-        settle(app, 80);
-        check(docked.controlsVisible()
-                  && docked.topOverlay()->geometry().top() == 0
-                  && docked.bottomOverlay()->geometry().bottom() + 1 == docked.height(),
-              QStringLiteral("页面内兜底浮层贴住播放页顶部/底部"));
-        docked.setPlayerModeActive(false);
-    }
-    qunsetenv("EMBY_PC_PLAYER_OVERLAY");
 
     out << (failures == 0 ? "ALL PASS" : QStringLiteral("FAILURES: %1").arg(failures)) << "\n";
     out.flush();
@@ -2364,19 +2402,7 @@ int runScreenshots(QApplication &app, const QString &directory)
 
     auto save = [&window, &dir](const QString &name) {
         QPixmap pixmap = window.grab();
-        // T18：顶层半透明 overlay 不在 window.grab() 里，截图时按全局坐标合成。
-        if (auto *player = window.findChild<ui::PlayerPage *>()) {
-            if (player->isPlayerModeActive()) {
-                QPainter painter(&pixmap);
-                for (QWidget *overlay : {player->topOverlay(), player->bottomOverlay()}) {
-                    if (!overlay || !overlay->isVisible())
-                        continue;
-                    const QPoint offset = overlay->mapToGlobal(QPoint(0, 0))
-                                          - window.mapToGlobal(QPoint(0, 0));
-                    painter.drawPixmap(offset, overlay->grab());
-                }
-            }
-        }
+        // P2：两条 bar 是 PlayerPage 的普通子控件，window.grab() 已包含，无需再合成。
         const QString path = dir.filePath(name + QStringLiteral(".png"));
         const bool ok = pixmap.save(path);
         QTextStream(stdout) << (ok ? "saved " : "FAILED ") << path << "\n";
