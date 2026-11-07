@@ -725,6 +725,14 @@ QSpinBox::up-button, QSpinBox::down-button {
 }
 
 /* T38 侧边栏分隔器 / 首页多分栏 / 媒体库设置 */
+
+/* T58：splitter 自身没有背景规则时会退回 palette（QPalette::Base/#111C2E），
+   与 AppRoot/MainColumn 的 #0F172A 差一档，退出播放后新暴露的区域会出现
+   一条“边框感”色带。 */
+QSplitter#MainSplitter {
+    background-color: #0F172A;
+}
+
 QSplitter#MainSplitter::handle {
     background-color: #1E293B;
     width: 4px;
@@ -732,6 +740,29 @@ QSplitter#MainSplitter::handle {
 
 QSplitter#MainSplitter::handle:hover {
     background-color: #3B82F6;
+}
+
+/* T58 首页各层容器背景：与 AppRoot/MainColumn/ContentStack 统一 #0F172A。
+   HomeViewStack 是 QFrame 子类（QStackedWidget），QSS background 由 PE_Frame
+   绘制；HomeLegacyPage 是纯 QWidget（Qt 会为该类控件自动置 WA_StyledBackground）。 */
+QWidget#HomePage,
+QWidget#HomeLegacyPage,
+QWidget#HomeViewStack {
+    background-color: #0F172A;
+}
+
+QScrollArea#HomeSectionsScroll {
+    background-color: #0F172A;
+    border: none;
+}
+
+/* QAbstractScrollArea 的 viewport 是内部子控件，默认 autoFillBackground 用
+   QPalette::Base(#111C2E)，比 #0F172A 亮一档。首页 sectioned 内容铺满 viewport
+   （widgetResizable + Ignored/Preferred），给它同色即可覆盖掉那圈色差。
+   两种写法都保留：objectName 直写 + 三级后代选择器，任一命中即可。 */
+QWidget#HomeSectionsContent,
+QScrollArea#HomeSectionsScroll > QWidget > QWidget {
+    background-color: #0F172A;
 }
 
 QLabel#HomeSectionTitle {

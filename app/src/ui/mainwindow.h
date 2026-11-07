@@ -146,6 +146,8 @@ private:
     void updateWindowChrome();
     // T57：退出播放/全屏后统一恢复最小尺寸、标题栏和 chrome。
     void restoreWindowedChrome();
+    // T58：最小尺寸 + 拉伸单独成一步，调用方在 chrome/sidebar 恢复之后、切页之前调用。
+    void applyWindowedMinimumSize();
     void restoreWindowState();
     void saveWindowState();
     void rememberFullscreenWindowState();

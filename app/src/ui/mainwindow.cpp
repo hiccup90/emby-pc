@@ -303,15 +303,26 @@ void MainWindow::syncTitleBarGeometry()
     }
 }
 
-void MainWindow::restoreWindowedChrome()
+void MainWindow::applyWindowedMinimumSize()
 {
-    // T57：退出播放模式/全屏时窗口可能还是 320x180；先恢复 800x480 最小尺寸，
-    // 再 resize/显示 chrome/重排标题栏，避免 close/min/max 被排到窗口外。
+    // T57/T58：退出播放模式/全屏时窗口可能还是 320x180；恢复 800x480 最小尺寸，
+    // 需要时再拉伸，避免 close/min/max 被排到窗口外。
+    // 调用点必须在 chrome/sidebar 恢复之后、切页之前：resize 时会话仍在播放页，
+    // VideoHost（QRhiWidget）会先按新尺寸渲染一帧黑，再被主页覆盖。
     updateWindowMinimumSize(false);
     const QSize minimum = minimumSize();
     if (width() < minimum.width() || height() < minimum.height()) {
-        resize(qMax(width(), minimum.width()), qMax(height(), minimum.height()));
+        const QSize target(qMax(width(), minimum.width()), qMax(height(), minimum.height()));
+        resize(target);
     }
+    qInfo() << "MainWindow::applyWindowedMinimumSize size=" << size()
+            << "minimum=" << minimumSize();
+}
+
+void MainWindow::restoreWindowedChrome()
+{
+    // T58：最小尺寸/拉伸已抽到 applyWindowedMinimumSize()，由调用方在 sidebar 恢复之后、
+    // 切页之前执行；这里只负责 chrome 显隐与标题栏几何。
     if (m_sidebar)
         m_sidebar->show();
     if (m_topBar)
@@ -1467,17 +1478,43 @@ void MainWindow::setPlayerMode(bool enabled)
     }
     m_playerMode = false;
     m_player->setPlayerModeActive(false);
+    // T58：顺序固定为 chrome → sidebar → 最小尺寸/拉伸 → 切页 → 同步 flush →
+    // （首页）同步重排 → 异步 update。最小尺寸/拉伸必须夹在 sidebar 恢复之后、
+    // 切页之前：早了会让仍是当前页的 VideoHost 先按新尺寸渲染一帧黑。
     restoreWindowedChrome();
+    restoreSidebarLayoutAfterChrome();
+    applyWindowedMinimumSize();
     const int returnIndex = qBound(static_cast<int>(StackHome), m_playerReturnIndex,
                                    static_cast<int>(StackPlayer));
     m_stack->setCurrentIndex(returnIndex);
     m_player->setFullscreen(m_fullscreen);
-    restoreSidebarLayoutAfterChrome();
-    // 一次性同步重绘：退出播放的那一帧就用主页背景覆盖残留的播放页像素（黑边）。
-    // 只在退出播放模式这一处做，播放期间仍走 resizeEvent 里的异步 update()。
-    if (centralWidget())
-        centralWidget()->repaint();
-    qInfo() << "MainWindow: exit player mode size" << size() << "min" << minimumSize();
+    // QStackedLayout 是 StackOne：隐藏页保留旧几何，setCurrentIndex() 只 post 一次
+    // LayoutRequest，真正的几何分配要等下一轮事件循环；切页后立即画就会出现
+    // “旧尺寸的一帧”（黑边/错位）。这里同帧把三层布局刷一遍，再走异步 update()。
+    bool stackFlushed = false;
+    bool topBarFlushed = false;
+    bool centralFlushed = false;
+    if (QLayout *stackLayout = m_stack->layout())
+        stackFlushed = stackLayout->activate();
+    if (QWidget *topBarParent = m_topBar ? m_topBar->parentWidget() : nullptr) {
+        if (QLayout *topBarLayout = topBarParent->layout())
+            topBarFlushed = topBarLayout->activate();
+    }
+    if (QWidget *central = centralWidget()) {
+        central->updateGeometry();
+        if (QLayout *centralLayout = central->layout())
+            centralFlushed = centralLayout->activate();
+    }
+    // 首页的重排走 120ms 防抖定时器，切页后必须同步重排一次；否则首帧按旧宽度算列数。
+    // reflowNow() 由 homeview 提供（同一 push 落地），这里只调用。
+    if (returnIndex == StackHome && m_home)
+        m_home->reflowNow();
+    // 原先是同步 repaint()：它会在几何还没生效时就把错误帧钉在屏幕上。
+    // 现在只在 flush 之后异步 update()，由事件循环在 LayoutRequest 之后合并重绘。
+    if (QWidget *central = centralWidget())
+        central->update();
+    qInfo() << "MainWindow: exit player mode size" << size() << "min" << minimumSize()
+            << "flush stack/topBar/central=" << stackFlushed << topBarFlushed << centralFlushed;
     // 实机诊断：确认退出时用的是缩放后的真实窗口尺寸，且 splitter/sidebar 已复原。
     qInfo() << "MainWindow::exitPlayerMode geometry=" << geometry()
             << "splitterWidth=" << (m_splitter ? m_splitter->width() : -1)
@@ -1526,6 +1563,9 @@ void MainWindow::toggleFullscreen()
         if (!m_playerMode) {
             m_player->setPlayerModeActive(false);
             restoreWindowedChrome();
+            // T58：最小尺寸/拉伸已从 restoreWindowedChrome() 抽出，这里按原位置补回，
+            // 不改变全屏退出的既有行为（本批只重排 setPlayerMode(false) 的顺序）。
+            applyWindowedMinimumSize();
             m_stack->setCurrentIndex(m_fullscreenReturnIndex);
             restoreSidebarLayoutAfterChrome();
         } else {

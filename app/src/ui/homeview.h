@@ -42,6 +42,9 @@ public:
     void setLoading(bool loading, const QString &message = QString());
     void setError(const QString &message);
 
+    // 同步重排：切页/尺寸变化后调用，不走 120ms 合并定时器。
+    void reflowNow();
+
 protected:
     void showEvent(QShowEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -121,6 +124,7 @@ private:
     QTimer *m_previewLayoutTimer = nullptr;
     QTimer *m_thumbnailRefreshTimer = nullptr;
     bool m_usingSections = false;
+    bool m_reflowing = false;
     bool m_loading = false;
     QString m_error;
     int m_resumeCount = 0;

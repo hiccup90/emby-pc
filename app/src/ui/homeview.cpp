@@ -346,6 +346,11 @@ HomeView::HomeView(ThumbnailCache *cache, QWidget *parent)
     m_sectionsLayout->setSpacing(18);
     m_sectionsLayout->addStretch(1);
     m_sectionsScroll->setWidget(m_sectionsContent);
+    // 切页/滚动条显隐/窗口 resize 都会改 viewport 尺寸；装过滤器立即重排，
+    // 不再依赖 HomeView::resizeEvent 的 120ms 合并窗口。objectName 便于和
+    // titleLabel 的鼠标事件分支区分。
+    m_sectionsScroll->viewport()->setObjectName(QStringLiteral("HomeSectionsViewport"));
+    m_sectionsScroll->viewport()->installEventFilter(this);
     m_viewStack->addWidget(m_sectionsScroll);
     m_viewStack->setCurrentWidget(m_legacyPage);
 
@@ -532,12 +537,22 @@ void HomeView::resizeResumeContent()
 void HomeView::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
+    // 调用方 resize 后可能马上读几何，先同步重排一次；120ms 定时器只用于吸收
+    // 连续 resize（拖拽边框）的重复计算。
+    reflowNow();
     if (m_usingSections && m_previewLayoutTimer)
         m_previewLayoutTimer->start();
 }
 
 bool HomeView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_sectionsScroll && watched == m_sectionsScroll->viewport()
+        && watched->objectName() == QLatin1String("HomeSectionsViewport")
+        && event->type() == QEvent::Resize) {
+        // 隐藏页切回/滚动条出现时 viewport 会先变尺寸；这里同步重排，避免首帧按旧宽度算列。
+        reflowNow();
+        return false;
+    }
     if (event->type() == QEvent::MouseButtonRelease && m_usingSections) {
         for (SectionRow &row : m_sectionRows) {
             if (row.titleLabel != watched || row.section.kind == HomeSection::Kind::Resume)
@@ -552,6 +567,9 @@ bool HomeView::eventFilter(QObject *watched, QEvent *event)
 void HomeView::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
+    // 显示时先同步重排一次（隐藏期 viewport 可能只有默认 100x30，不能拿它定几何），
+    // 再起 120ms 合并定时器兜底布局尚未稳定的首帧。
+    reflowNow();
     // 数据可能在首页隐藏时已经加载；显示后补一次 content 尺寸，避免 0 高度。
     QTimer::singleShot(0, this, &HomeView::resizeResumeContent);
     QTimer::singleShot(0, this, &HomeView::resizeHomeSectionRows);
@@ -560,6 +578,32 @@ void HomeView::showEvent(QShowEvent *event)
         if (m_previewLayoutTimer)
             m_previewLayoutTimer->start();
     }
+}
+
+void HomeView::reflowNow()
+{
+    // 调整 content/滚动条会反过来触发 viewport Resize，嵌套调用直接返回；
+    // 外层结束时拿到的就是最终几何。
+    if (m_reflowing)
+        return;
+    m_reflowing = true;
+
+    if (m_viewStack) {
+        if (QLayout *stackLayout = m_viewStack->layout())
+            stackLayout->activate();
+    }
+    updateSectionsContentGeometry();
+    for (SectionRow &row : m_sectionRows) {
+        if (row.cardsBuilt && row.grid)
+            layoutPreviewRow(row);
+    }
+    resizeHomeSectionRows();
+    if (m_resumeContent)
+        resizeResumeContent();
+    if (m_sectionsContent)
+        m_sectionsContent->update();
+
+    m_reflowing = false;
 }
 
 void HomeView::refreshThumbnails()
@@ -606,6 +650,10 @@ void HomeView::setHomeSections(const QList<HomeSection> &sections)
 {
     QElapsedTimer buildTimer;
     buildTimer.start();
+    // 隐藏/初始化期 updateSectionsContentGeometry 会早退，上一次的 maxWidth 可能还
+    // 钳在默认 viewport 宽（约 100px）；先复位，等真实尺寸回来再重新约束。
+    if (m_sectionsContent)
+        m_sectionsContent->setMaximumWidth(QWIDGETSIZE_MAX);
     m_usingSections = true;
     if (m_viewStack && m_sectionsScroll)
         m_viewStack->setCurrentWidget(m_sectionsScroll);
@@ -717,7 +765,17 @@ void HomeView::layoutPreviewRow(SectionRow &row)
 {
     if (!row.grid || !row.preview)
         return;
-    const int available = qMax(240, m_sectionsScroll->viewport()->width() - 64);
+    // 内缩 = content 左右 contentsMargins（30+30）+ 竖滚动条实际宽度；旧常量 64
+    // 在滚动条可见时少算约 10px，最后一列卡片会被裁。保留 40px 兜底下限。
+    const QMargins contentMargins =
+        m_sectionsContent ? m_sectionsContent->contentsMargins() : QMargins();
+    int chrome = contentMargins.left() + contentMargins.right();
+    if (m_sectionsScroll) {
+        if (QScrollBar *bar = m_sectionsScroll->verticalScrollBar(); bar && bar->isVisible())
+            chrome += bar->width();
+    }
+    const int viewportWidth = m_sectionsScroll ? m_sectionsScroll->viewport()->width() : width();
+    const int available = qMax(240, viewportWidth - qMax(40, chrome));
     // T64：窄窗口（800）不能强行 6 列 × 最小 76px，否则右侧卡片会被裁。
     int columns = qBound(2, qMax(1, available / 160), 8);
     columns = qMin(columns, qMax(1, row.section.items.size()));
@@ -912,7 +970,9 @@ void HomeView::updateSectionsContentGeometry()
         return;
     m_sectionsLayout->activate();
     const int viewportWidth = m_sectionsScroll ? m_sectionsScroll->viewport()->width() : width();
-    if (viewportWidth <= 1)
+    // 隐藏页的 viewport 可能只有默认 100x30；用它 setMaximumWidth 会把 content 永久
+    // 钳到 100px。与 LibraryView::updateGridGeometry 的 240 阈值对齐，等真实尺寸再算。
+    if (viewportWidth < 240)
         return;
     // T64：QScrollArea 的 widget 宽度只能等于 viewport；resume 内部横向滚动不能把
     // 外层 HomeSectionsContent 撑宽，否则 800/960 下右侧卡片和「查看全部」被裁。
