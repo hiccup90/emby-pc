@@ -125,12 +125,16 @@ void MainWindow::buildUi()
 {
     auto *root = new QWidget(this);
     root->setObjectName(QStringLiteral("AppRoot"));
+    // 纯 QWidget 不设 WA_StyledBackground 时，QSS 的 background-color 不保证参与绘制，
+    // 播放页退出后新暴露的区域会保留上一帧（黑底/视频）像素。
+    root->setAttribute(Qt::WA_StyledBackground, true);
     auto *rootLayout = new QHBoxLayout(root);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
     m_splitter = new QSplitter(Qt::Horizontal, root);
     m_splitter->setObjectName(QStringLiteral("MainSplitter"));
+    m_splitter->setAttribute(Qt::WA_StyledBackground, true);
     m_splitter->setChildrenCollapsible(false);
     m_splitter->setHandleWidth(4);
     m_sidebar = new Sidebar(m_splitter);
@@ -138,6 +142,7 @@ void MainWindow::buildUi()
 
     auto *column = new QWidget(m_splitter);
     column->setObjectName(QStringLiteral("MainColumn"));
+    column->setAttribute(Qt::WA_StyledBackground, true);
     auto *columnLayout = new QVBoxLayout(column);
     columnLayout->setContentsMargins(0, 0, 0, 0);
     columnLayout->setSpacing(0);
@@ -179,6 +184,7 @@ void MainWindow::buildUi()
     // 页面栈
     m_stack = new QStackedWidget(column);
     m_stack->setObjectName(QStringLiteral("ContentStack"));
+    m_stack->setAttribute(Qt::WA_StyledBackground, true);
 
     m_home = new HomeView(m_cache, m_stack);
     m_home->setObjectName(QStringLiteral("HomePage"));
@@ -443,6 +449,11 @@ void MainWindow::resizeEvent(QResizeEvent *event)
                 m_splitter->layout()->activate();
         }
     }
+    // 缩放后新暴露/需要重填的像素（播放页黑底、视频帧）在 QSS 背景不保证重绘时
+    // 会残留。非播放模式整中央区异步重绘一次；用 update() 而不是 repaint()，
+    // 避免播放页/大窗口下同步阻塞出帧。
+    if (!m_playerMode && centralWidget())
+        centralWidget()->update();
 }
 
 void MainWindow::restoreSidebarWidth()
@@ -1462,6 +1473,11 @@ void MainWindow::setPlayerMode(bool enabled)
     m_stack->setCurrentIndex(returnIndex);
     m_player->setFullscreen(m_fullscreen);
     restoreSidebarLayoutAfterChrome();
+    // 一次性同步重绘：退出播放的那一帧就用主页背景覆盖残留的播放页像素（黑边）。
+    // 只在退出播放模式这一处做，播放期间仍走 resizeEvent 里的异步 update()。
+    if (centralWidget())
+        centralWidget()->repaint();
+    qInfo() << "MainWindow: exit player mode size" << size() << "min" << minimumSize();
     // 实机诊断：确认退出时用的是缩放后的真实窗口尺寸，且 splitter/sidebar 已复原。
     qInfo() << "MainWindow::exitPlayerMode geometry=" << geometry()
             << "splitterWidth=" << (m_splitter ? m_splitter->width() : -1)
