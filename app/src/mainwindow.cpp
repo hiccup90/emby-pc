@@ -901,7 +901,8 @@ void PlayerController::logPerfSample()
     };
     const QString line =
         QStringLiteral("perf: renders=%1 presented=%2 interval=%3 vfps=%4 dfps=%5 "
-                       "drops=%6 decDrops=%7 mistimed=%8 hwdec=%9 pixfmt=%10 res=%11x%12")
+                       "drops=%6 decDrops=%7 mistimed=%8 hwdec=%9 pixfmt=%10 res=%11x%12 "
+                       "prim=%13 gamma=%14 sig=%15")
             .arg(static_cast<qulonglong>(renders))
             .arg(static_cast<qulonglong>(presented))
             .arg(interval)
@@ -913,7 +914,10 @@ void PlayerController::logPerfSample()
             .arg(read("hwdec-current"))
             .arg(read("video-params/pixelformat"))
             .arg(read("video-params/w"))
-            .arg(read("video-params/h"));
+            .arg(read("video-params/h"))
+            .arg(read("video-params/primaries"))
+            .arg(read("video-params/gamma"))
+            .arg(read("video-params/sig-peak"));
     qInfo().noquote() << line;
 }
 

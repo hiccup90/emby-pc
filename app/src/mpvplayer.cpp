@@ -320,7 +320,11 @@ bool MpvPlayer::initialize(quintptr renderDevice, const QStringList &httpHeaderL
     setOption("dither-depth", QStringLiteral("auto"));
 
     // ---- 字幕 ----
-    setOption("blend-subtitles", QStringLiteral("video"));
+    // 4K 片源下 blend-subtitles=video 会先按视频分辨率（如 3840x2160）把字幕
+    // 混进每一帧再做缩放，每帧都付一次 4K 混合成本；改为 no 后字幕不再混入
+    // 视频帧，由 libass 渲染后作为 OSD 在输出分辨率叠加。sub-ass-override 保持
+    // no，ASS 样式/特效不被覆盖。
+    setOption("blend-subtitles", QStringLiteral("no"));
     setOption("sub-ass-override", QStringLiteral("no"));
     setOption("embeddedfonts", QStringLiteral("yes"));
     setOption("sub-auto", QStringLiteral("fuzzy"));
