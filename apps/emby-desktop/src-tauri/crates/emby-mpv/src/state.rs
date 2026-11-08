@@ -362,6 +362,8 @@ mod tests {
         assert!(asm.is_dirty());
         asm.clear_dirty();
         asm.set_duration(600.0);
+        assert!(asm.is_dirty(), "duration change must mark dirty");
+        asm.clear_dirty();
         asm.set_position(1.0);
         assert!(!asm.is_dirty(), "time-pos must not mark dirty");
         asm.on_file_loaded();
