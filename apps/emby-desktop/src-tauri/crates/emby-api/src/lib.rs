@@ -28,6 +28,10 @@ pub mod url;
 
 pub use auth::{authorization_header, default_device_name, CLIENT_NAME, CLIENT_VERSION};
 pub use client::{default_http_client, EmbyClient, LoginOutcome, DEFAULT_TIMEOUT, LOGIN_TIMEOUT};
+// The Tauri app names the shared client type through this alias instead of
+// depending on `reqwest` directly, so version/feature selection stays defined
+// in exactly one place (this crate's Cargo.toml).
+pub use reqwest::Client as HttpClient;
 pub use error::{ApiError, ApiErrorKind, ApiResult};
 pub use model::{
     EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest,

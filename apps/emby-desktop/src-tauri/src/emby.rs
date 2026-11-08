@@ -1,13 +1,13 @@
 //! Tauri bridge for `emby-api`.
 //!
 //! Responsibilities:
-//! - own the one shared `reqwest::Client`,
+//! - own the one shared `emby_api::HttpClient`,
 //! - lazily restore `session.json` from the app config dir,
 //! - drop the in-memory *and* on-disk session on 401/403,
 //! - expose the camelCase command contract consumed by the frontend.
 //!
 //! All commands are `async fn`: Tauri runs them on its tokio runtime, never on
-//! the UI thread, and the `reqwest` calls are non-blocking. File I/O for
+//! the UI thread, and the HTTP calls are non-blocking. File I/O for
 //! `session.json` is a few hundred bytes, so it is done inline instead of being
 //! pushed through `spawn_blocking`.
 //!
@@ -28,7 +28,7 @@ const AUTH_EXPIRED: &str = "登录已失效，请重新登录";
 
 /// Managed state for every `emby_*` command.
 pub struct EmbyService {
-    http: reqwest::Client,
+    http: emby_api::HttpClient,
     store: SessionStore,
     device_name: String,
     session: Mutex<SessionState>,
