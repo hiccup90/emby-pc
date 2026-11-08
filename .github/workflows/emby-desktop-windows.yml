@@ -3,18 +3,21 @@ name: emby-desktop-windows
 # Compile-only Windows pipeline for the Tauri 2 rewrite.
 # This verifies that the Windows x64 executable builds; it intentionally does
 # not produce an MSI installer (`--no-bundle` below).
+#
+# Manual trigger only: no automatic triggers are configured, so commits
+# never start a run on their own. Start it with:
+#   gh workflow run emby-desktop-windows.yml --ref rewrite/tauri-emby
+#
+# Bundled libmpv runtime (Windows x64):
+#   Package: mpv-dev-x86_64-20261108-git-55d3feb45c.7z
+#   Release: https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261108
+#   SHA-256: 7c147cb7ceaba717414e782ef4398de728f679db6e86daaa8aeb175670cb7994
+#   License: shinchiro's mpv builds are GPLv2-or-later (GPLv2+). Confirm
+#   license compliance before redistributing libmpv-2.dll with the executable.
+#   Keep the URL and hash pinned; a version bump must update both values and
+#   record where the new SHA-256 came from.
 
 "on":
-  push:
-    branches:
-      - "rewrite/tauri-emby"
-    paths:
-      - "apps/emby-desktop/**"
-      - ".github/workflows/emby-desktop-windows.yml"
-  pull_request:
-    paths:
-      - "apps/emby-desktop/**"
-      - ".github/workflows/emby-desktop-windows.yml"
   workflow_dispatch:
 
 permissions:
@@ -26,6 +29,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  LIBMPV_VERSION: "mpv-dev-x86_64-20261108-git-55d3feb45c"
+  LIBMPV_URL: "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261108/mpv-dev-x86_64-20261108-git-55d3feb45c.7z"
+  LIBMPV_SHA256: "7c147cb7ceaba717414e782ef4398de728f679db6e86daaa8aeb175670cb7994"
 
 jobs:
   windows:
@@ -43,6 +49,7 @@ jobs:
         working-directory: .
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $lockfile = "apps/emby-desktop/pnpm-lock.yaml"
           if (-not (Test-Path -LiteralPath $lockfile -PathType Leaf)) {
             throw "Missing $lockfile in the checkout; commit it before running this workflow."
@@ -80,6 +87,117 @@ jobs:
       - name: Type check frontend
         run: pnpm exec tsc -b
 
+      # Cargo.lock is committed by the main branch owner, but a first-time
+      # build is allowed to generate it. This check is informational only.
+      - name: Check Cargo.lock presence (non-blocking)
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lockfile = "apps/emby-desktop/src-tauri/Cargo.lock"
+          if (Test-Path -LiteralPath $lockfile -PathType Leaf) {
+            Write-Host "Found $lockfile"
+          } else {
+            Write-Warning "Missing $lockfile; Cargo may generate it on the first build."
+            Write-Host "::warning::Missing $lockfile (allowed for the first build)."
+          }
+
+      # emby-mpv is being added to the Tauri workspace by another change. Until
+      # its manifest lands, skip the test instead of failing this pipeline.
+      - name: Test emby-mpv crate (if present)
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $manifest = "apps/emby-desktop/src-tauri/crates/emby-mpv/Cargo.toml"
+          if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+            Write-Host "::notice::Skipping cargo test -p emby-mpv: $manifest is not present."
+            return
+          }
+          Push-Location "apps/emby-desktop/src-tauri"
+          try {
+            cargo test -p emby-mpv
+            if ($LASTEXITCODE -ne 0) {
+              throw "cargo test -p emby-mpv failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Download libmpv archive
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archiveDir = Join-Path $env:RUNNER_TEMP "libmpv"
+          New-Item -ItemType Directory -Force -Path $archiveDir | Out-Null
+          $archive = Join-Path $archiveDir "libmpv.7z"
+          Write-Host "Downloading $env:LIBMPV_VERSION from $env:LIBMPV_URL"
+          Invoke-WebRequest -Uri $env:LIBMPV_URL -OutFile $archive -UseBasicParsing
+          $size = (Get-Item -LiteralPath $archive).Length
+          Write-Host "Downloaded $archive ($size bytes)"
+
+      - name: Verify libmpv archive SHA-256
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "libmpv\libmpv.7z"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw "libmpv archive not found: $archive"
+          }
+          $expected = $env:LIBMPV_SHA256.ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "libmpv archive SHA-256 mismatch: expected $expected, got $actual"
+          }
+          Write-Host "SHA-256 verified: $actual"
+
+      - name: Extract libmpv archive
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "libmpv\libmpv.7z"
+          $extractDir = Join-Path $env:RUNNER_TEMP "libmpv\extracted"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw "libmpv archive not found: $archive"
+          }
+          if (Test-Path -LiteralPath $extractDir) {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path -LiteralPath $sevenZip -PathType Leaf) {
+            & $sevenZip x $archive "-o$extractDir" -y
+            if ($LASTEXITCODE -ne 0) {
+              throw "7-Zip extraction failed with exit code $LASTEXITCODE"
+            }
+          } else {
+            Write-Warning "7-Zip not found at $sevenZip; falling back to tar.exe."
+            & tar.exe -xf $archive -C $extractDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "tar.exe could not extract $archive (exit code $LASTEXITCODE); install 7-Zip or use a tar-compatible archive."
+            }
+          }
+
+      - name: Locate libmpv-2.dll
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $extractDir = Join-Path $env:RUNNER_TEMP "libmpv\extracted"
+          $dlls = @(Get-ChildItem -LiteralPath $extractDir -Filter "libmpv-2.dll" -File -Recurse)
+          if ($dlls.Count -eq 0) {
+            throw "libmpv-2.dll was not found under $extractDir"
+          }
+          if ($dlls.Count -gt 1) {
+            Write-Warning "Found $($dlls.Count) copies of libmpv-2.dll; using the first one."
+          }
+          $dll = $dlls[0].FullName
+          Write-Host "Found libmpv-2.dll: $dll"
+          "LIBMPV_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       # Compile only: tauri.conf.json still declares an MSI bundle, but
       # `--no-bundle` skips packaging and leaves just the executable.
       # The runner is x86_64-pc-windows-msvc, so no --target is passed and the
@@ -87,19 +205,48 @@ jobs:
       - name: Build Windows executable (no installer)
         run: pnpm tauri build --no-bundle
 
-      - name: Verify executable exists
+      # libmpv-2.dll must sit next to the executable for the packaged build to
+      # load it at runtime. The Tauri build does not copy it automatically.
+      - name: Copy libmpv-2.dll next to executable
         working-directory: .
         shell: pwsh
         run: |
-          $exe = "apps/emby-desktop/src-tauri/target/release/emby-desktop.exe"
-          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-            throw "Expected executable not found: $exe"
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:LIBMPV_DLL)) {
+            throw "LIBMPV_DLL is not set; the libmpv locate step did not run."
           }
-          Get-Item -LiteralPath $exe | Format-List FullName, Length
+          if (-not (Test-Path -LiteralPath $env:LIBMPV_DLL -PathType Leaf)) {
+            throw "Located libmpv-2.dll no longer exists: $env:LIBMPV_DLL"
+          }
+          $targetDir = "apps/emby-desktop/src-tauri/target/release"
+          if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+            throw "Build output directory not found: $targetDir"
+          }
+          $target = Join-Path $targetDir "libmpv-2.dll"
+          Copy-Item -LiteralPath $env:LIBMPV_DLL -Destination $target -Force
+          Get-Item -LiteralPath $target | Format-List FullName, Length
 
-      - name: Upload Windows executable
+      - name: Verify executable and libmpv runtime
+        working-directory: .
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifacts = @(
+            "apps/emby-desktop/src-tauri/target/release/emby-desktop.exe",
+            "apps/emby-desktop/src-tauri/target/release/libmpv-2.dll"
+          )
+          foreach ($artifact in $artifacts) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Expected artifact not found: $artifact"
+            }
+            Get-Item -LiteralPath $artifact | Format-List FullName, Length
+          }
+
+      - name: Upload Windows executable and libmpv runtime
         uses: actions/upload-artifact@v4
         with:
           name: emby-desktop-windows-x64-${{ github.sha }}
-          path: apps/emby-desktop/src-tauri/target/release/emby-desktop.exe
+          path: |
+            apps/emby-desktop/src-tauri/target/release/emby-desktop.exe
+            apps/emby-desktop/src-tauri/target/release/libmpv-2.dll
           if-no-files-found: error

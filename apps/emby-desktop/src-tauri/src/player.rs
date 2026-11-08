@@ -1,0 +1,454 @@
+//! Tauri glue for the mpv kernel.
+//!
+//! Everything that can be tested lives in the `emby-mpv` crate; this module is
+//! intentionally thin: it owns the `PlayerSession`, fans snapshots out to
+//! `Channel`s, and exposes the command contract.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use emby_mpv::{
+    MpvLibrary, OpenRequest, PlayerCommand, PlayerSession, PlayerSnapshot, SessionConfig,
+    SnapshotHub, SnapshotSink, TrackKind, VideoSync, SHUTDOWN_TIMEOUT, STATUS_IDLE,
+};
+use tauri::ipc::Channel;
+use tauri::State;
+
+use crate::video_window::VideoHost;
+
+/// `player_open` waits at most this long for the worker's loading snapshot.
+const OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy)]
+struct DesiredPlayback {
+    volume: f64,
+    muted: bool,
+}
+
+impl Default for DesiredPlayback {
+    fn default() -> Self {
+        Self {
+            volume: 100.0,
+            muted: false,
+        }
+    }
+}
+
+/// Forwards snapshots to the current `player_subscribe` channel. A new
+/// subscription replaces this sink (see `PlayerService::subscribe`).
+struct ChannelSink {
+    channel: Channel<PlayerSnapshot>,
+    alive: AtomicBool,
+}
+
+impl ChannelSink {
+    fn new(channel: Channel<PlayerSnapshot>) -> Self {
+        Self {
+            channel,
+            alive: AtomicBool::new(true),
+        }
+    }
+}
+
+impl SnapshotSink for ChannelSink {
+    fn publish(&self, snapshot: PlayerSnapshot) {
+        if !self.alive.load(Ordering::SeqCst) {
+            return;
+        }
+        if self.channel.send(snapshot).is_err() {
+            // The webview is gone (window close / reload). Stay silent for the
+            // normal case and let SnapshotHub prune this sink.
+            self.alive.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
+
+pub struct PlayerService {
+    hub: Arc<SnapshotHub>,
+    host: Option<VideoHost>,
+    session: Mutex<Option<PlayerSession>>,
+    desired: Mutex<DesiredPlayback>,
+    shutdown_started: AtomicBool,
+    log_path: PathBuf,
+}
+
+impl PlayerService {
+    pub fn new(host: Option<VideoHost>) -> Self {
+        Self {
+            hub: Arc::new(SnapshotHub::new()),
+            host,
+            session: Mutex::new(None),
+            desired: Mutex::new(DesiredPlayback::default()),
+            shutdown_started: AtomicBool::new(false),
+            log_path: mpv_log_path(),
+        }
+    }
+
+    fn lock_session(&self) -> MutexGuard<'_, Option<PlayerSession>> {
+        self.session
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn lock_desired(&self) -> MutexGuard<'_, DesiredPlayback> {
+        self.desired
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn spawn_session(
+        &self,
+        headers: Option<Vec<String>>,
+    ) -> Result<PlayerSession, String> {
+        let host = self
+            .host
+            .as_ref()
+            .ok_or_else(|| {
+                "player_open: native video host is unavailable (Windows-only embedding)".to_string()
+            })?;
+        // DLL errors must be synchronous so `player_open` can show them.
+        let library = MpvLibrary::load().map_err(|err| err.to_string())?;
+        library.check_api_version().map_err(|err| err.to_string())?;
+        let desired = *self.lock_desired();
+        let config = SessionConfig {
+            host_hwnd: host.hwnd(),
+            log_path: self.log_path.clone(),
+            headers,
+            volume: desired.volume,
+            muted: desired.muted,
+        };
+        PlayerSession::spawn(library, config, Arc::clone(&self.hub))
+            .map_err(|err| format!("player_open: {err}"))
+    }
+
+    // ---- commands -----------------------------------------------------------
+
+    pub fn open(&self, request: OpenRequest) -> Result<PlayerSnapshot, String> {
+        if self.shutdown_started.load(Ordering::SeqCst) {
+            return Err("player_open: the application is shutting down".to_string());
+        }
+        let url = request.url.trim().to_string();
+        if url.is_empty() {
+            return Err("player_open: empty url".to_string());
+        }
+        let start_seconds = request.start_seconds.filter(|s| s.is_finite() && *s > 0.0);
+        let headers = request.headers.clone();
+
+        let reply = {
+            let mut session = self.lock_session();
+            // Re-check under the session lock: `shutdown` may have completed
+            // between the flag check above and here, and must not be raced by a
+            // freshly spawned worker targeting a destroyed host window.
+            if self.shutdown_started.load(Ordering::SeqCst) {
+                return Err("player_open: the application is shutting down".to_string());
+            }
+            let created = session.is_none();
+            if created {
+                *session = Some(self.spawn_session(headers.clone())?);
+            } else if headers.as_ref().is_some_and(|list| !list.is_empty()) {
+                // http-header-fields only works before mpv_initialize(); the
+                // session is already running, so the headers cannot be applied.
+                eprintln!(
+                    "[player] open: headers can only be applied when a session is created; \
+                     reusing the running session without them"
+                );
+            }
+
+            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+            let send_result = session
+                .as_ref()
+                .expect("session exists after spawn")
+                .send(PlayerCommand::Open {
+                    url: url.clone(),
+                    start_seconds,
+                    reply: Some(reply_tx),
+                });
+            if let Err(err) = send_result {
+                eprintln!("[player] open: mpv thread is gone ({err}); dropping the session");
+                *session = None;
+                return Err(format!(
+                    "player_open: mpv worker is not running ({err}); retry the open"
+                ));
+            }
+            reply_rx
+        };
+
+        // The worker publishes the post-reset loading snapshot and replies with
+        // it; a short bounded wait here keeps the returned `seq` consistent with
+        // the channel stream (this is not the UI thread).
+        match reply.recv_timeout(OPEN_REPLY_TIMEOUT) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(err) => {
+                eprintln!("[player] open: no snapshot reply within {OPEN_REPLY_TIMEOUT:?}: {err}");
+                Ok(self.hub.latest())
+            }
+        }
+    }
+
+    pub fn set_paused(&self, paused: bool) -> Result<(), String> {
+        self.send(PlayerCommand::SetPaused(paused))
+    }
+
+    pub fn seek(&self, seconds: f64, exact: Option<bool>) -> Result<(), String> {
+        if !seconds.is_finite() {
+            return Err(format!("player_seek: invalid position {seconds}"));
+        }
+        self.send(PlayerCommand::Seek {
+            seconds: seconds.max(0.0),
+            exact: exact.unwrap_or(true),
+        })
+    }
+
+    pub fn set_volume(&self, volume: f64) -> Result<(), String> {
+        let volume = if volume.is_finite() {
+            volume.clamp(0.0, 100.0)
+        } else {
+            100.0
+        };
+        self.lock_desired().volume = volume;
+        let session = self.lock_session();
+        match session.as_ref() {
+            Some(active) => active
+                .send(PlayerCommand::SetVolume(volume))
+                .map_err(|err| err.to_string()),
+            None => {
+                // No mpv yet: remember it and reflect it in the snapshot.
+                self.hub.update(|snapshot| snapshot.volume = volume);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn set_muted(&self, muted: bool) -> Result<(), String> {
+        self.lock_desired().muted = muted;
+        let session = self.lock_session();
+        match session.as_ref() {
+            Some(active) => active
+                .send(PlayerCommand::SetMuted(muted))
+                .map_err(|err| err.to_string()),
+            None => {
+                self.hub.update(|snapshot| snapshot.muted = muted);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn set_track(&self, kind: &str, id: i64) -> Result<(), String> {
+        let Some(kind) = TrackKind::parse(kind) else {
+            return Err(format!(
+                "player_set_track: unknown track kind {kind:?} (expected \"audio\" or \"subtitle\")"
+            ));
+        };
+        self.send(PlayerCommand::SetTrack { kind, id })
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        // The UI leaves the player page with `player_stop` (+ a hidden
+        // `video_sync`), so the native window must go away even if the worker
+        // is already gone or never started.
+        self.hide_video();
+        if let Some(active) = self.lock_session().as_ref() {
+            // Best effort: if the worker already died the idle snapshot below
+            // still puts the UI back into a sane state.
+            let _ = active.send(PlayerCommand::Stop);
+        }
+        let desired = *self.lock_desired();
+        self.hub.update(|snapshot| {
+            snapshot.status = STATUS_IDLE.to_string();
+            snapshot.position_seconds = 0.0;
+            snapshot.duration_seconds = 0.0;
+            snapshot.buffering = false;
+            snapshot.video_width = 0;
+            snapshot.video_height = 0;
+            snapshot.audio_tracks.clear();
+            snapshot.subtitle_tracks.clear();
+            snapshot.error = None;
+            snapshot.volume = desired.volume;
+            snapshot.muted = desired.muted;
+        });
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> PlayerSnapshot {
+        self.hub.latest()
+    }
+
+    pub fn subscribe(&self, channel: Channel<PlayerSnapshot>) -> Result<(), String> {
+        // Subscribing is idempotent by design: the UI re-subscribes on every
+        // visit to the player page and there is no unsubscribe command, so the
+        // newest channel replaces all previous ones (and receives the current
+        // snapshot immediately).
+        self.hub.set_sink(Arc::new(ChannelSink::new(channel)));
+        Ok(())
+    }
+
+    pub fn video_sync(&self, request: VideoSync) -> Result<(), String> {
+        match &self.host {
+            Some(host) => {
+                // `false` only means "stale seq" or "window destroyed"; not an
+                // IPC error the UI needs to handle.
+                let _ = host.push_sync(request);
+                Ok(())
+            }
+            None => Err("video_sync: native video host is unavailable on this platform".to_string()),
+        }
+    }
+
+    pub fn hide_video(&self) {
+        if let Some(host) = &self.host {
+            let _ = host.hide();
+        }
+    }
+
+    pub fn toggle_fullscreen(&self, window: &tauri::WebviewWindow) -> Result<bool, String> {
+        // Hide first: the native child window must not survive the resize /
+        // monitor transition. The frontend re-sends the rect afterwards.
+        self.hide_video();
+        let is_fullscreen = window.is_fullscreen().map_err(|err| err.to_string())?;
+        window
+            .set_fullscreen(!is_fullscreen)
+            .map_err(|err| err.to_string())?;
+        Ok(!is_fullscreen)
+    }
+
+    /// Stop mpv (quit + join, 2 s timeout) and then destroy the host window.
+    /// Must be called on the main thread. Idempotent.
+    pub fn shutdown(&self) {
+        if self.shutdown_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let session = self.lock_session().take();
+        let mut clean = true;
+        if let Some(mut session) = session {
+            clean = session.shutdown(SHUTDOWN_TIMEOUT);
+            if !clean {
+                // The mpv thread is stuck in terminate_destroy; keep the host
+                // window alive (parent of mpv's child) and let process exit
+                // reclaim it instead of destroying it under a live mpv.
+                eprintln!(
+                    "[player] mpv did not stop within {:?}; leaving the video host window for process teardown",
+                    SHUTDOWN_TIMEOUT
+                );
+            }
+        }
+        if clean {
+            if let Some(host) = &self.host {
+                host.destroy();
+            }
+        }
+        self.hub.update(|snapshot| {
+            snapshot.status = STATUS_IDLE.to_string();
+            snapshot.buffering = false;
+        });
+        // In-flight WM_APP+1 messages are harmless: VideoHost::push_sync and
+        // the window procedure both check the destroyed flag / HWND validity.
+    }
+
+    fn send(&self, command: PlayerCommand) -> Result<(), String> {
+        let session = self.lock_session();
+        match session.as_ref() {
+            Some(active) => active.send(command).map_err(|err| err.to_string()),
+            // Controls before the first open are not an error: mpv simply has
+            // nothing to apply them to (volume/mute are persisted separately).
+            None => Ok(()),
+        }
+    }
+}
+
+fn mpv_log_path() -> PathBuf {
+    let mut directory = std::env::temp_dir();
+    directory.push("emby-desktop");
+    if let Err(err) = std::fs::create_dir_all(&directory) {
+        eprintln!(
+            "[player] could not create log directory {}: {err}",
+            directory.display()
+        );
+    }
+    // Never contains headers/tokens: libmpv writes here, and the path is the
+    // only thing logged by us.
+    directory.join(format!("mpv-{}.log", std::process::id()))
+}
+
+// ---- Tauri commands ----------------------------------------------------------
+// Argument names are converted to camelCase by Tauri (`on_event` -> `onEvent`,
+// `req` -> `req`, ...). Wire types serialize with `rename_all = "camelCase"`.
+
+#[tauri::command]
+pub fn video_sync(req: VideoSync, state: State<'_, PlayerService>) -> Result<(), String> {
+    state.video_sync(req)
+}
+
+// Runs on Tauri's thread pool: `open` waits (bounded, typically < 50 ms) for
+// the mpv worker's loading snapshot and must not block the main thread.
+#[tauri::command(async)]
+pub fn player_open(
+    req: OpenRequest,
+    state: State<'_, PlayerService>,
+) -> Result<PlayerSnapshot, String> {
+    state.open(req)
+}
+
+#[tauri::command]
+pub fn player_set_paused(paused: bool, state: State<'_, PlayerService>) -> Result<(), String> {
+    state.set_paused(paused)
+}
+
+#[tauri::command]
+pub fn player_seek(
+    seconds: f64,
+    exact: Option<bool>,
+    state: State<'_, PlayerService>,
+) -> Result<(), String> {
+    state.seek(seconds, exact)
+}
+
+#[tauri::command]
+pub fn player_set_volume(volume: f64, state: State<'_, PlayerService>) -> Result<(), String> {
+    state.set_volume(volume)
+}
+
+#[tauri::command]
+pub fn player_set_muted(muted: bool, state: State<'_, PlayerService>) -> Result<(), String> {
+    state.set_muted(muted)
+}
+
+#[tauri::command]
+pub fn player_set_track(
+    kind: String,
+    id: i64,
+    state: State<'_, PlayerService>,
+) -> Result<(), String> {
+    state.set_track(&kind, id)
+}
+
+#[tauri::command]
+pub fn player_stop(state: State<'_, PlayerService>) -> Result<(), String> {
+    state.stop()
+}
+
+#[tauri::command]
+pub fn player_snapshot(state: State<'_, PlayerService>) -> Result<PlayerSnapshot, String> {
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub fn player_toggle_fullscreen(
+    window: tauri::WebviewWindow,
+    state: State<'_, PlayerService>,
+) -> Result<bool, String> {
+    state.toggle_fullscreen(&window)
+}
+
+#[tauri::command]
+pub fn player_subscribe(
+    on_event: Channel<PlayerSnapshot>,
+    state: State<'_, PlayerService>,
+) -> Result<(), String> {
+    state.subscribe(on_event)
+}

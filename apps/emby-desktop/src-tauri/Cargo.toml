@@ -5,8 +5,22 @@ description = "Emby desktop client"
 authors = ["Emby Desktop contributors"]
 edition = "2021"
 
+[workspace]
+members = [".", "crates/emby-mpv"]
+resolver = "2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+emby-mpv = { path = "crates/emby-mpv", default-features = false, features = ["serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

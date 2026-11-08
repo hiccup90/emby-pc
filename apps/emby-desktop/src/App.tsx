@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import type { ArtKey, DemoMedia, Screen, TrackMenu } from "./types";
+import type { ArtKey, DemoMedia, Screen } from "./types";
 import { continueWatching, demoMedia, featuredMedia, recentlyAdded } from "./data/demo";
+import PlayerPage from "./player/PlayerPage";
 import "./styles.css";
+
+if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
+  const icon = document.createElement("link");
+  icon.rel = "icon";
+  icon.type = "image/svg+xml";
+  const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='#171a17'/><path d='M16 6 26 16 16 26 6 16Z' fill='none' stroke='#c58b65' stroke-width='2'/></svg>";
+  icon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  document.head.append(icon);
+}
 
 type IconName = "arrow-left" | "arrow-right" | "play" | "pause" | "volume" | "volume-off" | "captions" | "audio" | "chevron";
 
@@ -122,42 +132,11 @@ function MediaCard({ media, onSelect, progress = false }: { media: DemoMedia; on
   );
 }
 
-function rangeBackground(percent: number): string {
-  const bounded = Math.min(100, Math.max(0, percent));
-  return `linear-gradient(to right, var(--color-copper) 0 ${bounded}%, #505249 ${bounded}% 100%)`;
-}
-
-function formatTime(seconds: number): string {
-  const safe = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const remaining = safe % 60;
-  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}` : `${minutes}:${String(remaining).padStart(2, "0")}`;
-}
-
 export default function App() {
   const [screen, setScreen] = useState<Screen>("login");
   const [activeMedia, setActiveMedia] = useState<DemoMedia>(featuredMedia);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [detailReturnTime, setDetailReturnTime] = useState(0);
-  const [volume, setVolume] = useState(72);
-  const [muted, setMuted] = useState(false);
-  const [trackMenu, setTrackMenu] = useState<TrackMenu>(null);
-  const [audioTrack, setAudioTrack] = useState("国语 · 立体声");
-  const [subtitleTrack, setSubtitleTrack] = useState("简体中文");
-  const [controlsVisible, setControlsVisible] = useState(true);
-  const [playerMessage, setPlayerMessage] = useState("演示状态已就绪");
-  const [volumeBeforeMute, setVolumeBeforeMute] = useState(72);
-  const controlsRef = useRef<HTMLElement>(null);
   const homeHeadingRef = useRef<HTMLHeadingElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
-  const playerMainRef = useRef<HTMLElement>(null);
-  const playButtonRef = useRef<HTMLButtonElement>(null);
-  const recallFocusRef = useRef(false);
-  const audioTriggerRef = useRef<HTMLButtonElement>(null);
-  const subtitleTriggerRef = useRef<HTMLButtonElement>(null);
-  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const openMedia = useCallback((media: DemoMedia) => {
     setActiveMedia(media);
@@ -165,140 +144,28 @@ export default function App() {
   }, []);
 
   const enterPlayer = useCallback(() => {
-    setDetailReturnTime(currentTime);
-    setCurrentTime(Math.floor(activeMedia.durationSeconds * activeMedia.progress));
-    setIsPlaying(false);
-    setTrackMenu(null);
-    setControlsVisible(true);
-    setPlayerMessage("演示状态已就绪");
     setScreen("player");
-  }, [activeMedia, currentTime]);
+  }, []);
 
-  const leavePlayer = useCallback(() => {
-    if (idleTimer.current) clearTimeout(idleTimer.current);
-    setCurrentTime(detailReturnTime);
-    setIsPlaying(false);
-    setTrackMenu(null);
-    setControlsVisible(true);
+  const returnToDetail = useCallback(() => {
     setScreen("detail");
-  }, [detailReturnTime]);
-
-  const scheduleControlHide = useCallback(() => {
-    if (idleTimer.current) clearTimeout(idleTimer.current);
-    if (screen !== "player" || trackMenu !== null || controlsRef.current?.contains(document.activeElement)) return;
-    idleTimer.current = setTimeout(() => setControlsVisible(false), 2500);
-  }, [screen, trackMenu]);
-
-  const wakeControls = useCallback(() => {
-    setControlsVisible(true);
-    if (controlsRef.current?.contains(document.activeElement)) {
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-      return;
-    }
-    scheduleControlHide();
-  }, [scheduleControlHide]);
-
-  const togglePlayback = useCallback(() => {
-    setIsPlaying((playing) => !playing);
-    setPlayerMessage("演示控件已切换 · 并未播放视频");
-    wakeControls();
-  }, [wakeControls]);
+  }, []);
 
   useEffect(() => {
     if (screen === "home") homeHeadingRef.current?.focus({ preventScroll: true });
     if (screen === "detail") detailHeadingRef.current?.focus({ preventScroll: true });
-    if (screen === "player") playerMainRef.current?.focus({ preventScroll: true });
   }, [screen]);
 
   useEffect(() => {
-    if (screen === "player" && controlsVisible && recallFocusRef.current) {
-      recallFocusRef.current = false;
-      playButtonRef.current?.focus({ preventScroll: true });
-    }
-  }, [controlsVisible, screen]);
-
-  useEffect(() => {
-    if (screen !== "player") {
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-      return;
-    }
-    if (!controlsVisible || trackMenu !== null) return;
-    scheduleControlHide();
-    return () => {
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-    };
-  }, [screen, controlsVisible, trackMenu, scheduleControlHide]);
-
-  useEffect(() => {
-    if (screen !== "player" || !isPlaying) return;
-    const interval = setInterval(() => {
-      setCurrentTime((time) => Math.min(activeMedia.durationSeconds, time + 1));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [screen, isPlaying, activeMedia.durationSeconds]);
-
-  useEffect(() => {
-    if (screen === "player" && currentTime >= activeMedia.durationSeconds) {
-      setIsPlaying(false);
-      setPlayerMessage("演示进度已到结尾 · 并未播放视频");
-    }
-  }, [activeMedia.durationSeconds, currentTime, screen]);
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (target instanceof HTMLElement && target.closest(".track-menu")) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          const openMenu = trackMenu;
-          setTrackMenu(null);
-          if (openMenu === "audio") audioTriggerRef.current?.focus();
-          if (openMenu === "subtitle") subtitleTriggerRef.current?.focus();
-        }
-        return;
-      }
-      if (event.key === "Escape") {
-        if (screen === "player") {
-          event.preventDefault();
-          leavePlayer();
-        } else if (screen === "detail") {
-          event.preventDefault();
-          setScreen("home");
-        }
-        return;
-      }
-      if (screen !== "player") return;
-      const isControl = target instanceof HTMLElement && (target.matches("input, button, select, textarea, [role='menu']") || target.isContentEditable);
-      if (event.code === "Space" && !isControl) {
+      if (event.key === "Escape" && screen === "detail") {
         event.preventDefault();
-        togglePlayback();
-      } else if (event.key === "ArrowRight" && !isControl) {
-        event.preventDefault();
-        setCurrentTime((time) => Math.min(activeMedia.durationSeconds, time + 10));
-        setPlayerMessage("已向前跳转 10 秒 · 演示");
-        wakeControls();
-      } else if (event.key === "ArrowLeft" && !isControl) {
-        event.preventDefault();
-        setCurrentTime((time) => Math.max(0, time - 10));
-        setPlayerMessage("已向后跳转 10 秒 · 演示");
-        wakeControls();
+        setScreen("home");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeMedia.durationSeconds, leavePlayer, screen, togglePlayback, trackMenu, wakeControls]);
-
-  const toggleMute = () => {
-    if (muted) {
-      setMuted(false);
-      setVolume(volumeBeforeMute || 72);
-    } else {
-      setVolumeBeforeMute(volume);
-      setMuted(true);
-      setVolume(0);
-    }
-    wakeControls();
-  };
+  }, [screen]);
 
   const onServerSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -392,33 +259,7 @@ export default function App() {
         </main>
       </>}
 
-      {screen === "player" && <main className="player-layout" ref={playerMainRef} tabIndex={-1} onPointerMove={(event) => { const target = event.target; if (!(target instanceof HTMLElement) || target.closest(".controls-recall")) return; if (target.closest(".playback-panel")) { if (idleTimer.current) clearTimeout(idleTimer.current); return; } wakeControls(); }}>
-        <header className="player-topbar"><button className="player-back" type="button" onClick={leavePlayer}><Icon name="arrow-left" size={19} /><span>返回详情</span></button><div className="player-title"><span className="eyebrow">正在观看 · 演示模式</span><span>{activeMedia.title}</span></div><span className="player-topbar__mark"><BrandMark /> EMBER</span></header>
-        <section className="player-stage" aria-label="播放器演示画面">
-          <Artwork media={activeMedia} className="player-stage__art" />
-          <div className="player-stage__shade" />
-          <div className="player-stage__status"><span className="status-square" />原生播放引擎未接入</div>
-          <div className="player-stage__center"><span className="player-stage__overline">PLAYBACK PREVIEW · UI ONLY</span><h1 className="player-stage__title">{activeMedia.title}</h1><p>等待原生 libmpv 接入</p><span className="player-stage__disclaimer">这里是演示画面，不是真实视频播放</span><button className="stage-play" type="button" onClick={togglePlayback} aria-label={isPlaying ? "暂停演示" : "播放演示"} aria-pressed={isPlaying}><Icon name={isPlaying ? "pause" : "play"} size={22} /></button></div>
-          <div className="player-stage__bottom"><span>演示进度</span><span>{playerMessage}</span></div>
-        </section>
-        <section className={`playback-panel${controlsVisible ? " is-visible" : " is-hidden"}`} ref={controlsRef} aria-label="播放控制" onPointerLeave={scheduleControlHide} onFocusCapture={() => { if (idleTimer.current) clearTimeout(idleTimer.current); }} onBlurCapture={(event) => { const nextTarget = event.relatedTarget; if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) scheduleControlHide(); }}>
-          <div className="playback-panel__top">
-            <div className="playback-transport"><button className="transport-button transport-button--main" ref={playButtonRef} type="button" onClick={togglePlayback} aria-label={isPlaying ? "暂停演示" : "播放演示"} aria-pressed={isPlaying}><Icon name={isPlaying ? "pause" : "play"} size={19} /></button><span className="playback-name"><strong>{activeMedia.title}</strong><small>{activeMedia.subtitle}</small></span></div>
-            <div className="playback-tools">
-              <div className="track-control"><button type="button" ref={audioTriggerRef} className={`tool-button${trackMenu === "audio" ? " is-selected" : ""}`} aria-expanded={trackMenu === "audio"} onClick={() => setTrackMenu((menu) => menu === "audio" ? null : "audio")}><Icon name="audio" size={17} /><span>音轨</span><Icon name="chevron" size={14} /></button>{trackMenu === "audio" && <div className="track-menu" role="group" aria-label="选择音轨"><span className="track-menu__label">音频轨道 · 演示</span>{["国语 · 立体声", "原声 · 立体声"].map((track) => <button type="button" key={track} className={audioTrack === track ? "is-current" : ""} onClick={() => { setAudioTrack(track); setTrackMenu(null); setPlayerMessage(`音轨：${track} · 演示`); audioTriggerRef.current?.focus(); }}>{track}{audioTrack === track && <span>✓</span>}</button>)}</div>}</div>
-              <div className="track-control"><button type="button" ref={subtitleTriggerRef} className={`tool-button${trackMenu === "subtitle" ? " is-selected" : ""}`} aria-expanded={trackMenu === "subtitle"} onClick={() => setTrackMenu((menu) => menu === "subtitle" ? null : "subtitle")}><Icon name="captions" size={17} /><span>字幕</span><Icon name="chevron" size={14} /></button>{trackMenu === "subtitle" && <div className="track-menu" role="group" aria-label="选择字幕"><span className="track-menu__label">字幕轨道 · 演示</span>{["简体中文", "关闭字幕"].map((track) => <button type="button" key={track} className={subtitleTrack === track ? "is-current" : ""} onClick={() => { setSubtitleTrack(track); setTrackMenu(null); setPlayerMessage(`字幕：${track} · 演示`); subtitleTriggerRef.current?.focus(); }}>{track}{subtitleTrack === track && <span>✓</span>}</button>)}</div>}</div>
-              <div className="volume-control"><button className="volume-toggle" type="button" onClick={toggleMute} aria-label={muted || volume === 0 ? "打开音量" : "静音"}><Icon name={muted || volume === 0 ? "volume-off" : "volume"} size={18} /></button><label className="visually-hidden" htmlFor="player-volume">音量</label><input id="player-volume" type="range" min="0" max="100" value={muted ? 0 : volume} onChange={(event) => { const nextVolume = Number(event.target.value); setVolume(nextVolume); setMuted(nextVolume === 0); if (nextVolume > 0) setVolumeBeforeMute(nextVolume); }} style={{ background: rangeBackground(muted ? 0 : volume) }} /><span className="volume-value">{muted ? 0 : volume}</span></div>
-            </div>
-          </div>
-          <div className="seek-row"><span>{formatTime(currentTime)}</span><label className="visually-hidden" htmlFor="player-seek">播放进度</label><input id="player-seek" className="seek-range" type="range" min="0" max={activeMedia.durationSeconds} value={currentTime} onChange={(event) => { const value = Number(event.target.value); setCurrentTime(value); setPlayerMessage(`已跳转至 ${formatTime(value)} · 演示`); }} style={{ background: rangeBackground((currentTime / activeMedia.durationSeconds) * 100) }} /><span>{formatTime(activeMedia.durationSeconds)}</span></div>
-          <span className="playback-panel__disclaimer">所有控件仅为交互演示，不会播放媒体</span>
-        </section>
-        <div className={`player-footer${controlsVisible ? " player-footer--controls" : ""}`}>
-          <span className="player-shortcuts"><kbd>Space</kbd> 播放 / 暂停 <i /> <kbd>←</kbd><kbd>→</kbd> 跳转 10 秒 <i /> <kbd>Esc</kbd> 返回</span>
-          {!controlsVisible && <button className="controls-recall" type="button" onClick={() => { recallFocusRef.current = true; setTrackMenu(null); wakeControls(); }} aria-label="显示播放控制"><span className="controls-recall__dot" />显示播放控制<Icon name="chevron" size={15} /></button>}
-        </div>
-        <span className="visually-hidden" aria-live="polite">{playerMessage}</span>
-      </main>}
+      {screen === "player" && <PlayerPage media={activeMedia} onBack={returnToDetail} />}
     </div>
   );
 }
