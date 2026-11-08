@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode, RefObject } from "react";
-import type { DemoMedia } from "../types";
+import type { EmbyPlaybackTarget } from "../emby/contract";
+import { compactUrl } from "../emby/format";
+import { reportEmbyPlayback } from "../emby/playback";
 import type { PlayerStatus, PlayerTrack } from "./contract";
 import { invokePlayerStop } from "./tauri";
 import { usePlayer } from "./usePlayer";
@@ -220,11 +222,12 @@ function TrackPanel({ kind, label, tracks, onSelect, onClose }: TrackPanelProps)
 }
 
 interface PlayerPageProps {
-  media: DemoMedia;
+  title: string;
+  playback?: EmbyPlaybackTarget;
   onBack: () => void;
 }
 
-export default function PlayerPage({ media, onBack }: PlayerPageProps) {
+export default function PlayerPage({ title, playback, onBack }: PlayerPageProps) {
   const {
     isDesktop,
     snapshot,
@@ -256,6 +259,16 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
   const trackMenuRef = useRef<PlayerTrackKind | null>(null);
   const pendingFocusRef = useRef<"show" | "play" | null>(null);
   const seekPreviewRef = useRef<number | null>(null);
+  const autoOpenedRef = useRef<string | null>(null);
+  const manualModeRef = useRef(false);
+  const startReportedRef = useRef(false);
+  const stopReportedRef = useRef(false);
+  const positionRef = useRef(0);
+  const lastStatusRef = useRef<PlayerStatus>("idle");
+
+  const playbackKey = playback
+    ? `${playback.itemId}:${playback.playSessionId ?? ""}`
+    : null;
 
   const [url, setUrl] = useState("");
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -265,6 +278,69 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
   useVideoSync(slotRef, isDesktop);
 
   useEffect(() => {
+    startReportedRef.current = false;
+    stopReportedRef.current = false;
+    manualModeRef.current = false;
+    lastStatusRef.current = "idle";
+  }, [playbackKey]);
+
+  useEffect(() => {
+    positionRef.current = snapshot?.positionSeconds ?? 0;
+  }, [snapshot?.positionSeconds]);
+
+  useEffect(() => {
+    if (!isDesktop || !playback || !playbackKey) return;
+    const key = `${playbackKey}:${playback.url}:${playback.startSeconds}`;
+    if (autoOpenedRef.current === key) return;
+    autoOpenedRef.current = key;
+    manualModeRef.current = false;
+    void open(playback.url, playback.startSeconds);
+  }, [isDesktop, open, playback, playbackKey]);
+
+  useEffect(() => {
+    if (
+      !isDesktop ||
+      !playback ||
+      manualModeRef.current ||
+      startReportedRef.current ||
+      !snapshot ||
+      (snapshot.status !== "playing" && snapshot.status !== "paused")
+    ) {
+      return;
+    }
+    startReportedRef.current = true;
+    reportEmbyPlayback(playback, "start", playback.startSeconds, false);
+  }, [isDesktop, playback, snapshot]);
+
+  useEffect(() => {
+    const previous = lastStatusRef.current;
+    lastStatusRef.current = status;
+    if (!isDesktop || !playback || manualModeRef.current || !startReportedRef.current) {
+      return;
+    }
+    const position = positionRef.current;
+    if (status === "ended" && previous !== "ended") {
+      reportEmbyPlayback(playback, "ended", position, false);
+    } else if (previous === "paused" && status === "playing") {
+      reportEmbyPlayback(playback, "unpause", position, false);
+    } else if (
+      (previous === "playing" || previous === "loading") &&
+      status === "paused"
+    ) {
+      reportEmbyPlayback(playback, "pause", position, true);
+    }
+  }, [isDesktop, playback, status]);
+
+  useEffect(() => {
+    if (!isDesktop || !playback || status !== "playing") return;
+    const timer = window.setInterval(() => {
+      if (manualModeRef.current) return;
+      reportEmbyPlayback(playback, "progress", positionRef.current, false);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [isDesktop, playback, status]);
+
+  useEffect(() => {
     if (!isDesktop) return;
     return () => {
       void invokePlayerStop().catch(() => {
@@ -272,6 +348,25 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
       });
     };
   }, [isDesktop]);
+
+  useEffect(() => {
+    if (!isDesktop || !playback) return;
+    return () => {
+      if (
+        startReportedRef.current &&
+        !stopReportedRef.current &&
+        !manualModeRef.current
+      ) {
+        stopReportedRef.current = true;
+        reportEmbyPlayback(
+          playback,
+          "stop",
+          positionRef.current,
+          lastStatusRef.current === "paused",
+        );
+      }
+    };
+  }, [isDesktop, playback]);
 
   useEffect(() => {
     pageRef.current?.focus({ preventScroll: true });
@@ -393,9 +488,18 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
       if (seekPreviewRef.current === null) return;
       if (!Number.isFinite(value)) return;
       updateSeekPreview(null);
-      void seek(value);
+      void seek(value).then((ok) => {
+        if (ok && !manualModeRef.current) {
+          reportEmbyPlayback(
+            playback ?? null,
+            "seek",
+            value,
+            status === "paused",
+          );
+        }
+      });
     },
-    [seek, updateSeekPreview],
+    [playback, seek, status, updateSeekPreview],
   );
 
   const closeTrackMenu = useCallback(() => {
@@ -410,11 +514,26 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
   }, [trackMenu]);
 
   const leavePlayer = useCallback(() => {
+    if (
+      isDesktop &&
+      playback &&
+      !manualModeRef.current &&
+      startReportedRef.current &&
+      !stopReportedRef.current
+    ) {
+      stopReportedRef.current = true;
+      reportEmbyPlayback(
+        playback,
+        "stop",
+        positionRef.current,
+        lastStatusRef.current === "paused",
+      );
+    }
     if (isDesktop && isFullscreen) {
       void toggleFullscreen();
     }
     onBack();
-  }, [isDesktop, isFullscreen, onBack, toggleFullscreen]);
+  }, [isDesktop, isFullscreen, onBack, playback, toggleFullscreen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -482,6 +601,7 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
 
   const handleOpenSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    manualModeRef.current = true;
     updateSeekPreview(null);
     setTrackMenu(null);
     wakeControls();
@@ -528,7 +648,7 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
         </button>
         <div className="player-title">
           <span className="eyebrow">{isDesktop ? "原生 mpv · 播放" : "浏览器预览 · 非 Tauri"}</span>
-          <span>{media.title}</span>
+          <span>{title}</span>
         </div>
         <span className="player-topbar__mark">
           <span className="brand-mark" aria-hidden="true">
@@ -566,11 +686,13 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
               <span className="player-empty__eyebrow">
                 {status === "error" ? "PLAYBACK ERROR" : "NO MEDIA LOADED"}
               </span>
-              <h1>{status === "error" ? "播放失败" : media.title}</h1>
+              <h1>{status === "error" ? "播放失败" : title}</h1>
               <p>
                 {status === "error"
                   ? snapshotError ?? "请重新输入播放地址后重试。"
-                  : "输入播放地址，验证前端控制命令与原生 mpv 的链路。"}
+                  : playback
+                    ? "正在通过 Emby 获取播放直链，随后交给本机 mpv。"
+                    : "展开“调试直链”并输入地址，验证前端控制命令与原生 mpv 的链路。"}
               </p>
               <p className="player-empty__hint">
                 {isDesktop
@@ -590,7 +712,7 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
           {!isDesktop && hasMedia && (
             <div className="player-preview-frame">
               <span className="player-preview-frame__tag">LOCAL PREVIEW / FAKE STATE</span>
-              <strong>{media.title}</strong>
+              <strong>{title}</strong>
               <span className="player-preview-frame__url" title={sourceUrl ?? undefined}>
                 {sourceUrl}
               </span>
@@ -616,7 +738,12 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
               }
             }}
           >
-            <div className="player-source-row">
+            <details className="player-debug" open={!playback}>
+              <summary>
+                <span>调试直链</span>
+                <span>MANUAL URL</span>
+              </summary>
+              <div className="player-source-row">
               <form className="player-source" noValidate onSubmit={handleOpenSubmit} aria-busy={isOpening}>
                 <span className="player-source__field">
                   <label htmlFor="player-source-url">播放地址</label>
@@ -642,12 +769,16 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
                 </button>
               </form>
               <div className="player-source-meta">
-                <span className="player-source__current" title={sourceUrl ?? undefined}>
-                  {sourceUrl ?? "直接 URL 测试 · 未连接 Emby"}
+                <span
+                  className="player-source__current"
+                  title={sourceUrl ?? undefined}
+                >
+                  {sourceUrl ? compactUrl(sourceUrl) : "手动输入播放直链"}
                 </span>
                 {!isDesktop && <span className="player-preview-tag">预览</span>}
               </div>
-            </div>
+              </div>
+            </details>
 
             {visibleError && (
               <div className="player-error" role="alert">
@@ -675,7 +806,7 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
                   <PlayerIcon name={isPlaying ? "pause" : "play"} size={19} />
                 </button>
                 <span className="playback-name">
-                  <strong>{media.title}</strong>
+                  <strong>{title}</strong>
                   <small>{isDesktop ? `原生播放器 · ${label}` : "浏览器假状态 · 预览"}</small>
                 </span>
               </div>
@@ -845,7 +976,15 @@ export default function PlayerPage({ media, onBack }: PlayerPageProps) {
           <kbd>→</kbd> 跳转 10 秒 <i /> <kbd>F</kbd> 全屏 <i /> <kbd>Esc</kbd> 返回
         </span>
         <span className="player-footer__source">
-          {hasMedia ? (isDesktop ? "原生 mpv · 命令已连接" : "浏览器预览 · 本地假状态") : "等待播放地址"}
+          {hasMedia
+            ? isDesktop
+              ? playback
+                ? "原生 mpv · Emby 直链"
+                : "原生 mpv · 调试直链"
+              : "浏览器预览 · 本地假状态"
+            : playback
+              ? "等待 Emby 播放直链"
+              : "等待调试直链"}
         </span>
       </footer>
     </main>

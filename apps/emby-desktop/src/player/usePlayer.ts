@@ -25,9 +25,9 @@ export interface PlayerSession {
   isOpening: boolean;
   sourceUrl: string | null;
   isFullscreen: boolean;
-  open: (url: string) => Promise<boolean>;
+  open: (url: string, startSeconds?: number) => Promise<boolean>;
   togglePlayback: () => Promise<void>;
-  seek: (seconds: number) => Promise<void>;
+  seek: (seconds: number) => Promise<boolean>;
   setVolume: (volume: number) => Promise<void>;
   toggleMuted: () => Promise<void>;
   selectTrack: (kind: PlayerTrackKind, id: number) => Promise<void>;
@@ -54,11 +54,15 @@ function createIdleSnapshot(): PlayerSnapshot {
   };
 }
 
-function createPreviewSnapshot(volume: number, muted: boolean): PlayerSnapshot {
+function createPreviewSnapshot(
+  volume: number,
+  muted: boolean,
+  startSeconds = 0,
+): PlayerSnapshot {
   return {
     seq: 1,
     status: "playing",
-    positionSeconds: 0,
+    positionSeconds: Math.min(Math.max(0, startSeconds), PREVIEW_DURATION_SECONDS),
     durationSeconds: PREVIEW_DURATION_SECONDS,
     volume,
     muted,
@@ -171,7 +175,7 @@ export function usePlayer(): PlayerSession {
   }, [isDesktop]);
 
   const open = useCallback(
-    async (rawUrl: string): Promise<boolean> => {
+    async (rawUrl: string, startSeconds = 0): Promise<boolean> => {
       let url: string;
       try {
         url = normalizeSourceUrl(rawUrl);
@@ -180,11 +184,16 @@ export function usePlayer(): PlayerSession {
         return false;
       }
 
+      const resumeAt = Number.isFinite(startSeconds) ? Math.max(0, startSeconds) : 0;
       setError(null);
       if (!isDesktop) {
         setIsOpening(true);
         setSnapshot((previous) => {
-          const base = createPreviewSnapshot(previous?.volume ?? 72, previous?.muted ?? false);
+          const base = createPreviewSnapshot(
+            previous?.volume ?? 72,
+            previous?.muted ?? false,
+            resumeAt,
+          );
           return { ...base, seq: (previous?.seq ?? 0) + 1 };
         });
         setSourceUrl(url);
@@ -195,7 +204,7 @@ export function usePlayer(): PlayerSession {
       setIsOpening(true);
       lastSeqRef.current = -1;
       try {
-        const next = await invokePlayerOpen({ url });
+        const next = await invokePlayerOpen({ url, startSeconds: resumeAt });
         if (mountedRef.current) {
           setSourceUrl(url);
           if (next.seq >= lastSeqRef.current) {
@@ -253,10 +262,10 @@ export function usePlayer(): PlayerSession {
   }, [isDesktop, snapshot]);
 
   const seek = useCallback(
-    async (seconds: number) => {
+    async (seconds: number): Promise<boolean> => {
       if (!snapshot || snapshot.status === "idle") {
         setError("尚未载入媒体，无法跳转。");
-        return;
+        return false;
       }
 
       const upperBound = snapshot.durationSeconds > 0 ? snapshot.durationSeconds : seconds;
@@ -274,17 +283,20 @@ export function usePlayer(): PlayerSession {
               }
             : previous,
         );
-        return;
+        return true;
       }
 
       try {
         await invokePlayerSeek(target, true);
-        if (!mountedRef.current) return;
-        setSnapshot((previous) =>
-          previous ? { ...previous, positionSeconds: target } : previous,
-        );
+        if (mountedRef.current) {
+          setSnapshot((previous) =>
+            previous ? { ...previous, positionSeconds: target } : previous,
+          );
+        }
+        return true;
       } catch (reason) {
         if (mountedRef.current) setError(describeError(reason, "跳转失败"));
+        return false;
       }
     },
     [isDesktop, snapshot],

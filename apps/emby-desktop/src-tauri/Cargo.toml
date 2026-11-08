@@ -6,7 +6,7 @@ authors = ["Emby Desktop contributors"]
 edition = "2021"
 
 [workspace]
-members = [".", "crates/emby-mpv"]
+members = [".", "crates/emby-api", "crates/emby-mpv"]
 resolver = "2"
 
 [build-dependencies]
@@ -14,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+emby-api = { path = "crates/emby-api", features = ["tls"] }
 emby-mpv = { path = "crates/emby-mpv", default-features = false, features = ["serde"] }
 
 [target.'cfg(windows)'.dependencies]

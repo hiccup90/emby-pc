@@ -3,7 +3,9 @@
 //! Emby Desktop shell. The only job of this file is wiring the player kernel
 //! (`emby_mpv`) and its Win32 host window (`video_window`) into Tauri: managed
 //! state, command registration, channel subscription and teardown order.
+//! The Emby session/API commands live in `emby`.
 
+mod emby;
 mod player;
 mod video_window;
 
@@ -35,6 +37,9 @@ fn main() {
             };
 
             app.manage(PlayerService::new(host));
+            // Session store lives in the app config dir; a failure here is
+            // fatal because login/logout could not persist anything.
+            app.manage(emby::EmbyService::new(app.handle())?);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -47,6 +52,15 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            emby::emby_login,
+            emby::emby_logout,
+            emby::emby_session,
+            emby::emby_views,
+            emby::emby_items,
+            emby::emby_item,
+            emby::emby_playback_target,
+            emby::emby_report_playback,
+            emby::emby_image_url,
             player::video_sync,
             player::player_open,
             player::player_set_paused,
