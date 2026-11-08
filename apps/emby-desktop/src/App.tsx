@@ -354,11 +354,11 @@ export default function App() {
           </section>
           <section className="media-section" aria-labelledby="continue-title">
             <div className="section-heading"><div><span className="eyebrow">拾起上次的故事</span><h2 id="continue-title">继续观看</h2></div><span className="section-count">{String(continueWatching.length).padStart(2, "0")} <i>/</i> CONTINUE</span></div>
-            <div className="media-rail">{continueWatching.map((media) => <MediaCard key={media.id} media={media} onSelect={openMedia} progress />)</div>
+            <div className="media-rail">{continueWatching.map((media) => <MediaCard key={media.id} media={media} onSelect={openMedia} progress />)}</div>
           </section>
           <section className="media-section media-section--recent" aria-labelledby="recent-title">
             <div className="section-heading section-heading--small"><div><span className="eyebrow">刚刚入库</span><h2 id="recent-title">最近添加</h2></div><span className="section-count">LOCAL LIBRARY <i>·</i> {demoMedia.length} 部</span></div>
-            <div className="media-rail media-rail--posters">{recentlyAdded.map((media) => <MediaCard key={media.id} media={media} onSelect={openMedia} />)</div>
+            <div className="media-rail media-rail--posters">{recentlyAdded.map((media) => <MediaCard key={media.id} media={media} onSelect={openMedia} />)}</div>
           </section>
           <footer className="home-footer"><span><BrandMark />私人影库，静静相伴。</span><span>演示数据 · 尚未连接 Emby</span></footer>
         </main>

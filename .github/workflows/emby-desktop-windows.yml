@@ -1,8 +1,17 @@
 name: emby-desktop-windows
 
-on:
+# Compile-only Windows pipeline for the Tauri 2 rewrite.
+# This verifies that the Windows x64 executable builds; it intentionally does
+# not produce an MSI installer (`--no-bundle` below).
+
+"on":
   push:
-    branches: [rewrite/tauri-emby]
+    branches:
+      - "rewrite/tauri-emby"
+    paths:
+      - "apps/emby-desktop/**"
+      - ".github/workflows/emby-desktop-windows.yml"
+  pull_request:
     paths:
       - "apps/emby-desktop/**"
       - ".github/workflows/emby-desktop-windows.yml"
@@ -11,11 +20,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: emby-desktop-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   windows:
-    name: Windows x64 (Tauri 2)
+    name: Windows x64 (Tauri 2, compile only)
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/emby-desktop
@@ -23,24 +39,67 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+      - name: Verify lockfile is present
+        working-directory: .
+        shell: pwsh
+        run: |
+          $lockfile = "apps/emby-desktop/pnpm-lock.yaml"
+          if (-not (Test-Path -LiteralPath $lockfile -PathType Leaf)) {
+            throw "Missing $lockfile in the checkout; commit it before running this workflow."
+          }
 
+      # Install pnpm before setup-node so `cache: pnpm` can resolve the store.
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9.15.4
           run_install: false
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: apps/emby-desktop/pnpm-lock.yaml
+
       - name: Install Rust (MSVC x64)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/emby-desktop/src-tauri -> target"
 
-      - name: Build frontend and Windows app
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Explicit type check. `tauri build` also runs `pnpm build` via
+      # beforeBuildCommand (tsc -b + vite build), which is acceptable here.
+      - name: Type check frontend
+        run: pnpm exec tsc -b
+
+      # Compile only: tauri.conf.json still declares an MSI bundle, but
+      # `--no-bundle` skips packaging and leaves just the executable.
+      # The runner is x86_64-pc-windows-msvc, so no --target is passed and the
+      # output stays at src-tauri/target/release/emby-desktop.exe.
+      - name: Build Windows executable (no installer)
         run: pnpm tauri build --no-bundle
+
+      - name: Verify executable exists
+        working-directory: .
+        shell: pwsh
+        run: |
+          $exe = "apps/emby-desktop/src-tauri/target/release/emby-desktop.exe"
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Expected executable not found: $exe"
+          }
+          Get-Item -LiteralPath $exe | Format-List FullName, Length
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: emby-desktop-windows-x64-${{ github.sha }}
+          path: apps/emby-desktop/src-tauri/target/release/emby-desktop.exe
+          if-no-files-found: error
