@@ -102,23 +102,26 @@ jobs:
             Write-Host "::warning::Missing $lockfile (allowed for the first build)."
           }
 
-      # emby-mpv is being added to the Tauri workspace by another change. Until
-      # its manifest lands, skip the test instead of failing this pipeline.
-      - name: Test emby-mpv crate (if present)
+      # The workspace crates are being merged independently. Test each crate
+      # whose manifest is present; a missing manifest is a skip, not a failure.
+      - name: Test workspace crates (if present)
         working-directory: .
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $manifest = "apps/emby-desktop/src-tauri/crates/emby-mpv/Cargo.toml"
-          if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
-            Write-Host "::notice::Skipping cargo test -p emby-mpv: $manifest is not present."
-            return
-          }
+          $crates = @("emby-mpv", "emby-api")
           Push-Location "apps/emby-desktop/src-tauri"
           try {
-            cargo test -p emby-mpv
-            if ($LASTEXITCODE -ne 0) {
-              throw "cargo test -p emby-mpv failed with exit code $LASTEXITCODE"
+            foreach ($crate in $crates) {
+              $manifest = "crates/$crate/Cargo.toml"
+              if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+                Write-Host "::notice::Skipping cargo test -p ${crate}: $manifest is not present."
+                continue
+              }
+              cargo test -p $crate
+              if ($LASTEXITCODE -ne 0) {
+                throw "cargo test -p ${crate} failed with exit code $LASTEXITCODE"
+              }
             }
           } finally {
             Pop-Location
