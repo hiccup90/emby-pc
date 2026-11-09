@@ -19,6 +19,13 @@ name: emby-desktop-windows
 
 "on":
   workflow_dispatch:
+    inputs:
+      # 默认只打包 emby-desktop.exe（约 3 MB），下载快、占空间小。
+      # 勾选后额外产出含 libmpv-2.dll 的完整包（约 49 MB），仅用于要直接运行的场景。
+      bundle_libmpv:
+        description: "包含 libmpv-2.dll 的完整包（约 49 MB；GPLv2+ 二进制，公开仓库下载即构成分发）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -245,11 +252,23 @@ jobs:
             Get-Item -LiteralPath $artifact | Format-List FullName, Length
           }
 
-      - name: Upload Windows executable and libmpv runtime
+      # 默认只上传 exe：libmpv-2.dll 是 pin 死的第三方文件（116 MB / 压后 46 MB），
+      # 每次构建重复上传它既慢又占空间。需要完整包时勾选 bundle_libmpv。
+      - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
           name: emby-desktop-windows-x64-${{ github.sha }}
+          path: apps/emby-desktop/src-tauri/target/release/emby-desktop.exe
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload full package (exe + libmpv runtime)
+        if: ${{ inputs.bundle_libmpv }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: emby-desktop-windows-x64-full-${{ github.sha }}
           path: |
             apps/emby-desktop/src-tauri/target/release/emby-desktop.exe
             apps/emby-desktop/src-tauri/target/release/libmpv-2.dll
+          retention-days: 1
           if-no-files-found: error
