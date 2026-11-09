@@ -76,20 +76,13 @@ summary:focus:not(:focus-visible) {
   flex-direction: column;
   justify-content: flex-end;
   opacity: 0;
-  visibility: hidden;
   pointer-events: none;
-  transition:
-    opacity 0.22s ease,
-    visibility 0s linear 0.22s;
+  transition: opacity 0.22s ease;
 }
 
 .overlay[data-visible="true"] {
   opacity: 1;
-  visibility: visible;
   pointer-events: auto;
-  transition:
-    opacity 0.22s ease,
-    visibility 0s linear 0s;
 }
 
 /* Expanded panel: 320 - 64 = 256 logical pixels above the bar. */

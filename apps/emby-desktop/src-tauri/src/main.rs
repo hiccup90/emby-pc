@@ -38,16 +38,15 @@ fn main() {
             };
 
             app.manage(PlayerService::new(host));
-            // Capture focus before creating the helper window; it is created
-            // unfocused, but this keeps the initial state independent of it.
-            let main_focused = window.is_focused().unwrap_or(true);
             // The native video is a child HWND above WebView2, so the controls
-            // live in their own transparent window. A failure here only
-            // disables the overlay, never the library/player commands.
+            // live in their own transparent window, owned by the main window
+            // (the OS keeps it above the owner and destroys it with it). A
+            // failure here only disables the overlay, never the library/player
+            // commands.
             if let Err(err) = overlay::create_controls_window(app.handle()) {
                 eprintln!("[desktop] controls overlay disabled: {err}");
             }
-            app.manage(overlay::OverlayState::new(main_focused));
+            app.manage(overlay::OverlayState::new());
             overlay::spawn_wake_poller(app.handle().clone());
             // Session store lives in the app config dir; a failure here is
             // fatal because login/logout could not persist anything.
@@ -73,9 +72,9 @@ fn main() {
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.stop_wake();
                     }
-                    // The controls window is independent of the main window at
-                    // the OS level; destroying it lets the app exit and avoids
-                    // a stray always-on-top surface during teardown.
+                    // Owned windows are destroyed with their owner, but an
+                    // explicit destroy keeps app exit immediate and avoids a
+                    // stray controls surface while mpv tears down.
                     if let Some(controls) = app.get_webview_window(overlay::CONTROLS_LABEL) {
                         let _ = controls.destroy();
                     }
@@ -90,11 +89,11 @@ fn main() {
                         let _ = controls.destroy();
                     }
                 }
-                WindowEvent::Focused(focused) => {
-                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
-                        state.on_main_focus(app, *focused);
-                    }
-                }
+                // Focus is deliberately ignored: the overlay is an owned window
+                // and visibility is driven by `player_ui_mode` / `video_sync`
+                // only. Reacting to focus here caused a show/hide loop with the
+                // overlay's own activation attempts.
+                WindowEvent::Focused(_) => {}
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.on_main_geometry(app, None);

@@ -1,5 +1,6 @@
 :root {
   color-scheme: dark;
+  --titlebar-height: 36px;
   --bg: #0a0a0b;
   --surface: #121214;
   --surface-2: #17171a;
@@ -26,6 +27,7 @@
 html,
 body,
 #root {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -85,15 +87,97 @@ input:focus:not(:focus-visible) {
 }
 
 .app-shell {
-  min-height: 100vh;
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
+}
+
+.app-content {
+  height: calc(100vh - var(--titlebar-height));
+  flex: 0 0 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+/* The player deliberately ignores the title bar offset. */
+.app-content--player {
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Title bar (custom chrome for the borderless window) */
+
+.titlebar {
+  display: flex;
+  width: 100%;
+  height: var(--titlebar-height);
+  min-width: 0;
+  flex: 0 0 var(--titlebar-height);
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.titlebar__brand {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.titlebar__drag {
+  min-width: 8px;
+  height: 100%;
+  flex: 1 1 auto;
+}
+
+.titlebar__controls {
+  display: flex;
+  height: 100%;
+  flex: 0 0 auto;
+  align-items: stretch;
+}
+
+.titlebar__button {
+  display: grid;
+  width: 46px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  align-self: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.titlebar__button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.titlebar__button--close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.titlebar__button svg {
+  display: block;
 }
 
 /* Boot */
 
 .boot-screen {
   display: flex;
-  min-height: 100vh;
+  min-height: 100%;
   align-items: center;
   justify-content: center;
   flex-direction: column;
@@ -231,7 +315,7 @@ input:focus:not(:focus-visible) {
 
 .login-page {
   display: flex;
-  min-height: 100vh;
+  min-height: 100%;
   align-items: center;
   justify-content: center;
   padding: 24px;

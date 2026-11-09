@@ -1,4 +1,4 @@
-//! Transparent, always-on-top controls surface for the native player.
+//! Transparent controls surface owned by the main player window.
 //!
 //! The video is a native child `HWND` of the main window (see
 //! `video_window.rs`), so it always paints above WebView2. CSS controls in the
@@ -6,15 +6,22 @@
 //! `controls` window that is positioned over the bottom strip of the video
 //! rectangle reported by `video_sync`.
 //!
-//! The window never takes focus (`focused(false)` + `WS_EX_NOACTIVATE`) and is
+//! The window is an owned window of the main window (`.parent(&main)`): Windows
+//! keeps it above its owner, hides it when the owner is minimized and destroys
+//! it with the owner, so no topmost flag or focus-driven show/hide is needed. It never takes focus (`focused(false)` + `focusable(false)`) and is
 //! click-through while the controls are faded out (`overlay_set_interactive`).
 //! Geometry is kept in physical pixels and re-applied on main-window move,
 //! resize and DPI changes.
 //!
+//! Visibility is driven only by `player_ui_mode` and `video_sync.visible`. While
+//! the video is visible the overlay is shown once and then only moved/resized;
+//! it is never hidden on focus changes. This avoids the show/hide + ex-style
+//! churn that made the bar flicker.
+//!
 //! Coordinate contract: `VideoSync.x/y/w/h` are CSS pixels relative to the
 //! main webview client area. The client origin comes from `inner_position()`
-//! (equal to `outer_position()` while the player window is undecorated); the
-//! clamp still uses the outer top so the overlay can never leave the window.
+//! (equal to `outer_position()` because the app window is always undecorated);
+//! the clamp still uses the outer top so the overlay can never leave the window.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -52,24 +59,20 @@ enum UiMode {
     Player,
 }
 
-#[derive(Clone, Copy)]
-struct RestoreState {
-    decorations: bool,
-    shadow: bool,
-}
-
 struct Inner {
     mode: UiMode,
     expanded: bool,
     sync: Option<VideoSync>,
     /// Ignore out-of-order `video_sync` calls (page remounts send `seq == 0`).
     latch: SeqLatch,
-    restore: Option<RestoreState>,
-    /// The main window currently owns keyboard focus (and is not minimized).
-    main_focused: bool,
     /// Last geometry pushed to the controls window, to avoid redundant calls.
     last_geometry: Option<(i32, i32, u32, u32)>,
     controls_shown: bool,
+    /// Whether the controls should currently receive mouse input.
+    interactive: bool,
+    /// Last click-through state actually applied to the controls window.
+    /// `None` means "unknown"; it is forced to the desired value after `show()`.
+    cursor_ignored: Option<bool>,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -80,17 +83,20 @@ pub struct OverlayState {
 }
 
 impl OverlayState {
-    pub fn new(main_focused: bool) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
                 mode: UiMode::App,
                 expanded: false,
                 sync: None,
                 latch: SeqLatch::new(),
-                restore: None,
-                main_focused,
                 last_geometry: None,
                 controls_shown: false,
+                interactive: false,
+                // `configure_controls_window` starts click-through before the
+                // state is created, so no first `set_ignore_cursor_events`
+                // round-trip is needed here.
+                cursor_ignored: Some(true),
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -120,60 +126,19 @@ impl OverlayState {
             .get_webview_window(MAIN_LABEL)
             .ok_or_else(|| "player_ui_mode: missing main window".to_string())?;
 
-        // Read the frame state only on the first player entry. Getter before
-        // taking the state lock: window getters round-trip through the event
-        // loop, and a window event handler may be waiting for that same lock.
-        // Keeping the first snapshot also survives a quick player -> app ->
-        // player toggle, where the restore patch may not have been applied yet.
-        let need_snapshot = {
-            let inner = self.lock();
-            player && inner.mode != UiMode::Player && inner.restore.is_none()
-        };
-        let current_decorations = if need_snapshot {
-            main.is_decorated().unwrap_or(true)
-        } else {
-            true
-        };
-        let (changed, restore) = {
+        // The main window keeps its frameless configuration in both modes, so
+        // only the background and the overlay visibility change here. The mode
+        // is set unconditionally to keep the call idempotent: repeating it
+        // re-asserts the background and visibility after a remount.
+        {
             let mut inner = self.lock();
-            let target = if player { UiMode::Player } else { UiMode::App };
-            if inner.mode == target {
-                (false, inner.restore)
-            } else {
-                if player && inner.restore.is_none() {
-                    // Shadow has no getter in Tauri; the app window is created
-                    // with the default (shadow on), so that is the restore value.
-                    inner.restore = Some(RestoreState {
-                        decorations: current_decorations,
-                        shadow: true,
-                    });
-                }
-                inner.mode = target;
-                (true, inner.restore)
-            }
-        };
-
-        if !changed {
-            // Idempotent: keep the current mode, but re-assert visibility so a
-            // repeated `player` call recovers from a focus/minimize hide.
-            if player {
-                self.present(app, None)?;
-            } else {
-                self.hide(app);
-            }
-            return Ok(());
+            inner.mode = if player { UiMode::Player } else { UiMode::App };
         }
 
         if player {
             let mut first_error = None;
             if let Err(err) = main.set_background_color(Some(Color(0, 0, 0, 255))) {
                 first_error.get_or_insert_with(|| format!("set background: {err}"));
-            }
-            if let Err(err) = main.set_decorations(false) {
-                first_error.get_or_insert_with(|| format!("set decorations: {err}"));
-            }
-            if let Err(err) = main.set_shadow(false) {
-                first_error.get_or_insert_with(|| format!("set shadow: {err}"));
             }
             if let Err(err) = self.present(app, None) {
                 first_error.get_or_insert(err);
@@ -183,27 +148,12 @@ impl OverlayState {
                 None => Ok(()),
             }
         } else {
-            // Hide before restoring the frame so the overlay never floats over
-            // a decorated window for a frame.
+            // Leaving the player: drop the overlay first, then restore the
+            // normal app background. Decorations are never touched: the window
+            // is frameless for the whole app lifetime.
             self.hide(app);
-            let restore = restore.unwrap_or(RestoreState {
-                decorations: true,
-                shadow: true,
-            });
-            let mut first_error = None;
-            if let Err(err) = main.set_decorations(restore.decorations) {
-                first_error.get_or_insert_with(|| format!("set decorations: {err}"));
-            }
-            if let Err(err) = main.set_shadow(restore.shadow) {
-                first_error.get_or_insert_with(|| format!("set shadow: {err}"));
-            }
-            if let Err(err) = main.set_background_color(None::<Color>) {
-                first_error.get_or_insert_with(|| format!("reset background: {err}"));
-            }
-            match first_error {
-                Some(err) => Err(format!("player_ui_mode(\"app\"): {err}")),
-                None => Ok(()),
-            }
+            main.set_background_color(None::<Color>)
+                .map_err(|err| format!("player_ui_mode(\"app\"): reset background: {err}"))
         }
     }
 
@@ -241,40 +191,32 @@ impl OverlayState {
     }
 
     pub fn set_interactive(&self, app: &AppHandle, interactive: bool) {
-        let Some(controls) = app.get_webview_window(CONTROLS_LABEL) else {
-            return;
-        };
-        if let Err(err) = controls.set_ignore_cursor_events(!interactive) {
-            eprintln!("[overlay] could not change click-through state: {err}");
+        self.lock().interactive = interactive;
+        if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
+            // `apply_click_through` compares against the state last applied to
+            // the OS, so repeated commands with the same value do not rewrite
+            // GWL_EXSTYLE (which forces a frame refresh and made the bar
+            // flicker), while `overlay_set_interactive(false)` still recovers
+            // if the window was shown in between.
+            self.apply_click_through(&controls);
         }
-        // `set_ignore_cursor_events` recomputes the whole ex-style from Tauri's
-        // flags, which drops the manually added WS_EX_TOOLWINDOW. (WS_EX_NOACTIVATE
-        // survives because the window was built with focusable(false).)
-        schedule_ex_style_repair(app);
     }
 
-    pub fn on_main_focus(&self, app: &AppHandle, focused: bool) {
-        {
-            let mut inner = self.lock();
-            inner.main_focused = focused;
-        }
-        if !focused {
-            self.hide(app);
+    /// Push the desired click-through state to the OS only when the applied
+    /// state differs. `cursor_ignored == None` means "unknown" and is used
+    /// right after `show()`, because showing can rewrite the ex-style.
+    fn apply_click_through(&self, controls: &WebviewWindow) {
+        let (interactive, applied) = {
+            let inner = self.lock();
+            (inner.interactive, inner.cursor_ignored)
+        };
+        let ignore = !interactive;
+        if applied == Some(ignore) {
             return;
         }
-        // Tauri has no WindowEvent::Minimized; a minimized window always loses
-        // focus, so the restore path has to check IsIconic here.
-        let minimized = app
-            .get_webview_window(MAIN_LABEL)
-            .and_then(|window| window.is_minimized().ok())
-            .unwrap_or(false);
-        if minimized {
-            self.lock().main_focused = false;
-            self.hide(app);
-            return;
-        }
-        if let Err(err) = self.present(app, None) {
-            eprintln!("[overlay] could not show controls after focus: {err}");
+        match controls.set_ignore_cursor_events(ignore) {
+            Ok(()) => self.lock().cursor_ignored = Some(ignore),
+            Err(err) => eprintln!("[overlay] could not set click-through to {ignore}: {err}"),
         }
     }
 
@@ -293,19 +235,16 @@ impl OverlayState {
 
     // ---- geometry / visibility ---------------------------------------------
 
-    /// Position and (if appropriate) show the controls window.
+    /// Position the controls window, showing it once when the video becomes
+    /// visible. Inside player mode this never hides/shows on focus changes:
+    /// the overlay follows `video_sync.visible` and the player UI mode only.
     fn present(&self, app: &AppHandle, scale_override: Option<f64>) -> Result<(), String> {
-        let (mode, sync, expanded, main_focused) = {
+        let (mode, sync, expanded, shown) = {
             let inner = self.lock();
-            (
-                inner.mode,
-                inner.sync,
-                inner.expanded,
-                inner.main_focused,
-            )
+            (inner.mode, inner.sync, inner.expanded, inner.controls_shown)
         };
 
-        if mode != UiMode::Player || !main_focused {
+        if mode != UiMode::Player {
             self.hide(app);
             return Ok(());
         }
@@ -313,6 +252,9 @@ impl OverlayState {
             self.hide(app);
             return Ok(());
         };
+        // `visible == false` means the page left the video (stop / unmount);
+        // only then is the overlay hidden. A zero-size rect is treated the same
+        // way because there is nothing sensible to position against.
         if !sync.visible || sync.w <= 0.0 || sync.h <= 0.0 {
             self.hide(app);
             return Ok(());
@@ -345,7 +287,7 @@ impl OverlayState {
         let geometry_changed = self.lock().last_geometry != Some(geometry);
         if geometry_changed {
             // Size first, then position: both are queued on the main thread and
-            // the window stays hidden until the show below is processed.
+            // the update is a move/resize only, not a hide/show cycle.
             controls
                 .set_size(PhysicalSize::new(geometry.2, geometry.3))
                 .map_err(|err| format!("set controls size: {err}"))?;
@@ -355,25 +297,15 @@ impl OverlayState {
             self.lock().last_geometry = Some(geometry);
         }
 
-        if !self.lock().controls_shown {
-            // Queued after the geometry messages. `show()` is safe here: the
-            // window is focusable(false) + WS_EX_NOACTIVATE, so showing it does
-            // not take keyboard focus (and we never call `set_focus`).
-            match show_controls(app, &controls) {
-                Ok(()) => {
-                    self.lock().controls_shown = true;
-                    // Re-check: a focus loss / app-mode switch may have raced
-                    // the show above and queued a hide behind it.
-                    let still_wanted = {
-                        let inner = self.lock();
-                        inner.mode == UiMode::Player && inner.main_focused
-                    };
-                    if !still_wanted {
-                        self.hide(app);
-                    }
-                }
-                Err(err) => return Err(err),
-            }
+        if !shown {
+            show_controls(&controls)?;
+            self.lock().controls_shown = true;
+            // `show()` can rewrite the ex-style from Tauri's window flags, so
+            // the click-through state is re-applied once afterwards instead of
+            // being repaired after every show/hide. `cursor_ignored` is marked
+            // unknown first so the current state is really pushed.
+            self.lock().cursor_ignored = None;
+            self.apply_click_through(&controls);
         }
         Ok(())
     }
@@ -389,21 +321,26 @@ impl OverlayState {
             return;
         }
         if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
-            if let Err(err) = hide_controls(app, &controls) {
+            if let Err(err) = controls.hide() {
                 eprintln!("[overlay] could not hide controls: {err}");
             }
+            // The hidden window keeps its ex-style; mark the click-through
+            // state unknown so the next show re-applies it.
+            self.lock().cursor_ignored = None;
         }
     }
 
     /// Cursor-vs-video test for the wake poller. Returns `false` when the rect
     /// is unavailable so a transient failure cannot wake a hidden overlay.
+    /// Focus is deliberately not consulted: the overlay is an owned window, so
+    /// the OS hides it with its owner and focus changes must not drive it.
     #[cfg(windows)]
     fn cursor_inside_video(&self, main: &WebviewWindow, cursor: (i32, i32)) -> bool {
-        let (mode, sync, main_focused) = {
+        let (mode, sync) = {
             let inner = self.lock();
-            (inner.mode, inner.sync, inner.main_focused)
+            (inner.mode, inner.sync)
         };
-        if mode != UiMode::Player || !main_focused {
+        if mode != UiMode::Player {
             return false;
         }
         let Some(sync) = sync else {
@@ -455,15 +392,24 @@ fn compute_geometry(
 /// Create the hidden controls window during `setup`. A failure is logged by the
 /// caller and must not prevent the library UI from running.
 pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    let main = app
+        .get_webview_window(MAIN_LABEL)
+        .ok_or_else(|| "controls window: missing main window".to_string())?;
+
+    // `.parent(&main)` makes this an owned window on Windows: it always stays
+    // above the owner in the z-order, is hidden when the owner is minimized and
+    // is destroyed with it. That replaces the old topmost window flag and the
+    // focus-driven show/hide dance.
     let window = WebviewWindowBuilder::new(
         app,
         CONTROLS_LABEL,
         WebviewUrl::App("controls.html".into()),
     )
+    .parent(&main)
+    .map_err(|err| format!("controls parent: {err}"))?
     .title("Emby Controls")
     .transparent(true)
     .decorations(false)
-    .always_on_top(true)
     .skip_taskbar(true)
     .shadow(false)
     .resizable(false)
@@ -489,8 +435,13 @@ fn configure_controls_window(window: &WebviewWindow) -> Result<(), String> {
         .set_ignore_cursor_events(true)
         .map_err(|err| format!("controls click-through: {err}"))?;
 
+    // One-time style fix. `focusable(false)` already keeps the window
+    // non-activating through Tauri, so only WS_EX_TOOLWINDOW (keep the helper
+    // out of Alt+Tab) is set here. It is never re-applied afterwards: `set_ignore_cursor_events` and
+    // `show` rebuild the ex-style from Tauri's flags and re-adding flags after
+    // each call would force extra frame refreshes.
     #[cfg(windows)]
-    apply_no_activate_style(window)?;
+    apply_tool_window_style(window)?;
     Ok(())
 }
 
@@ -508,65 +459,33 @@ fn controls_hwnd(window: &WebviewWindow) -> Result<windows_sys::Win32::Foundatio
 }
 
 #[cfg(windows)]
-fn apply_no_activate_style(window: &WebviewWindow) -> Result<(), String> {
+fn apply_tool_window_style(window: &WebviewWindow) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
 
     let hwnd = controls_hwnd(window)?;
     unsafe {
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let wanted = current as u32 | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+        let wanted = current as u32 | WS_EX_TOOLWINDOW;
         if wanted as isize != current {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted as isize);
         }
         let check = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-        let required = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
-        if check & required != required {
+        if check & WS_EX_TOOLWINDOW == 0 {
             return Err(format!(
-                "controls ex-style is 0x{check:08x}; WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW missing"
+                "controls ex-style is 0x{check:08x}; WS_EX_TOOLWINDOW missing"
             ));
         }
     }
     Ok(())
 }
 
-fn show_controls(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+fn show_controls(window: &WebviewWindow) -> Result<(), String> {
     // Tauri keeps its own VISIBLE flag in sync; calling `ShowWindow` directly
-    // would desynchronise it and a later `set_ignore_cursor_events` would hide
-    // the window again. Activation stays suppressed by WS_EX_NOACTIVATE.
-    window.show().map_err(|err| format!("show controls: {err}"))?;
-    // `show` rewrites the ex-style from Tauri's flags, dropping TOOLWINDOW.
-    schedule_ex_style_repair(app);
-    Ok(())
+    // would desynchronise it. Activation stays suppressed by focusable(false).
+    window.show().map_err(|err| format!("show controls: {err}"))
 }
-
-fn hide_controls(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    window.hide().map_err(|err| format!("hide controls: {err}"))?;
-    schedule_ex_style_repair(app);
-    Ok(())
-}
-
-/// Queue the ex-style repair behind the preceding Tauri window message. Both
-/// use the same event-loop queue, so this also works when the command ran on an
-/// IPC thread.
-#[cfg(windows)]
-fn schedule_ex_style_repair(app: &AppHandle) {
-    let handle = app.clone();
-    let task_handle = handle.clone();
-    if let Err(err) = handle.run_on_main_thread(move || {
-        if let Some(controls) = task_handle.get_webview_window(CONTROLS_LABEL) {
-            if let Err(err) = apply_no_activate_style(&controls) {
-                eprintln!("[overlay] could not re-apply controls ex-style: {err}");
-            }
-        }
-    }) {
-        eprintln!("[overlay] could not queue controls ex-style repair: {err}");
-    }
-}
-
-#[cfg(not(windows))]
-fn schedule_ex_style_repair(_app: &AppHandle) {}
 
 // ---- cursor wake poller ------------------------------------------------------
 

@@ -153,25 +153,55 @@ export default function Overlay() {
   const [menu, setMenu] = useState<"audio" | "subtitle" | null>(null);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
-  const [activity, setActivity] = useState(0);
 
   const snapshotRef = useRef<PlayerSnapshot | null>(snapshot);
+  const visibleRef = useRef(true);
+  const autoHideTimerRef = useRef<number | null>(null);
+  const autoHideAllowedRef = useRef(false);
+  const lastInteractiveRef = useRef<boolean | null>(null);
   const seekDraftRef = useRef<number | null>(null);
   const seekHoldRef = useRef<number | null>(null);
   const volumeHoldRef = useRef<number | null>(null);
   const lastVolumeSentRef = useRef<number | null>(null);
   const lastSeekRef = useRef<{ value: number; at: number } | null>(null);
-  const lastWakeRef = useRef(0);
 
   const expanded = menu !== null;
 
-  const wake = useCallback(() => {
-    setVisible(true);
-    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-    if (now - lastWakeRef.current < 120) return;
-    lastWakeRef.current = now;
-    setActivity((value) => (value + 1) % 1_000_000);
+  const clearAutoHide = useCallback(() => {
+    if (autoHideTimerRef.current !== null) {
+      window.clearTimeout(autoHideTimerRef.current);
+      autoHideTimerRef.current = null;
+    }
   }, []);
+
+  const hideOverlay = useCallback(() => {
+    clearAutoHide();
+    if (!visibleRef.current) return;
+    visibleRef.current = false;
+    setVisible(false);
+  }, [clearAutoHide]);
+
+  // Only real state changes (playing/buffering/menu and visibility) arm the
+  // timer. It lives in a ref so the 250 ms snapshot poll cannot rebuild it and
+  // restart the fade on every render.
+  const scheduleAutoHide = useCallback(() => {
+    clearAutoHide();
+    if (!visibleRef.current || !autoHideAllowedRef.current) return;
+    autoHideTimerRef.current = window.setTimeout(() => {
+      autoHideTimerRef.current = null;
+      hideOverlay();
+    }, AUTO_HIDE_MS);
+  }, [clearAutoHide, hideOverlay]);
+
+  const wake = useCallback(() => {
+    // Already visible: just push the hide deadline out. Do not touch CSS
+    // animation state or remount nodes, so repeated wakes cannot flicker.
+    if (!visibleRef.current) {
+      visibleRef.current = true;
+      setVisible(true);
+    }
+    scheduleAutoHide();
+  }, [scheduleAutoHide]);
 
   const send = useCallback(
     (action: OverlayAction) => {
@@ -229,6 +259,9 @@ export default function Overlay() {
 
   useEffect(() => {
     if (!desktop) return;
+    // `visible` is the real state: skip duplicate IPC when it did not change.
+    if (lastInteractiveRef.current === visible) return;
+    lastInteractiveRef.current = visible;
     void setOverlayInteractive(visible).catch((reason) => {
       console.warn("[overlay] could not toggle click-through", reason);
     });
@@ -237,6 +270,10 @@ export default function Overlay() {
   useEffect(() => {
     if (!desktop) return;
     return () => {
+      if (autoHideTimerRef.current !== null) {
+        window.clearTimeout(autoHideTimerRef.current);
+        autoHideTimerRef.current = null;
+      }
       void setOverlayInteractive(false).catch(() => {
         // The window is closing; nothing left to report.
       });
@@ -288,16 +325,13 @@ export default function Overlay() {
   // ---- auto hide -----------------------------------------------------------
   const status = snapshot?.status ?? "idle";
   const playing = status === "playing" || status === "loading";
-  const autoHideAllowed =
-    status === "playing" && !snapshot?.buffering && menu === null;
+  const buffering = snapshot?.buffering ?? false;
+  const autoHideAllowed = status === "playing" && !buffering && menu === null;
 
   useEffect(() => {
-    if (!visible || !autoHideAllowed) return;
-    const timer = window.setTimeout(() => {
-      setVisible(false);
-    }, AUTO_HIDE_MS);
-    return () => window.clearTimeout(timer);
-  }, [activity, autoHideAllowed, menu, visible]);
+    autoHideAllowedRef.current = autoHideAllowed;
+    scheduleAutoHide();
+  }, [autoHideAllowed, scheduleAutoHide]);
 
   // ---- derived player values ----------------------------------------------
   const duration = snapshot?.durationSeconds ?? 0;
@@ -373,7 +407,6 @@ export default function Overlay() {
   // ---- interactions --------------------------------------------------------
   const toggleMenu = (kind: "audio" | "subtitle") => {
     wake();
-    setVisible(true);
     setMenu((current) => (current === kind ? null : kind));
   };
 
@@ -465,6 +498,7 @@ export default function Overlay() {
       className="overlay"
       data-visible={visible ? "true" : "false"}
       data-expanded={expanded ? "true" : "false"}
+      aria-hidden={!visible}
     >
       {expanded && (
         <div className="overlay__panel" onPointerDown={handleDragStart}>

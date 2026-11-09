@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invokePlayerUiMode } from "../controls/bridge";
 import type { OverlayAction } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
@@ -199,6 +201,27 @@ export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
     onBack();
   }, [isDesktop, onBack, playback, toggleFullscreen]);
 
+  /**
+   * The video host is mouse-transparent (`HTTRANSPARENT`), so the click lands on
+   * the webview. That does not always activate the Win32 window, which leaves
+   * the page focused but the window behind others. Focus it explicitly and wake
+   * the separate overlay window so the controls come back with the same click.
+   */
+  const handleStagePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      if (!isDesktop || event.button !== 0) return;
+      void getCurrentWindow()
+        .setFocus()
+        .catch((reason: unknown) => {
+          console.warn("[player] could not focus the window", reason);
+        });
+      void emitTo("controls", "overlay-wake", null).catch((reason: unknown) => {
+        console.warn("[player] could not wake the controls overlay", reason);
+      });
+    },
+    [isDesktop],
+  );
+
   const handleSeek = useCallback(
     (seconds: number) => {
       void seek(seconds).then((ok) => {
@@ -376,7 +399,11 @@ export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
       tabIndex={-1}
       aria-label="播放器"
     >
-      <section className="player-stage" aria-label="播放器画面">
+      <section
+        className="player-stage"
+        aria-label="播放器画面"
+        onPointerDown={handleStagePointerDown}
+      >
         <div
           className="player-video-slot"
           ref={slotRef}

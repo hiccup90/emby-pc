@@ -6,6 +6,7 @@ import { useEmbyLibrary, useEmbySession } from "./emby/useEmby";
 import DetailScreen from "./screens/DetailScreen";
 import LibraryScreen from "./screens/LibraryScreen";
 import LoginScreen from "./screens/LoginScreen";
+import TitleBar from "./screens/TitleBar";
 import PlayerPage from "./player/PlayerPage";
 import "./styles.css";
 
@@ -51,6 +52,7 @@ export default function App() {
   );
   const [route, setRoute] = useState<Route>({ screen: "login" });
   const previousScreenRef = useRef<Route["screen"] | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const { refreshResume } = library;
 
   useEffect(() => {
@@ -72,6 +74,9 @@ export default function App() {
 
   useEffect(() => {
     if (route.screen === "detail" || route.screen === "player") {
+      // The non-player screens scroll inside `.app-content` (the 36px title bar
+      // is fixed above it), so reset that box instead of the window.
+      contentRef.current?.scrollTo({ top: 0 });
       window.scrollTo(0, 0);
     }
   }, [route]);
@@ -97,68 +102,78 @@ export default function App() {
   if (desktop && (sessionController.checking || (sessionController.session && route.screen === "login"))) {
     return (
       <div className="app-shell app-shell--boot">
-        <BootScreen />
+        <TitleBar />
+        <div className="app-content" ref={contentRef}>
+          <BootScreen />
+        </div>
       </div>
     );
   }
 
+  const player = route.screen === "player";
+
   return (
     <div className={`app-shell app-shell--${route.screen}`}>
-      {route.screen === "login" && (
-        <LoginScreen
-          desktop={desktop}
-          pending={sessionController.loginPending}
-          loginError={sessionController.loginError}
-          startupError={sessionController.startupError}
-          onLogin={sessionController.signIn}
-          onPreview={() => setRoute({ screen: "library" })}
-          onClearError={sessionController.clearLoginError}
-        />
-      )}
+      {!player && <TitleBar />}
+      <div
+        className={`app-content${player ? " app-content--player" : ""}`}
+        ref={contentRef}
+      >
+        {route.screen === "login" && (
+          <LoginScreen
+            desktop={desktop}
+            pending={sessionController.loginPending}
+            loginError={sessionController.loginError}
+            startupError={sessionController.startupError}
+            onLogin={sessionController.signIn}
+            onPreview={() => setRoute({ screen: "library" })}
+            onClearError={sessionController.clearLoginError}
+          />
+        )}
 
-      {route.screen === "library" && (
-        <LibraryScreen
-          session={sessionController.session}
-          desktop={desktop}
-          library={library}
-          logoutPending={sessionController.logoutPending}
-          onOpen={openItem}
-          onLogout={logout}
-        />
-      )}
+        {route.screen === "library" && (
+          <LibraryScreen
+            session={sessionController.session}
+            desktop={desktop}
+            library={library}
+            logoutPending={sessionController.logoutPending}
+            onOpen={openItem}
+            onLogout={logout}
+          />
+        )}
 
-      {route.screen === "detail" && (
-        <DetailScreen
-          key={route.itemId}
-          itemId={route.itemId}
-          seed={route.seed}
-          session={sessionController.session}
-          desktop={desktop}
-          logoutPending={sessionController.logoutPending}
-          onBack={() => setRoute({ screen: "library" })}
-          onPlay={(playback, title) =>
-            openPlayer(playback, title, {
-              itemId: route.itemId,
-              seed: route.seed,
-            })
-          }
-          onLogout={logout}
-        />
-      )}
+        {route.screen === "detail" && (
+          <DetailScreen
+            key={route.itemId}
+            itemId={route.itemId}
+            seed={route.seed}
+            session={sessionController.session}
+            desktop={desktop}
+            logoutPending={sessionController.logoutPending}
+            onBack={() => setRoute({ screen: "library" })}
+            onPlay={(playback, title) =>
+              openPlayer(playback, title, {
+                itemId: route.itemId,
+                seed: route.seed,
+              })
+            }
+            onLogout={logout}
+          />
+        )}
 
-      {route.screen === "player" && (
-        <PlayerPage
-          playback={route.playback}
-          onBack={() =>
-            setRoute({
-              screen: "detail",
-              itemId: route.returnTo.itemId,
-              seed: route.returnTo.seed,
-            })
-          }
-        />
-      )}
-
+        {route.screen === "player" && (
+          <PlayerPage
+            playback={route.playback}
+            onBack={() =>
+              setRoute({
+                screen: "detail",
+                itemId: route.returnTo.itemId,
+                seed: route.returnTo.seed,
+              })
+            }
+          />
+        )}
+      </div>
     </div>
   );
 }

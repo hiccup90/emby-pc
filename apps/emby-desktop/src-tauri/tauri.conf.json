@@ -16,8 +16,10 @@
         "title": "Emby Desktop",
         "width": 1360,
         "height": 860,
-        "minWidth": 1024,
-        "minHeight": 640
+        "minWidth": 520,
+        "minHeight": 320,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {
