@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import type { PlayerSnapshot, PlayerTrack } from "../player/contract";
 import type { OverlayAction } from "./contract";
 import {
@@ -29,6 +32,49 @@ function formatTime(seconds: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`
     : `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
+function formatError(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === "string") return reason;
+  try {
+    return JSON.stringify(reason);
+  } catch {
+    return String(reason);
+  }
+}
+
+/**
+ * NOACTIVATE windows can drop the composed `click` (focus/capture hand-off),
+ * so an action must run on the press itself. The press is also swallowed so a
+ * later `click` cannot repeat it and the bar drag handler never sees it.
+ */
+function actionPointerDown(run: () => void) {
+  return (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.disabled) return;
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    event.stopPropagation();
+    run();
+  };
+}
+
+/** Keyboard users still get the action once: the native click is suppressed. */
+function actionKeyDown(run: () => void) {
+  return (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.disabled) return;
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return;
+    run();
+  };
+}
+
+function swallowClick(event: { preventDefault: () => void }) {
+  event.preventDefault();
 }
 
 interface TrackOption {
@@ -84,6 +130,7 @@ interface SliderProps {
   disabled?: boolean;
   onChange: (value: number) => void;
   onCommit: (value: number) => void;
+  onGestureStart: () => void;
 }
 
 const COMMIT_KEYS = [
@@ -107,13 +154,37 @@ function Slider({
   disabled = false,
   onChange,
   onCommit,
+  onGestureStart,
 }: SliderProps) {
   const upper = max > 0 ? max : 1;
   const bounded = Math.min(Math.max(0, value), upper);
   const percent = (bounded / upper) * 100;
+  // One commit per gesture: the pointerup commit must not be repeated by the
+  // blur that happens when the user clicks elsewhere a moment later.
+  const dirtyRef = useRef(false);
+  const lastCommittedRef = useRef<number | null>(null);
+
+  const commit = (input: HTMLInputElement) => {
+    const next = Number(input.value);
+    lastCommittedRef.current = next;
+    dirtyRef.current = false;
+    onCommit(next);
+  };
+
+  const commitIfDirty = (input: HTMLInputElement) => {
+    if (!dirtyRef.current) return;
+    if (lastCommittedRef.current === Number(input.value)) {
+      dirtyRef.current = false;
+      return;
+    }
+    commit(input);
+  };
 
   return (
-    <span className={`ov-slider${className ? ` ${className}` : ""}`}>
+    <span
+      className={`ov-slider${className ? ` ${className}` : ""}`}
+      data-no-drag="true"
+    >
       <span className="ov-slider__rail" aria-hidden="true" />
       <span
         className="ov-slider__fill"
@@ -130,15 +201,41 @@ function Slider({
         disabled={disabled}
         aria-label={label}
         aria-valuetext={valueText}
-        onChange={(event) => onChange(Number(event.currentTarget.value))}
-        onPointerUp={(event) => onCommit(Number(event.currentTarget.value))}
-        onPointerCancel={(event) => onCommit(Number(event.currentTarget.value))}
-        onKeyUp={(event) => {
-          if (COMMIT_KEYS.includes(event.key)) {
-            onCommit(Number(event.currentTarget.value));
+        onChange={(event) => {
+          dirtyRef.current = true;
+          onChange(Number(event.currentTarget.value));
+        }}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          // Do not preventDefault: the native range thumb still has to drag.
+          event.stopPropagation();
+          // Wake before capture so the window cannot turn click-through in the
+          // middle of a drag and lose pointermove/pointerup.
+          onGestureStart();
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // The pointer may already be gone; native dragging still works.
           }
         }}
-        onBlur={(event) => onCommit(Number(event.currentTarget.value))}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          commitIfDirty(event.currentTarget);
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          commitIfDirty(event.currentTarget);
+        }}
+        onKeyUp={(event) => {
+          if (COMMIT_KEYS.includes(event.key)) {
+            commitIfDirty(event.currentTarget);
+          }
+        }}
+        onBlur={(event) => commitIfDirty(event.currentTarget)}
       />
     </span>
   );
@@ -153,6 +250,7 @@ export default function Overlay() {
   const [menu, setMenu] = useState<"audio" | "subtitle" | null>(null);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const snapshotRef = useRef<PlayerSnapshot | null>(snapshot);
   const visibleRef = useRef(true);
@@ -211,9 +309,17 @@ export default function Overlay() {
         setSnapshot((previous) => applyPreviewAction(previous, action));
         return;
       }
-      void sendOverlayAction(action).catch((reason) => {
-        console.warn("[overlay] could not forward the player action", reason);
-      });
+      void sendOverlayAction(action)
+        .then(() => {
+          // Delivered: clear a previous failure hint (no-op when already clear).
+          setSendError(null);
+        })
+        .catch((reason) => {
+          console.warn("[overlay] could not forward the player action", reason);
+          // Real-machine diagnosis: without a visible hint a dropped IPC looks
+          // exactly like a button that does not work.
+          setSendError(`控制指令未送达：${formatError(reason)}`);
+        });
     },
     [desktop, wake],
   );
@@ -417,17 +523,21 @@ export default function Overlay() {
   };
 
   const handleDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !event.isPrimary || event.defaultPrevented) return;
+    // Chromium still targets `pointerdown` at a disabled button (only the mouse
+    // events are suppressed), hence the `button` selector below.
     const target = event.target;
+    if (!(target instanceof Element)) return;
     if (
-      target instanceof HTMLElement &&
-      target.closest("button, input, label, summary, a, select, textarea")
+      target.closest(
+        "[data-no-drag], button, input, label, summary, a, select, textarea, [role='menu'], [role='menuitemradio']",
+      )
     ) {
       return;
     }
     if (!desktop) return;
-    void dragOverlayWindow().catch(() => {
-      // Dragging is a Windows nicety; a failure must not break the bar.
+    void dragOverlayWindow().catch((reason) => {
+      console.warn("[overlay] could not start the window drag", reason);
     });
   };
 
@@ -492,6 +602,7 @@ export default function Overlay() {
   }, [menu, send, wake]);
 
   const menuLabel = menu === "audio" ? "音轨" : "字幕";
+  const displayError = errorMessage ?? sendError;
 
   return (
     <div
@@ -504,13 +615,20 @@ export default function Overlay() {
         <div className="overlay__panel" onPointerDown={handleDragStart}>
           <div className="overlay__menus">
             {menu !== null && (
-              <section className="ov-menu" aria-label={`${menuLabel}选择`}>
+              <section
+                className="ov-menu"
+                aria-label={`${menuLabel}选择`}
+                data-no-drag="true"
+              >
                 <div className="ov-menu__head">
                   <span>{menuLabel}</span>
                   <button
                     className="ov-menu__close"
                     type="button"
-                    onClick={() => setMenu(null)}
+                    data-no-drag="true"
+                    onPointerDown={actionPointerDown(() => setMenu(null))}
+                    onKeyDown={actionKeyDown(() => setMenu(null))}
+                    onClick={swallowClick}
                     aria-label={`关闭${menuLabel}菜单`}
                   >
                     关闭
@@ -534,7 +652,10 @@ export default function Overlay() {
                         aria-label={
                           option.lang ? `${option.title}（${option.lang}）` : option.title
                         }
-                        onClick={() => selectTrack(option)}
+                        data-no-drag="true"
+                        onPointerDown={actionPointerDown(() => selectTrack(option))}
+                        onKeyDown={actionKeyDown(() => selectTrack(option))}
+                        onClick={swallowClick}
                       >
                         <span className="ov-menu__title">
                           {option.title}
@@ -559,7 +680,10 @@ export default function Overlay() {
         <button
           className="ov-btn ov-btn--play"
           type="button"
-          onClick={() => send({ type: "toggle-play" })}
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => send({ type: "toggle-play" }))}
+          onKeyDown={actionKeyDown(() => send({ type: "toggle-play" }))}
+          onClick={swallowClick}
           disabled={!hasMedia}
           aria-label={playing ? "暂停" : "播放"}
           aria-pressed={playing}
@@ -580,6 +704,7 @@ export default function Overlay() {
           disabled={!canSeek}
           onChange={(value) => updateSeekDraft(value)}
           onCommit={commitSeek}
+          onGestureStart={wake}
         />
 
         <span className="ov-time" aria-hidden="true">
@@ -588,26 +713,32 @@ export default function Overlay() {
 
         <span className="ov-spacer" aria-hidden="true" />
 
+        {displayError && (
+          <span className="ov-error" role="alert" title={displayError}>
+            {displayError}
+          </span>
+        )}
         {errorMessage && (
-          <>
-            <span className="ov-error" role="alert" title={errorMessage}>
-              {errorMessage}
-            </span>
-            <button
-              className="ov-btn"
-              type="button"
-              onClick={() => send({ type: "retry" })}
-              aria-label="重试"
-            >
-              <OverlayIcon name="retry" size={16} />
-            </button>
-          </>
+          <button
+            className="ov-btn"
+            type="button"
+            data-no-drag="true"
+            onPointerDown={actionPointerDown(() => send({ type: "retry" }))}
+            onKeyDown={actionKeyDown(() => send({ type: "retry" }))}
+            onClick={swallowClick}
+            aria-label="重试"
+          >
+            <OverlayIcon name="retry" size={16} />
+          </button>
         )}
 
         <button
           className={`ov-btn${menu === "audio" ? " is-active" : ""}`}
           type="button"
-          onClick={() => toggleMenu("audio")}
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => toggleMenu("audio"))}
+          onKeyDown={actionKeyDown(() => toggleMenu("audio"))}
+          onClick={swallowClick}
           disabled={!hasMedia || (snapshot?.audioTracks.length ?? 0) === 0}
           aria-label={`音轨：${audioTitle}`}
           aria-haspopup="menu"
@@ -619,7 +750,10 @@ export default function Overlay() {
         <button
           className={`ov-btn${menu === "subtitle" ? " is-active" : ""}`}
           type="button"
-          onClick={() => toggleMenu("subtitle")}
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => toggleMenu("subtitle"))}
+          onKeyDown={actionKeyDown(() => toggleMenu("subtitle"))}
+          onClick={swallowClick}
           disabled={!hasMedia || (snapshot?.subtitleTracks.length ?? 0) === 0}
           aria-label={`字幕：${subtitleTitle}`}
           aria-haspopup="menu"
@@ -631,7 +765,10 @@ export default function Overlay() {
         <button
           className="ov-btn"
           type="button"
-          onClick={() => send({ type: "toggle-mute" })}
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => send({ type: "toggle-mute" }))}
+          onKeyDown={actionKeyDown(() => send({ type: "toggle-mute" }))}
+          onClick={swallowClick}
           disabled={!snapshot}
           aria-label={muted ? "取消静音" : "静音"}
           aria-pressed={muted}
@@ -648,12 +785,16 @@ export default function Overlay() {
           disabled={!snapshot}
           onChange={changeVolume}
           onCommit={changeVolume}
+          onGestureStart={wake}
         />
 
         <button
           className="ov-btn"
           type="button"
-          onClick={() => send({ type: "toggle-fullscreen" })}
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => send({ type: "toggle-fullscreen" }))}
+          onKeyDown={actionKeyDown(() => send({ type: "toggle-fullscreen" }))}
+          onClick={swallowClick}
           aria-label="切换全屏"
           title="切换全屏"
         >
@@ -663,7 +804,10 @@ export default function Overlay() {
         <button
           className="ov-btn"
           type="button"
-          onClick={() => send({ type: "back" })}
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => send({ type: "back" }))}
+          onKeyDown={actionKeyDown(() => send({ type: "back" }))}
+          onClick={swallowClick}
           aria-label="返回详情"
           title="返回详情"
         >

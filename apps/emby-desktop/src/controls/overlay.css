@@ -228,6 +228,9 @@ summary:focus:not(:focus-visible) {
   border: 0;
   background: transparent;
   cursor: pointer;
+  /* Pointer capture must survive touch/pen drags: a pan gesture would cancel
+     the pointer stream and drop the pointerup commit. */
+  touch-action: none;
 }
 
 .ov-slider__input::-webkit-slider-runnable-track {

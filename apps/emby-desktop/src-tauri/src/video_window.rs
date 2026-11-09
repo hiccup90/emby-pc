@@ -63,6 +63,15 @@ mod imp {
 
     const HOST_EX_STYLE: u32 = WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_NOPARENTNOTIFY;
 
+    /// Physical-pixel bleed added on every side of the video rect. Win11 keeps a
+    /// 1 px non-client inset on frameless windows (tao compensates the frame but
+    /// leaves `top_inset = round(dpi/96)`), which shows up as a desktop-coloured
+    /// seam when the window is flush with the top of the screen. The host is a
+    /// child window, so it is clipped to the parent client area anyway: drawing
+    /// one pixel wider is invisible, while one pixel narrower would expose the
+    /// seam.
+    const HOST_BLEED: i32 = 1;
+
     static CLASS_REGISTRATION: OnceLock<Result<(), u32>> = OnceLock::new();
 
     struct PendingState {
@@ -457,15 +466,25 @@ mod imp {
                 if wanted != style {
                     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted as isize);
                 }
+                // Outward 1 px, still inside the parent client area (`top` is
+                // additionally clamped at 0 so a rect that starts on the very
+                // top edge never yields a negative origin, which Win32 would
+                // interpret relative to the screen).
+                let left = (rect.left - HOST_BLEED).max(0);
+                let top = (rect.top - HOST_BLEED).max(0);
+                let right = (rect.right() + HOST_BLEED).min(client.right.max(left));
+                let bottom = (rect.bottom() + HOST_BLEED).min(client.bottom.max(top));
+                let width = (right - left).max(1);
+                let height = (bottom - top).max(1);
                 // Same-thread call (WM_APP+1 is posted so it runs on the
                 // owner thread); no SWP_ASYNCWINDOWPOS needed.
                 SetWindowPos(
                     hwnd,
                     HWND_TOP,
-                    rect.left,
-                    rect.top,
-                    rect.width,
-                    rect.height,
+                    left,
+                    top,
+                    width,
+                    height,
                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                 );
                 ShowWindow(hwnd, SW_SHOWNA);

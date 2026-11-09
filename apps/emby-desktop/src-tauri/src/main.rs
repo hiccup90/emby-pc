@@ -38,6 +38,15 @@ fn main() {
             };
 
             app.manage(PlayerService::new(host));
+            // Remove the residual Win11 caption/dialog bits that `decorations:
+            // false` leaves in the window style; without this the DWM paints a
+            // 1px system line along the top of the window (the reported gap when
+            // the window is flush with the top of the screen).
+            if let Some(hwnd) = chrome_hwnd_webview(&window) {
+                if let Err(err) = overlay::harden_main_window_chrome(hwnd) {
+                    eprintln!("[desktop] main window chrome hardening skipped: {err}");
+                }
+            }
             // The native video is a child HWND above WebView2, so the controls
             // live in their own transparent window, owned by the main window
             // (the OS keeps it above the owner and destroys it with it). A
@@ -98,10 +107,30 @@ fn main() {
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.on_main_geometry(app, None);
                     }
+                    // A fullscreen toggle hid both the native video and the
+                    // overlay; the new client size only exists now. Re-place the
+                    // video from the last known `VideoSync` and bring the bar
+                    // back. Both calls are no-ops when nothing is pending, so
+                    // ordinary moves/resizes stay cheap.
+                    if let Some(service) = app.try_state::<PlayerService>() {
+                        service.resync_video();
+                    }
+                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.resume(app);
+                    }
+                    // tao rewrites the whole GWL_STYLE whenever it changes a
+                    // window flag (fullscreen, maximize, restore), which puts
+                    // the caption bits back. Re-assert the minimal style.
+                    if let Some(hwnd) = chrome_hwnd(window) {
+                        let _ = overlay::harden_main_window_chrome(hwnd);
+                    }
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.on_main_geometry(app, Some(*scale_factor));
+                    }
+                    if let Some(hwnd) = chrome_hwnd(window) {
+                        let _ = overlay::harden_main_window_chrome(hwnd);
                     }
                 }
                 _ => {}
@@ -164,4 +193,41 @@ fn main_window_hwnd(window: &tauri::WebviewWindow) -> Result<isize, String> {
 #[cfg(not(windows))]
 fn main_window_hwnd(_window: &tauri::WebviewWindow) -> Result<isize, String> {
     Err("native video embedding (libmpv --wid) is only implemented on Windows".to_string())
+}
+
+/// `HWND` for the window-style fix, or `None` when it is unavailable.
+///
+/// `Window::hwnd()` is itself `#[cfg(windows)]`, so this needs a platform pair:
+/// the caller (`setup` / `on_window_event`) stays platform-neutral and simply
+/// skips the fix when there is no handle.
+#[cfg(windows)]
+fn chrome_hwnd(window: &tauri::Window) -> Option<isize> {
+    match window.hwnd() {
+        Ok(hwnd) => Some(hwnd.0 as isize),
+        Err(err) => {
+            eprintln!("[desktop] main window chrome hardening skipped: no HWND ({err})");
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn chrome_hwnd(_window: &tauri::Window) -> Option<isize> {
+    None
+}
+
+#[cfg(windows)]
+fn chrome_hwnd_webview(window: &tauri::WebviewWindow) -> Option<isize> {
+    match window.hwnd() {
+        Ok(hwnd) => Some(hwnd.0 as isize),
+        Err(err) => {
+            eprintln!("[desktop] main window chrome hardening skipped: no HWND ({err})");
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn chrome_hwnd_webview(_window: &tauri::WebviewWindow) -> Option<isize> {
+    None
 }

@@ -22,10 +22,18 @@
 //! main webview client area. The client origin comes from `inner_position()`
 //! (equal to `outer_position()` because the app window is always undecorated);
 //! the clamp still uses the outer top so the overlay can never leave the window.
+//!
+//! Click routing: the surface is click-through while it is faded out, but the
+//! page hides itself on a timer (`overlay_set_interactive(false)`). That call is
+//! therefore deferred by [`CLICK_THROUGH_GRACE`]: a press that started while the
+//! bar was still interactive must not be turned into `WS_EX_TRANSPARENT`
+//! mid-gesture, otherwise Win32 never delivers the matching button-up and the
+//! button's `click` is never synthesized. Turning interaction *on* is immediate
+//! and cancels any pending click-through.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use emby_mpv::{SeqLatch, VideoSync};
 use tauri::window::Color;
@@ -45,6 +53,22 @@ pub fn on_video_sync(app: &AppHandle, sync: VideoSync) {
 }
 const MAIN_LABEL: &str = "main";
 
+/// Fullscreen transition, step 1: really hide the owned overlay window.
+/// A no-op when setup never created it.
+pub fn suspend(app: &AppHandle) {
+    if let Some(state) = app.try_state::<OverlayState>() {
+        state.suspend(app);
+    }
+}
+
+/// Fullscreen transition, step 2: re-present the overlay at the last known
+/// rectangle. Called once the main window has its new client size.
+pub fn resume(app: &AppHandle) {
+    if let Some(state) = app.try_state::<OverlayState>() {
+        state.resume(app);
+    }
+}
+
 /// Logical (CSS px) heights of the parked control surface.
 const COLLAPSED_HEIGHT: f64 = 64.0;
 const EXPANDED_HEIGHT: f64 = 320.0;
@@ -52,6 +76,15 @@ const EXPANDED_HEIGHT: f64 = 320.0;
 const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Squared movement threshold in physical pixels (3 px).
 const WAKE_MIN_MOVE_SQUARED: i64 = 9;
+/// How long `overlay_set_interactive(false)` waits before the window really
+/// becomes click-through. A single mouse gesture (down .. up .. click) is far
+/// shorter; the delay only has to cover the gap between the page's auto-hide
+/// timer and the button-up of a press that was already in flight.
+const CLICK_THROUGH_GRACE: Duration = Duration::from_millis(450);
+/// Hard cap for the "wait until the mouse button is released" extension in
+/// `set_interactive(false)`. A stuck/dragged button must not pin the surface
+/// interactive forever.
+const CLICK_THROUGH_MAX_PRESS: Duration = Duration::from_millis(4000);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UiMode {
@@ -73,6 +106,12 @@ struct Inner {
     /// Last click-through state actually applied to the controls window.
     /// `None` means "unknown"; it is forced to the desired value after `show()`.
     cursor_ignored: Option<bool>,
+    /// Bumped on every `interactive == true`; a deferred click-through whose
+    /// generation is stale is dropped instead of swallowing a live press.
+    interaction_generation: u64,
+    /// Fullscreen transitions hide the surface and must not let a late
+    /// `video_sync`/`present` re-show it in the middle of the resize.
+    suspended: bool,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -97,6 +136,8 @@ impl OverlayState {
                 // state is created, so no first `set_ignore_cursor_events`
                 // round-trip is needed here.
                 cursor_ignored: Some(true),
+                interaction_generation: 0,
+                suspended: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -132,7 +173,17 @@ impl OverlayState {
         // re-asserts the background and visibility after a remount.
         {
             let mut inner = self.lock();
-            inner.mode = if player { UiMode::Player } else { UiMode::App };
+            let next = if player { UiMode::Player } else { UiMode::App };
+            let changed = inner.mode != next;
+            inner.mode = next;
+            // Leaving and re-entering the player is a new gesture budget.
+            inner.suspended = false;
+            if changed {
+                eprintln!(
+                    "[overlay] player_ui_mode -> {}",
+                    if player { "player" } else { "app" }
+                );
+            }
         }
 
         if player {
@@ -191,15 +242,63 @@ impl OverlayState {
     }
 
     pub fn set_interactive(&self, app: &AppHandle, interactive: bool) {
-        self.lock().interactive = interactive;
-        if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
-            // `apply_click_through` compares against the state last applied to
-            // the OS, so repeated commands with the same value do not rewrite
-            // GWL_EXSTYLE (which forces a frame refresh and made the bar
-            // flicker), while `overlay_set_interactive(false)` still recovers
-            // if the window was shown in between.
-            self.apply_click_through(&controls);
+        let generation = {
+            let mut inner = self.lock();
+            if inner.interactive != interactive {
+                eprintln!("[overlay] interactive -> {interactive}");
+            }
+            inner.interactive = interactive;
+            if interactive {
+                // Turning input on must win over any deferred click-through.
+                inner.interaction_generation = inner.interaction_generation.wrapping_add(1);
+            }
+            inner.interaction_generation
+        };
+        if interactive {
+            if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
+                // `apply_click_through` compares against the state last applied
+                // to the OS, so repeated commands with the same value do not
+                // rewrite GWL_EXSTYLE (which forces a frame refresh and made
+                // the bar flicker), while `overlay_set_interactive(false)`
+                // still recovers if the window was shown in between.
+                self.apply_click_through(&controls);
+            }
+            return;
         }
+        // Click-through is deferred: the page calls this from its auto-hide
+        // timer, which can fire between pointerdown and pointerup. Applying
+        // `WS_EX_TRANSPARENT` there drops the button-up and the click never
+        // happens (the reported "play/pause and fullscreen buttons do nothing"
+        // bug). Nothing visual depends on this call, so waiting one gesture is
+        // free; the wait is also extended while a mouse button is physically
+        // down so a slow press cannot be cut in half either.
+        let app = app.clone();
+        std::thread::Builder::new()
+            .name("overlay-click-through".to_string())
+            .spawn(move || {
+                std::thread::sleep(CLICK_THROUGH_GRACE);
+                let deadline = Instant::now() + CLICK_THROUGH_MAX_PRESS;
+                while pointer_button_down() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                let Some(state) = app.try_state::<OverlayState>() else {
+                    return;
+                };
+                let still_wanted = {
+                    let inner = state.lock();
+                    !inner.interactive
+                        && !inner.suspended
+                        && inner.interaction_generation == generation
+                };
+                if !still_wanted {
+                    return;
+                }
+                if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
+                    state.apply_click_through(&controls);
+                }
+            })
+            .map(|_| ())
+            .unwrap_or_else(|err| eprintln!("[overlay] click-through timer failed: {err}"));
     }
 
     /// Push the desired click-through state to the OS only when the applied
@@ -239,12 +338,22 @@ impl OverlayState {
     /// visible. Inside player mode this never hides/shows on focus changes:
     /// the overlay follows `video_sync.visible` and the player UI mode only.
     fn present(&self, app: &AppHandle, scale_override: Option<f64>) -> Result<(), String> {
-        let (mode, sync, expanded, shown) = {
+        let (mode, sync, expanded, shown, suspended) = {
             let inner = self.lock();
-            (inner.mode, inner.sync, inner.expanded, inner.controls_shown)
+            (
+                inner.mode,
+                inner.sync,
+                inner.expanded,
+                inner.controls_shown,
+                inner.suspended,
+            )
         };
 
-        if mode != UiMode::Player {
+        if mode != UiMode::Player || suspended {
+            // A fullscreen transition hides the surface for its whole duration:
+            // an owned window surviving a monitor/DWM change is one of the
+            // triggers that makes Windows drop the borderless-fullscreen
+            // optimization. Late `video_sync`/resize events must not re-show it.
             self.hide(app);
             return Ok(());
         }
@@ -323,10 +432,43 @@ impl OverlayState {
         if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
             if let Err(err) = controls.hide() {
                 eprintln!("[overlay] could not hide controls: {err}");
+            } else {
+                eprintln!("[overlay] controls hidden");
             }
             // The hidden window keeps its ex-style; mark the click-through
             // state unknown so the next show re-applies it.
             self.lock().cursor_ignored = None;
+        }
+    }
+
+    /// Fullscreen transition: really hide the owned window (not just stop
+    /// presenting it) and keep it hidden until [`Self::resume`].
+    pub fn suspend(&self, app: &AppHandle) {
+        let was_shown = self.lock().controls_shown;
+        if !was_shown && self.lock().suspended {
+            return;
+        }
+        self.lock().suspended = true;
+        eprintln!("[overlay] suspend (fullscreen transition)");
+        self.hide(app);
+    }
+
+    /// Leave the fullscreen transition and re-present at the last known rect.
+    pub fn resume(&self, app: &AppHandle) {
+        let was_suspended = {
+            let mut inner = self.lock();
+            let was = inner.suspended;
+            inner.suspended = false;
+            // The window was hidden with `hide()`, which already cleared
+            // `cursor_ignored`; nothing else to reset.
+            was
+        };
+        if !was_suspended {
+            return;
+        }
+        eprintln!("[overlay] resume");
+        if let Err(err) = self.present(app, None) {
+            eprintln!("[overlay] could not re-present controls after fullscreen: {err}");
         }
     }
 
@@ -485,6 +627,96 @@ fn show_controls(window: &WebviewWindow) -> Result<(), String> {
     // Tauri keeps its own VISIBLE flag in sync; calling `ShowWindow` directly
     // would desynchronise it. Activation stays suppressed by focusable(false).
     window.show().map_err(|err| format!("show controls: {err}"))
+}
+
+/// True while any mouse button is physically down. Used only to delay the
+/// click-through switch so a press in flight cannot be cancelled.
+#[cfg(windows)]
+fn pointer_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    };
+
+    let pressed = |vk: u16| unsafe { GetAsyncKeyState(vk as i32) } < 0;
+    pressed(VK_LBUTTON) || pressed(VK_RBUTTON) || pressed(VK_MBUTTON)
+}
+
+#[cfg(not(windows))]
+fn pointer_button_down() -> bool {
+    false
+}
+
+// ---- main window chrome (Windows only) --------------------------------------
+
+/// Remove the residual Win11 caption bits a frameless window keeps in its
+/// style, without touching anything else.
+///
+/// Why this exists: `decorations: false` makes tao draw a zero-size non-client
+/// area through `WM_NCCALCSIZE`, but it still creates the window with
+/// `WS_CAPTION | WS_SYSMENU` (see tao's `WindowFlags::to_window_styles`) and
+/// `WS_EX_WINDOWEDGE`. On Win11 that combination lets the DWM paint a 1px system
+/// line along the top edge of the client area - visible exactly when the window
+/// is flush with the top of the screen (dragged to the top / maximized), which
+/// is the reported gap.
+///
+/// Deliberately minimal: `WS_THICKFRAME` is preserved when present (resize
+/// borders, Aero Snap and the maximize insets depend on it) and never added, so
+/// this is a no-op while tao has the borderless-fullscreen flag set and the
+/// style legitimately has no frame bits. `WS_EX_WINDOWEDGE` (a 3D border that is
+/// never drawn but still affects the frame calculation) is dropped.
+///
+/// Takes the raw `HWND` (as `isize`) instead of a Tauri window type: the
+/// `on_window_event` callback hands out `&tauri::Window`, while `setup` only has
+/// a `&WebviewWindow`, and both expose their own `hwnd()` behind `#[cfg(windows)]`.
+/// Passing the handle keeps this callable from either place and from
+/// non-Windows builds.
+#[cfg(windows)]
+pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_WINDOWEDGE,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, GetWindowLongPtrW};
+
+    if hwnd == 0 {
+        return Err("main window HWND is null".to_string());
+    }
+    let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        // `WS_CAPTION` already covers `WS_BORDER | WS_DLGFRAME`; both are listed
+        // so the intent survives a future constant rename.
+        let wanted_style = style & !(WS_CAPTION | WS_DLGFRAME);
+        let wanted_ex = ex_style & !WS_EX_WINDOWEDGE;
+        if wanted_style == style && wanted_ex == ex_style {
+            return Ok(());
+        }
+        if wanted_style != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, wanted_style as isize);
+        }
+        if wanted_ex != ex_style {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted_ex as isize);
+        }
+        // Recompute the non-client area so the change applies to the live window
+        // instead of the next resize; NOSIZE/NOMOVE keeps this out of the resize
+        // path and cannot recurse into `WindowEvent::Resized`.
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn harden_main_window_chrome(_hwnd: isize) -> Result<(), String> {
+    Ok(())
 }
 
 // ---- cursor wake poller ------------------------------------------------------

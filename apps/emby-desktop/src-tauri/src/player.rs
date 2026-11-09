@@ -74,6 +74,12 @@ pub struct PlayerService {
     host: Option<VideoHost>,
     session: Mutex<Option<PlayerSession>>,
     desired: Mutex<DesiredPlayback>,
+    /// Most recent `VideoSync` the host accepted. Used to re-place the native
+    /// child window after a window/monitor transition the page cannot observe
+    /// reliably (fullscreen).
+    last_sync: Mutex<Option<VideoSync>>,
+    /// Set when a fullscreen toggle hid the video and a re-sync is owed.
+    resync_pending: AtomicBool,
     shutdown_started: AtomicBool,
     log_path: PathBuf,
 }
@@ -85,9 +91,17 @@ impl PlayerService {
             host,
             session: Mutex::new(None),
             desired: Mutex::new(DesiredPlayback::default()),
+            last_sync: Mutex::new(None),
+            resync_pending: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
             log_path: mpv_log_path(),
         }
+    }
+
+    fn lock_last_sync(&self) -> MutexGuard<'_, Option<VideoSync>> {
+        self.last_sync
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn lock_session(&self) -> MutexGuard<'_, Option<PlayerSession>> {
@@ -192,7 +206,21 @@ impl PlayerService {
     }
 
     pub fn set_paused(&self, paused: bool) -> Result<(), String> {
-        self.send(PlayerCommand::SetPaused(paused))
+        // Do not go through the shared `send` here: a missing session would
+        // return `Ok(())` and the UI would sit on an unchanged snapshot with no
+        // explanation. Play/pause is the one control that must report that.
+        let session = self.lock_session();
+        match session.as_ref() {
+            Some(active) => active
+                .send(PlayerCommand::SetPaused(paused))
+                .map_err(|err| format!("player_set_paused: mpv worker is not running ({err})"))
+                .map(|()| {
+                    eprintln!("[player] set_paused({paused}) dispatched to mpv");
+                }),
+            None => Err(
+                "player_set_paused: no active mpv session (open a stream first)".to_string()
+            ),
+        }
     }
 
     pub fn seek(&self, seconds: f64, exact: Option<bool>) -> Result<(), String> {
@@ -293,7 +321,9 @@ impl PlayerService {
             Some(host) => {
                 // `false` only means "stale seq" or "window destroyed"; not an
                 // IPC error the UI needs to handle.
-                let _ = host.push_sync(request);
+                if host.push_sync(request) {
+                    *self.lock_last_sync() = Some(request);
+                }
                 Ok(())
             }
             None => Err("video_sync: native video host is unavailable on this platform".to_string()),
@@ -306,15 +336,64 @@ impl PlayerService {
         }
     }
 
-    pub fn toggle_fullscreen(&self, window: &tauri::WebviewWindow) -> Result<bool, String> {
-        // Hide first: the native child window must not survive the resize /
-        // monitor transition. The frontend re-sends the rect afterwards.
+    /// Toggle borderless fullscreen with the surrounding window choreography.
+    ///
+    /// Order matters on Windows:
+    /// 1. read the current state first (a blocking getter; it must not run
+    ///    after the video was hidden, or a failure would leave a black page),
+    /// 2. really hide the owned overlay window (a surviving owned top-level
+    ///    window keeps a borderless window from being treated as fullscreen by
+    ///    the DWM and ends up floating over the video),
+    /// 3. hide the native child, toggle, and let `main`'s `Resized` handler
+    ///    resume the overlay and re-place the child once the new client size
+    ///    is known.
+    pub fn toggle_fullscreen(
+        &self,
+        app: &tauri::AppHandle,
+        window: &tauri::WebviewWindow,
+    ) -> Result<bool, String> {
+        let was_fullscreen = window.is_fullscreen().map_err(|err| err.to_string())?;
+        let next = !was_fullscreen;
+
+        crate::overlay::suspend(app);
         self.hide_video();
-        let is_fullscreen = window.is_fullscreen().map_err(|err| err.to_string())?;
-        window
-            .set_fullscreen(!is_fullscreen)
-            .map_err(|err| err.to_string())?;
-        Ok(!is_fullscreen)
+        // Set before the toggle: the window's `Resized` event can be delivered
+        // while `set_fullscreen` is still running, and it is what consumes this
+        // flag to re-place the video once the new client size exists.
+        self.resync_pending.store(true, Ordering::SeqCst);
+
+        if let Err(err) = window.set_fullscreen(next) {
+            // The window did not change state: put the overlay back at once so
+            // the failure does not also hide the controls, and drop the pending
+            // re-sync (the old rect is still valid).
+            self.resync_pending.store(false, Ordering::SeqCst);
+            crate::overlay::resume(app);
+            return Err(err.to_string());
+        }
+        eprintln!("[player] fullscreen -> {next}");
+        Ok(next)
+    }
+
+    /// Re-apply the last accepted `VideoSync` after a fullscreen transition.
+    ///
+    /// Called from the window's `Resized`/`Moved` handler once the new client
+    /// size exists. Idempotent and cheap when nothing is owed. `seq` is pushed
+    /// as `0` on purpose: `video_window` treats it as "the sender restarted its
+    /// counter" and resets its latch, so this can never be rejected as stale
+    /// after the synthetic hide sequence that `VideoHost::hide()` consumed.
+    pub fn resync_video(&self) {
+        if !self.resync_pending.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let Some(mut sync) = *self.lock_last_sync() else {
+            return;
+        };
+        let Some(host) = &self.host else {
+            return;
+        };
+        sync.seq = 0;
+        let posted = host.push_sync(sync);
+        eprintln!("[player] video re-sync after fullscreen: posted={posted}");
     }
 
     /// Stop mpv (quit + join, 2 s timeout) and then destroy the host window.
@@ -449,10 +528,11 @@ pub fn player_snapshot(state: State<'_, PlayerService>) -> Result<PlayerSnapshot
 
 #[tauri::command]
 pub fn player_toggle_fullscreen(
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: State<'_, PlayerService>,
 ) -> Result<bool, String> {
-    state.toggle_fullscreen(&window)
+    state.toggle_fullscreen(&app, &window)
 }
 
 #[tauri::command]
