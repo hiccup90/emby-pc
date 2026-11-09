@@ -62,29 +62,55 @@ impl SnapshotHub {
 
     /// Assign a fresh `seq`, store, and fan out. Sinks are invoked after the
     /// lock is released so a slow channel cannot block `player_snapshot`.
-    pub fn publish(&self, mut snapshot: PlayerSnapshot) -> PlayerSnapshot {
-        let sinks: Vec<Arc<dyn SnapshotSink>> = {
+    pub fn publish(&self, snapshot: PlayerSnapshot) -> PlayerSnapshot {
+        let (snapshot, sinks) = {
             let mut inner = self.lock();
-            inner.seq = inner.seq.wrapping_add(1);
-            snapshot.seq = inner.seq;
-            inner.latest = snapshot.clone();
-            inner.sinks.iter().map(|(_, sink)| sink.clone()).collect()
+            Self::commit(&mut inner, snapshot)
         };
-        for sink in &sinks {
-            sink.publish(snapshot.clone());
-        }
-        // Prune sinks that reported a failed send (dead channels).
-        if sinks.iter().any(|sink| !sink.is_alive()) {
-            self.lock().sinks.retain(|(_, sink)| sink.is_alive());
-        }
+        self.fan_out(&snapshot, &sinks);
         snapshot
     }
 
     /// Mutate the current snapshot and publish it.
+    ///
+    /// Read, mutate and store happen under one lock, so a `publish` from the
+    /// mpv thread can never land in between and be overwritten by a stale copy
+    /// (e.g. a volume change resurrecting `playing` right after `ended`).
+    /// `mutate` must not call back into the hub: the lock is not reentrant.
     pub fn update(&self, mutate: impl FnOnce(&mut PlayerSnapshot)) -> PlayerSnapshot {
-        let mut snapshot = self.latest();
-        mutate(&mut snapshot);
-        self.publish(snapshot)
+        let (snapshot, sinks) = {
+            let mut inner = self.lock();
+            let mut snapshot = inner.latest.clone();
+            mutate(&mut snapshot);
+            Self::commit(&mut inner, snapshot)
+        };
+        self.fan_out(&snapshot, &sinks);
+        snapshot
+    }
+
+    /// Assign `seq`, store as latest and return the sinks to notify. Caller
+    /// holds the lock.
+    fn commit(
+        inner: &mut HubInner,
+        mut snapshot: PlayerSnapshot,
+    ) -> (PlayerSnapshot, Vec<Arc<dyn SnapshotSink>>) {
+        inner.seq = inner.seq.wrapping_add(1);
+        snapshot.seq = inner.seq;
+        inner.latest = snapshot.clone();
+        let sinks: Vec<Arc<dyn SnapshotSink>> =
+            inner.sinks.iter().map(|(_, sink)| sink.clone()).collect();
+        (snapshot, sinks)
+    }
+
+    /// Deliver outside the lock, then prune sinks that reported a failed send
+    /// (dead channels).
+    fn fan_out(&self, snapshot: &PlayerSnapshot, sinks: &[Arc<dyn SnapshotSink>]) {
+        for sink in sinks {
+            sink.publish(snapshot.clone());
+        }
+        if sinks.iter().any(|sink| !sink.is_alive()) {
+            self.lock().sinks.retain(|(_, sink)| sink.is_alive());
+        }
     }
 
     /// Register a sink and immediately push the current snapshot to it
@@ -134,7 +160,7 @@ impl SnapshotHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{PlayerSnapshot, STATUS_PAUSED, STATUS_PLAYING};
+    use crate::types::{PlayerSnapshot, STATUS_ENDED, STATUS_PAUSED, STATUS_PLAYING};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingSink {
@@ -211,6 +237,33 @@ mod tests {
         assert_eq!(snap.status, STATUS_PLAYING);
         assert_eq!(snap.seq, 1);
         assert_eq!(hub.latest().status, STATUS_PLAYING);
+    }
+
+    #[test]
+    fn update_is_atomic_against_a_concurrent_publish() {
+        let hub = Arc::new(SnapshotHub::new());
+        hub.update(|s| s.status = STATUS_PLAYING.to_string());
+
+        let mut worker = None;
+        hub.update(|s| {
+            // The mpv thread publishes `ended` while this update is mid-way.
+            let other = Arc::clone(&hub);
+            worker = Some(std::thread::spawn(move || {
+                let mut ended = PlayerSnapshot::default();
+                ended.status = STATUS_ENDED.to_string();
+                other.publish(ended);
+            }));
+            // Give it time to run if it could; with the lock held it cannot.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            s.volume = 30.0;
+        });
+        worker.unwrap().join().unwrap();
+
+        // The concurrent publish happened after the update, not inside it, so
+        // it is the latest state. A stale copy must not have overwritten it.
+        let latest = hub.latest();
+        assert_eq!(latest.seq, 3);
+        assert_eq!(latest.status, STATUS_ENDED);
     }
 
     #[test]
