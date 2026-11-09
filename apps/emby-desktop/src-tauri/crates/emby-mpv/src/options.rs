@@ -7,8 +7,25 @@
 //! `http-header-fields` is the only sensitive option (auth headers). libmpv
 //! only accepts it before initialization; setting it at runtime writes the
 //! value into mpv's log, so we never do that.
+//!
+//! `log-file` is opt-in ([`LOG_ENV_VAR`]). mpv forces at least `-v -v` for a
+//! file log and writes the full stream URL ("Playing: <url>"); Emby stream URLs
+//! carry `api_key`, so an always-on log would leave a token on disk for every
+//! run.
 
 use std::path::Path;
+
+/// Set to `1`/`true`/`yes`/`on` to make libmpv write a file log.
+pub const LOG_ENV_VAR: &str = "EMBY_MPV_LOG";
+
+/// Whether a `LOG_ENV_VAR` value enables the file log. Pure so it can be
+/// tested without touching the process environment.
+pub fn log_enabled_from(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MpvOption {
@@ -27,8 +44,9 @@ impl MpvOption {
 
 /// Options every session must have, in a stable order (index-based diffs help
 /// when diagnosing a log). `host_hwnd` is the parent `HWND` for `--wid`.
-pub fn base_options(host_hwnd: u64, log_path: &Path) -> Vec<MpvOption> {
-    vec![
+/// `log_path` is `None` unless the user opted in via [`LOG_ENV_VAR`].
+pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
+    let mut options = vec![
         MpvOption::new("config", "no"),
         MpvOption::new("terminal", "no"),
         MpvOption::new("input-default-bindings", "no"),
@@ -42,8 +60,11 @@ pub fn base_options(host_hwnd: u64, log_path: &Path) -> Vec<MpvOption> {
         MpvOption::new("hwdec", "auto-safe"),
         MpvOption::new("keep-open", "yes"),
         MpvOption::new("idle", "yes"),
-        MpvOption::new("log-file", log_path.to_string_lossy().into_owned()),
-    ]
+    ];
+    if let Some(path) = log_path {
+        options.push(MpvOption::new("log-file", path.to_string_lossy().into_owned()));
+    }
+    options
 }
 
 /// Like [`base_options`], but appends `http-header-fields` when the caller has
@@ -53,7 +74,7 @@ pub fn base_options(host_hwnd: u64, log_path: &Path) -> Vec<MpvOption> {
 /// CR/LF are dropped to avoid option injection, and empty entries are ignored.
 pub fn build_initial_options(
     host_hwnd: u64,
-    log_path: &Path,
+    log_path: Option<&Path>,
     headers: Option<&[String]>,
 ) -> Vec<MpvOption> {
     let mut options = base_options(host_hwnd, log_path);
@@ -98,7 +119,7 @@ mod tests {
 
     #[test]
     fn base_option_set_is_exact_and_ordered() {
-        let options = base_options(0x1234, &log_path());
+        let options = base_options(0x1234, None);
         let names: Vec<&str> = options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(
             names,
@@ -114,7 +135,6 @@ mod tests {
                 "hwdec",
                 "keep-open",
                 "idle",
-                "log-file",
             ]
         );
         assert_eq!(find_option(&options, "wid"), Some("4660")); // decimal HWND
@@ -123,15 +143,35 @@ mod tests {
         assert_eq!(find_option(&options, "idle"), Some("yes"));
         assert_eq!(find_option(&options, "config"), Some("no"));
         assert_eq!(find_option(&options, "osc"), Some("no"));
+        assert!(find_option(&options, "log-file").is_none());
+    }
+
+    #[test]
+    fn log_file_is_only_set_when_requested() {
+        let path = log_path();
+        let options = base_options(0x1234, Some(path.as_path()));
+        assert_eq!(options.last().unwrap().name, "log-file");
         assert_eq!(
             find_option(&options, "log-file"),
-            Some(log_path().to_string_lossy().as_ref())
+            Some(path.to_string_lossy().as_ref())
         );
+        assert!(find_option(&base_options(0x1234, None), "log-file").is_none());
+    }
+
+    #[test]
+    fn log_env_value_must_be_explicitly_truthy() {
+        for on in ["1", "true", "TRUE", " yes ", "On"] {
+            assert!(log_enabled_from(Some(on)), "{on:?} should enable the log");
+        }
+        for off in ["", "0", "false", "no", "off", "2", "enabled"] {
+            assert!(!log_enabled_from(Some(off)), "{off:?} must not enable the log");
+        }
+        assert!(!log_enabled_from(None));
     }
 
     #[test]
     fn vo_and_gpu_options_are_left_to_mpv_defaults() {
-        let options = base_options(0xdead_beef, &log_path());
+        let options = base_options(0xdead_beef, None);
         for forbidden in ["vo", "gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs"] {
             assert!(
                 find_option(&options, forbidden).is_none(),
@@ -142,7 +182,7 @@ mod tests {
 
     #[test]
     fn hwdec_never_uses_copy_back() {
-        let options = base_options(1, &log_path());
+        let options = base_options(1, None);
         let hwdec = find_option(&options, "hwdec").unwrap();
         assert!(!hwdec.contains("copy"), "hwdec must stay zero-copy: {hwdec}");
         assert!(!hwdec.starts_with('-'));
@@ -150,10 +190,10 @@ mod tests {
 
     #[test]
     fn headers_are_joined_and_none_by_default() {
-        let no_headers = build_initial_options(1, &log_path(), None);
+        let no_headers = build_initial_options(1, None, None);
         assert!(find_option(&no_headers, "http-header-fields").is_none());
 
-        let empty = build_initial_options(1, &log_path(), Some(&[]));
+        let empty = build_initial_options(1, None, Some(&[]));
         assert!(find_option(&empty, "http-header-fields").is_none());
 
         let headers = vec![
@@ -161,13 +201,17 @@ mod tests {
             "X-Emby-Token: secret-token".to_string(),
             "   ".to_string(),
         ];
-        let with_headers = build_initial_options(1, &log_path(), Some(&headers));
+        let with_headers = build_initial_options(1, None, Some(&headers));
         assert_eq!(
             find_option(&with_headers, "http-header-fields"),
             Some("Authorization: Bearer secret-token,X-Emby-Token: secret-token")
         );
-        // http-header-fields must come last, after every non-sensitive option.
+        // http-header-fields must come last, after every non-sensitive option
+        // (including an opted-in log-file).
         assert_eq!(with_headers.last().unwrap().name, "http-header-fields");
+        let path = log_path();
+        let logged = build_initial_options(1, Some(path.as_path()), Some(&headers));
+        assert_eq!(logged.last().unwrap().name, "http-header-fields");
     }
 
     #[test]
@@ -185,7 +229,8 @@ mod tests {
     fn no_token_leaks_into_non_header_options() {
         // Simulates the "runtime setter leaks the token into mpv.log" pitfall:
         // with no headers requested, no value may contain header material.
-        let options = build_initial_options(1, &log_path(), None);
+        let path = log_path();
+        let options = build_initial_options(1, Some(path.as_path()), None);
         for option in &options {
             assert!(!option.value.contains("Bearer"));
             assert!(!option.value.contains("Token"));
@@ -194,9 +239,10 @@ mod tests {
 
     #[test]
     fn all_option_values_are_non_empty_and_nul_free() {
+        let path = log_path();
         let options = build_initial_options(
             42,
-            &log_path(),
+            Some(path.as_path()),
             Some(&["Authorization: Bearer abc".to_string()]),
         );
         for option in &options {

@@ -81,7 +81,8 @@ pub struct PlayerService {
     /// Set when a fullscreen toggle hid the video and a re-sync is owed.
     resync_pending: AtomicBool,
     shutdown_started: AtomicBool,
-    log_path: PathBuf,
+    /// `Some` only when `EMBY_MPV_LOG` was set at startup.
+    log_path: Option<PathBuf>,
 }
 
 impl PlayerService {
@@ -440,7 +441,13 @@ impl PlayerService {
     }
 }
 
-fn mpv_log_path() -> PathBuf {
+/// The libmpv file log is off unless `EMBY_MPV_LOG` is truthy at startup:
+/// mpv logs stream URLs, and Emby stream URLs carry `api_key`.
+fn mpv_log_path() -> Option<PathBuf> {
+    let value = std::env::var(emby_mpv::options::LOG_ENV_VAR).ok();
+    if !emby_mpv::options::log_enabled_from(value.as_deref()) {
+        return None;
+    }
     let mut directory = std::env::temp_dir();
     directory.push("emby-desktop");
     if let Err(err) = std::fs::create_dir_all(&directory) {
@@ -449,9 +456,10 @@ fn mpv_log_path() -> PathBuf {
             directory.display()
         );
     }
-    // Never contains headers/tokens: libmpv writes here, and the path is the
-    // only thing logged by us.
-    directory.join(format!("mpv-{}.log", std::process::id()))
+    let path = directory.join(format!("mpv-{}.log", std::process::id()));
+    // The path is all we print; the file itself contains api_key-bearing URLs.
+    eprintln!("[player] mpv file log enabled: {}", path.display());
+    Some(path)
 }
 
 // ---- Tauri commands ----------------------------------------------------------

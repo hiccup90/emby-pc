@@ -60,8 +60,9 @@ const OBSERVED: &[(&str, MpvFormat)] = &[
 pub struct SessionConfig {
     /// Parent `HWND` for `--wid` (decimal in the mpv option).
     pub host_hwnd: u64,
-    /// mpv log file (temp dir). Must never contain auth headers.
-    pub log_path: PathBuf,
+    /// Opt-in mpv log file (`EMBY_MPV_LOG`); `None` means no file log. When
+    /// set, it contains stream URLs and therefore their `api_key`.
+    pub log_path: Option<PathBuf>,
     /// Only used when this config creates a fresh handle (pre-initialize).
     pub headers: Option<Vec<String>>,
     /// Volume 0..100 restored from the UI.
@@ -605,7 +606,7 @@ impl<'a> MpvCore<'a> {
         // especially is rejected at runtime (and would leak into mpv.log).
         for option in build_initial_options(
             config.host_hwnd,
-            &config.log_path,
+            config.log_path.as_deref(),
             config.headers.as_deref(),
         ) {
             let name = cstring("option name", &option.name)?;
