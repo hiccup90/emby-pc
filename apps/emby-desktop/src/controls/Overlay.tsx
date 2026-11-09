@@ -611,8 +611,12 @@ export default function Overlay() {
       data-expanded={expanded ? "true" : "false"}
       aria-hidden={!visible}
     >
-      {expanded && (
-        <div className="overlay__panel" onPointerDown={handleDragStart}>
+      <div
+        className="overlay__panel"
+        data-open={expanded ? "true" : "false"}
+        aria-hidden={!expanded}
+        onPointerDown={handleDragStart}
+      >
           <div className="overlay__menus">
             {menu !== null && (
               <section
@@ -673,8 +677,7 @@ export default function Overlay() {
               </section>
             )}
           </div>
-        </div>
-      )}
+      </div>
 
       <div className="overlay__bar" onPointerDown={handleDragStart}>
         <button

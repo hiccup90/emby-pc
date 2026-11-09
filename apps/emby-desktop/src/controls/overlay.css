@@ -71,6 +71,7 @@ summary:focus:not(:focus-visible) {
 }
 
 .overlay {
+  position: relative;
   display: flex;
   height: 100%;
   flex-direction: column;
@@ -87,6 +88,12 @@ summary:focus:not(:focus-visible) {
 
 /* Expanded panel: 320 - 64 = 256 logical pixels above the bar. */
 .overlay__panel {
+  /* Absolutely positioned above the always-bottom bar: the panel never takes
+   * part in the flex layout, so mounting/showing it cannot move the bar. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 64px;
   display: flex;
   height: 256px;
   min-height: 0;
@@ -101,6 +108,17 @@ summary:focus:not(:focus-visible) {
     rgba(0, 0, 0, 0.28) 70%,
     transparent
   );
+  /* The panel is always mounted and only toggled, so opening a menu never
+   * mounts 256px of layout inside a window that the Rust side is resizing at
+   * the same time (that race is what flashed the bar). */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+.overlay__panel[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .overlay__menus {

@@ -297,7 +297,7 @@ export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
   useEffect(() => {
     if (!isDesktop) return;
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const stops: Array<() => void> = [];
     void listen<OverlayAction>("overlay-action", (event) => {
       overlayActionRef.current(event.payload);
     })
@@ -306,14 +306,30 @@ export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
           stop();
           return;
         }
-        unlisten = stop;
+        stops.push(stop);
       })
       .catch((reason) => {
         console.warn("[player] could not listen for overlay actions", reason);
       });
+    // Native stage clicks arrive from the Rust side: the mpv child window eats
+    // the real mouse event, so the window implements focus + double-click and
+    // forwards the fullscreen intent here.
+    void listen("player-toggle-fullscreen", () => {
+      overlayActionRef.current({ type: "toggle-fullscreen" });
+    })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+          return;
+        }
+        stops.push(stop);
+      })
+      .catch((reason) => {
+        console.warn("[player] could not listen for stage clicks", reason);
+      });
     return () => {
       disposed = true;
-      unlisten?.();
+      for (const stop of stops) stop();
     };
   }, [isDesktop]);
 
@@ -409,7 +425,7 @@ export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
           ref={slotRef}
           role="region"
           aria-label="视频画面区域，双击切换全屏"
-          onDoubleClick={() => void toggleFullscreen()}
+          onDoubleClick={isDesktop ? undefined : () => void toggleFullscreen()}
         >
           {hint && (
             <p

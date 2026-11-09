@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use emby_mpv::{SeqLatch, VideoSync};
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
@@ -73,7 +73,7 @@ pub fn resume(app: &AppHandle) {
 const COLLAPSED_HEIGHT: f64 = 64.0;
 const EXPANDED_HEIGHT: f64 = 320.0;
 
-const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Squared movement threshold in physical pixels (3 px).
 const WAKE_MIN_MOVE_SQUARED: i64 = 9;
 /// How long `overlay_set_interactive(false)` waits before the window really
@@ -85,6 +85,10 @@ const CLICK_THROUGH_GRACE: Duration = Duration::from_millis(450);
 /// `set_interactive(false)`. A stuck/dragged button must not pin the surface
 /// interactive forever.
 const CLICK_THROUGH_MAX_PRESS: Duration = Duration::from_millis(4000);
+
+/// Last left-click handled by the stage poller, for double-click detection.
+#[cfg(windows)]
+static LAST_CLICK: Mutex<Option<(Instant, i32, i32)>> = Mutex::new(None);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UiMode {
@@ -391,18 +395,23 @@ impl OverlayState {
             .outer_position()
             .map_err(|err| format!("outer position: {err}"))?
             .y;
-        let geometry = compute_geometry(client_origin, outer_top, scale, &sync, expanded);
+        // Reserving the resize band only makes sense while tao actually offers
+        // resize hit-testing (windowed, not maximized, not fullscreen).
+        let resizable = !main.is_fullscreen().unwrap_or(false)
+            && !main.is_maximized().unwrap_or(false);
+        let frame = if resizable {
+            resize_frame_px(scale)
+        } else {
+            (0, 0)
+        };
+        let geometry = compute_geometry(client_origin, outer_top, scale, &sync, expanded, frame);
 
         let geometry_changed = self.lock().last_geometry != Some(geometry);
         if geometry_changed {
-            // Size first, then position: both are queued on the main thread and
-            // the update is a move/resize only, not a hide/show cycle.
-            controls
-                .set_size(PhysicalSize::new(geometry.2, geometry.3))
-                .map_err(|err| format!("set controls size: {err}"))?;
-            controls
-                .set_position(PhysicalPosition::new(geometry.0, geometry.1))
-                .map_err(|err| format!("set controls position: {err}"))?;
+            // One atomic SetWindowPos instead of separate size/position calls:
+            // resizing a bottom-anchored transparent window in two steps makes
+            // the bar jump (and flash) for a frame when a menu expands.
+            apply_bounds(&controls, geometry)?;
             self.lock().last_geometry = Some(geometry);
         }
 
@@ -505,6 +514,120 @@ impl OverlayState {
         let y = cursor.1 as f64;
         x >= left && x < right && y >= top && y < bottom
     }
+
+    /// Screen-space test used by the click poller: true when the point is over
+    /// the video and not over the (interactive) controls bar.
+    #[cfg(windows)]
+    fn is_stage_click(&self, app: &AppHandle, cursor: (i32, i32)) -> bool {
+        let (mode, sync, shown, interactive, geometry) = {
+            let inner = self.lock();
+            (
+                inner.mode,
+                inner.sync,
+                inner.controls_shown,
+                inner.interactive,
+                inner.last_geometry,
+            )
+        };
+        if mode != UiMode::Player {
+            return false;
+        }
+        let Some(sync) = sync else {
+            return false;
+        };
+        if !sync.visible || sync.w <= 0.0 || sync.h <= 0.0 {
+            return false;
+        }
+        let Some(main) = app.get_webview_window(MAIN_LABEL) else {
+            return false;
+        };
+        let Ok(scale) = main.scale_factor() else {
+            return false;
+        };
+        let Ok(origin) = main.inner_position() else {
+            return false;
+        };
+        let left = origin.x as f64 + sync.x * scale;
+        let top = origin.y as f64 + sync.y * scale;
+        let right = left + sync.w * scale;
+        let bottom = top + sync.h * scale;
+        let x = cursor.0 as f64;
+        let y = cursor.1 as f64;
+        if !(x >= left && x < right && y >= top && y < bottom) {
+            return false;
+        }
+        // Clicks on a visible bar belong to the controls window, not the stage.
+        if shown && interactive {
+            if let Some((gx, gy, gw, gh)) = geometry {
+                if cursor.0 >= gx
+                    && cursor.0 < gx.saturating_add(gw as i32)
+                    && cursor.1 >= gy
+                    && cursor.1 < gy.saturating_add(gh as i32)
+                {
+                    return false;
+                }
+            }
+        }
+        // The pointer must actually be over our own window hierarchy: clicking
+        // another app that happens to sit above the video rect must not steal
+        // focus.
+        let Ok(main_hwnd) = main.hwnd() else {
+            return false;
+        };
+        let main_hwnd = main_hwnd.0 as isize as windows_sys::Win32::Foundation::HWND;
+        let point = windows_sys::Win32::Foundation::POINT {
+            x: cursor.0,
+            y: cursor.1,
+        };
+        let under = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::WindowFromPoint(point) };
+        if under.is_null() {
+            return false;
+        }
+        let ours = under == main_hwnd
+            || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsChild(main_hwnd, under) } != 0;
+        ours
+    }
+
+    /// Focus the app (the native video window eats the click that would do it)
+    /// and treat a second click inside the double-click window as "toggle
+    /// fullscreen".
+    #[cfg(windows)]
+    fn on_stage_click(&self, app: &AppHandle, cursor: (i32, i32)) {
+        if !self.is_stage_click(app, cursor) {
+            return;
+        }
+        if let Some(main) = app.get_webview_window(MAIN_LABEL) {
+            if let Ok(hwnd) = main.hwnd() {
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(
+                        hwnd.0 as isize as windows_sys::Win32::Foundation::HWND,
+                    );
+                }
+            }
+        }
+        let _ = app.emit_to(CONTROLS_LABEL, "overlay-wake", ());
+        let now = Instant::now();
+        let mut last = LAST_CLICK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let is_double = matches!(
+            *last,
+            Some((at, x, y))
+                if now.duration_since(at) <= Duration::from_millis(unsafe {
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() as u64
+                }) && (cursor.0 - x).abs() <= 4 && (cursor.1 - y).abs() <= 4
+        );
+        *last = if is_double {
+            None
+        } else {
+            Some((now, cursor.0, cursor.1))
+        };
+        drop(last);
+        if is_double {
+            eprintln!("[overlay] stage double-click: toggle fullscreen");
+            let _ = app.emit_to(MAIN_LABEL, "player-toggle-fullscreen", ());
+        }
+    }
 }
 
 fn compute_geometry(
@@ -513,21 +636,88 @@ fn compute_geometry(
     scale: f64,
     sync: &VideoSync,
     expanded: bool,
+    frame: (i32, i32),
 ) -> (i32, i32, u32, u32) {
     let height_css = if expanded {
         EXPANDED_HEIGHT
     } else {
         COLLAPSED_HEIGHT
     };
-    let x = client_origin.x + (sync.x * scale).round() as i32;
+    // The controls window must never cover the frameless main window resize
+    // band: tao hit-tests SM_CXFRAME/SM_CYFRAME pixels *inside* the window rect,
+    // and an owned window on top steals those hits. Leave that band free on the
+    // left, right and bottom edge (the bar only touches those three).
+    let (frame_x, frame_y) = frame;
+    let x = client_origin.x + (sync.x * scale).round() as i32 + frame_x;
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
-    let width = (sync.w * scale).round().max(1.0) as u32;
+    let width = ((sync.w * scale).round() as i32 - frame_x * 2).max(1) as u32;
     let height = (height_css * scale).round().max(1.0) as u32;
     let video_bottom = video_top + (sync.h * scale).round().max(0.0) as i32;
     // Bottom-anchored: expanding grows upwards. Never above the main window.
-    let y = (video_bottom - height as i32).max(outer_top);
+    let y = (video_bottom - height as i32 - frame_y).max(outer_top);
     (x, y, width, height)
 }
+
+/// Physical thickness of the resize band tao hit-tests for an undecorated,
+/// resizable window (it uses `SM_CXFRAME`/`SM_CYFRAME`, scaled by the monitor
+/// DPI). Zero outside Windows.
+#[cfg(windows)]
+fn resize_frame_px(scale: f64) -> (i32, i32) {
+    use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SM_CXFRAME, SM_CYFRAME};
+
+    let dpi = (96.0 * scale).round().clamp(48.0, 480.0) as u32;
+    unsafe {
+        (
+            GetSystemMetricsForDpi(SM_CXFRAME, dpi).max(0),
+            GetSystemMetricsForDpi(SM_CYFRAME, dpi).max(0),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn resize_frame_px(_scale: f64) -> (i32, i32) {
+    (0, 0)
+}
+
+/// Apply position and size in a single `SetWindowPos` so the bottom-anchored
+/// overlay never paints at an intermediate rectangle while a menu expands.
+fn apply_bounds(controls: &WebviewWindow, geometry: (i32, i32, u32, u32)) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        };
+
+        let hwnd = controls_hwnd(controls)?;
+        let ok = unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                geometry.0,
+                geometry.1,
+                geometry.2 as i32,
+                geometry.3 as i32,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+            )
+        };
+        if ok == 0 {
+            return Err("apply_bounds: SetWindowPos(controls) failed".to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        controls
+            .set_size(tauri::PhysicalSize::new(geometry.2, geometry.3))
+            .map_err(|err| format!("set controls size: {err}"))?;
+        controls
+            .set_position(PhysicalPosition::new(geometry.0, geometry.1))
+            .map_err(|err| format!("set controls position: {err}"))?;
+        Ok(())
+    }
+}
+
 
 // ---- window creation ---------------------------------------------------------
 
@@ -646,6 +836,15 @@ fn pointer_button_down() -> bool {
     false
 }
 
+/// Returns (is-down, was-pressed-since-last-poll) for the left mouse button.
+#[cfg(windows)]
+fn left_button_state() -> (bool, bool) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+
+    let state = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) };
+    (state < 0, (state as u16 & 0x0001) != 0)
+}
+
 // ---- main window chrome (Windows only) --------------------------------------
 
 /// Remove the residual Win11 caption bits a frameless window keeps in its
@@ -721,9 +920,12 @@ pub fn harden_main_window_chrome(_hwnd: isize) -> Result<(), String> {
 
 // ---- cursor wake poller ------------------------------------------------------
 
-/// Poll the cursor every 100 ms while the app runs. The loop stays parked (no
+/// Poll the cursor every 50 ms while the app runs. The loop stays parked (no
 /// Win32 calls) outside player UI mode; `stop_wake` is checked every tick and
-/// the thread is detached so shutdown never waits on it.
+/// the thread is detached so shutdown never waits on it. Besides waking the
+/// bar on pointer movement, the same tick samples the left mouse button so a
+/// click on the native video window (which swallows the real mouse event) still
+/// focuses the app and can toggle fullscreen on a double-click.
 #[cfg(windows)]
 pub fn spawn_wake_poller(app: AppHandle) {
     let stop = match app.try_state::<OverlayState>() {
@@ -734,6 +936,7 @@ pub fn spawn_wake_poller(app: AppHandle) {
         .name("overlay-wake".to_string())
         .spawn(move || {
             let mut last: Option<(i32, i32)> = None;
+            let mut last_left_down = false;
             while !stop.load(Ordering::SeqCst) {
                 std::thread::sleep(WAKE_POLL_INTERVAL);
                 if stop.load(Ordering::SeqCst) {
@@ -746,6 +949,7 @@ pub fn spawn_wake_poller(app: AppHandle) {
                 if !state.is_player_mode() {
                     // Stop tracking so re-entering player mode starts fresh.
                     last = None;
+                    last_left_down = false;
                     continue;
                 }
                 let Some(main) = app.get_webview_window(MAIN_LABEL) else {
@@ -754,6 +958,14 @@ pub fn spawn_wake_poller(app: AppHandle) {
                 let Some(cursor) = cursor_position() else {
                     continue;
                 };
+                // The video is a native mpv child window, so it swallows the
+                // click that should focus the app / toggle fullscreen. Poll the
+                // real button state and implement both here.
+                let (left_down, left_pressed) = left_button_state();
+                if (left_down && !last_left_down) || left_pressed {
+                    state.on_stage_click(&app, cursor);
+                }
+                last_left_down = left_down;
                 let inside = state.cursor_inside_video(&main, cursor);
                 if !inside {
                     // Re-entering the video starts a fresh movement baseline.
