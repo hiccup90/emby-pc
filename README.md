@@ -11,7 +11,7 @@
 ### 方式 1：下载 CI 构建产物（推荐）
 
 1. 打开仓库 **Actions → windows-build**，选择最近一次成功的 run。
-2. 下载 artifact（二选一，均保留 30 天）：
+2. 下载 artifact（二选一，均保留 7 天）：
    - **emby-pc-installer**：安装包 `emby-pc-<version>-setup.exe`，双击安装（推荐；桌面/开始菜单快捷方式、可从「应用」卸载），见 [docs/packaging.md](docs/packaging.md)。
    - **emby-pc-win64**：免安装 zip，解压到不含中文/空格的目录，双击 `emby-pc.exe`（验收/便携）。
 3. 首次启动前确认已安装 VC++ 运行库（安装包已内置；免安装版由 windeployqt 附带）。
@@ -101,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 
 - 工作流：`.github/workflows/windows-build.yml`（windows-2022 + VS 2022 + Qt 6.8 msvc2022_64）
 - 触发：push 到 `main`，或 Actions 页面 **Run workflow**（workflow_dispatch）
-- 产物：artifact **emby-pc-win64**（免安装 zip）+ **emby-pc-installer**（Inno Setup 安装包），均保留 30 天
+- 产物：artifact **emby-pc-win64**（免安装 zip）+ **emby-pc-installer**（Inno Setup 安装包），均保留 7 天
 
 ## 安全约定
 

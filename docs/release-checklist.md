@@ -58,7 +58,7 @@
 
 ## G8 发布
 - [ ] main 最新 commit 的 windows-build run 全绿
-- [ ] artifacts 已上传且未过期（30 天）
+- [ ] artifacts 已上传且未过期（7 天）
 - [ ] 打 tag v0.1.1（如需）并附 release notes（CHANGELOG 摘要）
 - [ ] 通知用户下载 artifact 并附验收清单
 证据：

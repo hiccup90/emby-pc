@@ -21,7 +21,7 @@
 | Emby tests | 单独构建 `app/src/emby`（`EMBY_BUILD_TESTS=ON`）并跑 `ctest` |
 | Package | `app/scripts/package-windows.ps1 -SkipBuild`：windeployqt + 复制 libmpv-2.dll + 打 zip |
 | Installer | `choco install innosetup` 后校验 exe VERSIONINFO，用 `installer/emby-pc.iss` 编译 `dist/emby-pc-<version>-setup.exe` |
-| Upload | 上传 artifact **emby-pc-win64**（免安装 zip）+ **emby-pc-installer**（安装包），均保留 **30 天** |
+| Upload | 上传 artifact **emby-pc-win64**（免安装 zip）+ **emby-pc-installer**（安装包），均保留 **7 天** |
 
 触发条件：`push` 到 `main`，或在 Actions 页面点 **Run workflow**（`workflow_dispatch`）。
 
@@ -56,7 +56,7 @@ gh run download --repo hiccup90/emby-pc -n emby-pc-win64 -D dist
 gh run download --repo hiccup90/emby-pc -n emby-pc-installer -D dist
 ```
 
-> artifact 保留 30 天；过期后重新触发一次 workflow 即可。
+> artifact 保留 7 天；过期后重新触发一次 workflow 即可。
 
 ---
 
@@ -219,4 +219,4 @@ powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1 -QtPref
 包内容（各次一致，54 个条目，解压约 171MB）：
 emby-pc-0.1.1-win64/ 下有 emby-pc.exe、libmpv-2.dll、Qt6Core/Gui/Widgets/Network/Svg.dll、platforms/qwindows.dll、tls/、imageformats/、translations/、WINDOWS-ACCEPTANCE.md、LIBMPV-SOURCE.md、README-运行.txt。
 
-> 后续每次 push 到 main 或手动 Run workflow 都会重新产出同名 artifact（emby-pc-win64，保留 30 天）；下载方式见第 2 节。
+> 后续每次 push 到 main 或手动 Run workflow 都会重新产出同名 artifact（emby-pc-win64，保留 7 天）；下载方式见第 2 节。

@@ -1,7 +1,7 @@
 # Windows 安装包说明（docs/packaging.md）
 
 > 任务：T33 / M4-1 · 维护：release-engineer · 更新：2026-11-05
-> 产物：GitHub Actions artifact **emby-pc-installer**（emby-pc-<version>-setup.exe，保留 30 天）
+> 产物：GitHub Actions artifact **emby-pc-installer**（emby-pc-<version>-setup.exe，保留 7 天）
 > 约束：安装包 ≤150MB；干净 Windows 10/11 x64 可安装、有桌面/开始菜单快捷方式、卸载干净、升级保留用户数据。
 
 ---
