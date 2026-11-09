@@ -57,6 +57,7 @@ fn main() {
             emby::emby_session,
             emby::emby_views,
             emby::emby_items,
+            emby::emby_resume,
             emby::emby_item,
             emby::emby_playback_target,
             emby::emby_report_playback,

@@ -3,6 +3,7 @@ import type {
   EmbyItem,
   EmbyItemsPage,
   EmbyPlaybackTarget,
+  EmbyResumeRequest,
   EmbySession,
   EmbyView,
 } from "./contract";
@@ -152,6 +153,11 @@ export async function embyViews(): Promise<EmbyView[]> {
 export async function embyItems(req: EmbyItemsRequest): Promise<EmbyItemsPage> {
   requireDesktop();
   return invoke<EmbyItemsPage>("emby_items", { req });
+}
+
+export async function embyResume(req: EmbyResumeRequest = {}): Promise<EmbyItemsPage> {
+  requireDesktop();
+  return invoke<EmbyItemsPage>("emby_resume", { req });
 }
 
 export async function embyItem(id: string): Promise<EmbyItem> {

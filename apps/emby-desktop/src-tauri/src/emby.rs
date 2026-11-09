@@ -17,14 +17,17 @@
 
 use emby_api::{
     ApiError, EmbyClient, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest,
-    EmbyLoginRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbySession,
-    EmbyView, SessionStore, StoredSession,
+    EmbyLoginRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest,
+    EmbyResumeRequest, EmbySession, EmbyView, SessionStore, StoredSession,
 };
 use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 /// Message shown when the server no longer accepts the stored token.
 const AUTH_EXPIRED: &str = "登录已失效，请重新登录";
+
+/// Page size used when `emby_resume` does not receive a limit.
+const DEFAULT_RESUME_LIMIT: u32 = 16;
 
 /// Managed state for every `emby_*` command.
 pub struct EmbyService {
@@ -191,6 +194,22 @@ pub async fn emby_items(
     let session = state.require_session().await?;
     let client = state.client(&session);
     match client.items(&session.user_id, &req).await {
+        Ok(page) => Ok(page),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+/// Continue-watching list from Emby's official resume endpoint. The server
+/// decides the order; `limit` defaults to `DEFAULT_RESUME_LIMIT`.
+#[tauri::command]
+pub async fn emby_resume(
+    req: EmbyResumeRequest,
+    state: State<'_, EmbyService>,
+) -> Result<EmbyItemsPage, String> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    let limit = req.limit.unwrap_or(DEFAULT_RESUME_LIMIT);
+    match client.resume(&session.user_id, limit).await {
         Ok(page) => Ok(page),
         Err(err) => Err(state.fail(err).await),
     }

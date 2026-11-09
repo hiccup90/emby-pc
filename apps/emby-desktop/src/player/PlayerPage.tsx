@@ -88,11 +88,6 @@ function formatTime(seconds: number): string {
     : `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
-function rangeBackground(percent: number): string {
-  const bounded = Math.min(100, Math.max(0, percent));
-  return `linear-gradient(to right, var(--color-copper) 0 ${bounded}%, #505249 ${bounded}% 100%)`;
-}
-
 function statusLabel(status: PlayerStatus, preview: boolean): string {
   const labels: Record<PlayerStatus, string> = {
     idle: "尚未载入媒体",
@@ -145,8 +140,7 @@ function TrackControl({
         onClick={onToggle}
       >
         <PlayerIcon name={icon} size={17} />
-        <span className="tool-button__text">{label}</span>
-        <PlayerIcon name="chevron" size={14} />
+        <span className="visually-hidden">{label}</span>
       </button>
     </div>
   );
@@ -179,9 +173,7 @@ function TrackPanel({ kind, label, tracks, onSelect, onClose }: TrackPanelProps)
   return (
     <section className="player-track-panel" id={panelId} aria-label={`${label}选择`}>
       <div className="player-track-panel__head">
-        <span className="player-track-panel__label">
-          {label} · {kind === "audio" ? "AUDIO" : "SUBTITLE"}
-        </span>
+        <span className="player-track-panel__label">{label}</span>
         <button
           className="player-track-panel__close"
           type="button"
@@ -642,28 +634,23 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
       aria-label="播放器"
     >
       <header className="player-topbar">
-        <button className="player-back" type="button" onClick={leavePlayer}>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={leavePlayer}
+          aria-label="返回详情"
+          title="返回详情"
+        >
           <PlayerIcon name="arrow-left" size={19} />
-          <span>返回详情</span>
         </button>
-        <div className="player-title">
-          <span className="eyebrow">{isDesktop ? "原生 mpv · 播放" : "浏览器预览 · 非 Tauri"}</span>
-          <span>{title}</span>
+        <div className="player-title" title={title}>
+          {title}
         </div>
-        <span className="player-topbar__mark">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
-          </span>
-          {isDesktop ? "MPV / NATIVE" : "UI PREVIEW"}
-        </span>
       </header>
 
       {!isDesktop && (
         <div className="player-preview-note" role="status">
-          <span className="player-preview-note__tag">BROWSER PREVIEW</span>
-          <span>
-            需要 Tauri 桌面环境才能驱动原生 mpv 窗口；当前为 UI 预览，播放命令不会发送，控件仅更新本地假状态。
-          </span>
+          需要 Tauri 桌面环境才能驱动原生 mpv 窗口；当前为浏览器预览，播放命令不会发送，控件仅更新本地状态。
         </div>
       )}
 
@@ -683,11 +670,10 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
 
           {!hasMedia && (
             <div className="player-empty">
-              <span className="player-empty__eyebrow">
-                {status === "error" ? "PLAYBACK ERROR" : "NO MEDIA LOADED"}
-              </span>
-              <h1>{status === "error" ? "播放失败" : title}</h1>
-              <p>
+              <h1 className="player-empty__title">
+                {status === "error" ? "播放失败" : title}
+              </h1>
+              <p className="player-empty__text">
                 {status === "error"
                   ? snapshotError ?? "请重新输入播放地址后重试。"
                   : playback
@@ -704,20 +690,18 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
 
           {status === "loading" && (
             <div className="player-empty" aria-hidden="true">
-              <span className="player-empty__eyebrow">LOADING MEDIA</span>
-              <p>正在准备播放器…</p>
+              <p className="player-empty__text">正在准备播放器…</p>
             </div>
           )}
 
           {!isDesktop && hasMedia && (
             <div className="player-preview-frame">
-              <span className="player-preview-frame__tag">LOCAL PREVIEW / FAKE STATE</span>
-              <strong>{title}</strong>
+              <span className="player-preview-frame__title">{title}</span>
               <span className="player-preview-frame__url" title={sourceUrl ?? undefined}>
                 {sourceUrl}
               </span>
               <span className="player-preview-frame__hint">
-                预览模式：控件更新本地状态，不会调用播放器命令
+                浏览器预览：控件只更新本地状态，不会调用播放器命令
               </span>
             </div>
           )}
@@ -738,45 +722,47 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
               }
             }}
           >
-            <details className="player-debug" open={!playback}>
-              <summary>
-                <span>调试直链</span>
-                <span>MANUAL URL</span>
-              </summary>
+            <details className="player-debug">
+              <summary>调试直链</summary>
               <div className="player-source-row">
-              <form className="player-source" noValidate onSubmit={handleOpenSubmit} aria-busy={isOpening}>
-                <span className="player-source__field">
-                  <label htmlFor="player-source-url">播放地址</label>
-                  <input
-                    ref={urlInputRef}
-                    id="player-source-url"
-                    name="player-source-url"
-                    type="url"
-                    inputMode="url"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="https://example.com/video.mp4"
-                    value={url}
-                    onChange={(event) => setUrl(event.target.value)}
-                  />
-                </span>
-                <button
-                  className="button button--primary player-source__submit"
-                  type="submit"
-                  disabled={isOpening}
+                <form
+                  className="player-source"
+                  noValidate
+                  onSubmit={handleOpenSubmit}
+                  aria-busy={isOpening}
                 >
-                  {isOpening ? "打开中…" : "播放"}
-                </button>
-              </form>
-              <div className="player-source-meta">
-                <span
-                  className="player-source__current"
-                  title={sourceUrl ?? undefined}
-                >
-                  {sourceUrl ? compactUrl(sourceUrl) : "手动输入播放直链"}
-                </span>
-                {!isDesktop && <span className="player-preview-tag">预览</span>}
-              </div>
+                  <span className="player-source__field">
+                    <label htmlFor="player-source-url">播放地址</label>
+                    <input
+                      ref={urlInputRef}
+                      id="player-source-url"
+                      name="player-source-url"
+                      type="url"
+                      inputMode="url"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="https://example.com/video.mp4"
+                      value={url}
+                      onChange={(event) => setUrl(event.target.value)}
+                    />
+                  </span>
+                  <button
+                    className="button button--secondary player-source__submit"
+                    type="submit"
+                    disabled={isOpening}
+                  >
+                    {isOpening ? "打开中…" : "打开"}
+                  </button>
+                </form>
+                <div className="player-source-meta">
+                  <span
+                    className="player-source__current"
+                    title={sourceUrl ?? undefined}
+                  >
+                    {sourceUrl ? compactUrl(sourceUrl) : "手动输入播放直链"}
+                  </span>
+                  {!isDesktop && <span className="player-preview-tag">预览</span>}
+                </div>
               </div>
             </details>
 
@@ -791,8 +777,8 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
               </div>
             )}
 
-            <div className="playback-panel__top">
-              <div className="playback-transport">
+            <div className="player-controlbar">
+              <div className="player-controlbar__main">
                 <button
                   ref={playButtonRef}
                   className="transport-button transport-button--main"
@@ -801,17 +787,59 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
                   disabled={!hasMedia}
                   aria-label={isPlaying ? "暂停" : "播放"}
                   aria-pressed={isPlaying}
-                  title={!hasMedia ? "请先输入播放地址" : undefined}
+                  title={!hasMedia ? "请先打开播放地址" : undefined}
                 >
-                  <PlayerIcon name={isPlaying ? "pause" : "play"} size={19} />
+                  <PlayerIcon name={isPlaying ? "pause" : "play"} size={18} />
                 </button>
-                <span className="playback-name">
-                  <strong>{title}</strong>
-                  <small>{isDesktop ? `原生播放器 · ${label}` : "浏览器假状态 · 预览"}</small>
+                <span className="player-controlbar__time">
+                  {formatTime(boundedPosition)}
+                </span>
+                <label className="visually-hidden" htmlFor="player-seek">
+                  播放进度
+                </label>
+                <span className="range-wrap">
+                  <span
+                    className="range-fill"
+                    style={{ width: `${progressPercent}%` }}
+                    aria-hidden="true"
+                  />
+                  <input
+                    ref={seekInputRef}
+                    id="player-seek"
+                    className="seek-range"
+                    type="range"
+                    min="0"
+                    max={duration > 0 ? duration : 1}
+                    step="1"
+                    value={boundedPosition}
+                    disabled={!canSeek}
+                    aria-valuetext={`${formatTime(boundedPosition)} / ${formatTime(duration)}`}
+                    onChange={(event) => updateSeekPreview(Number(event.currentTarget.value))}
+                    onPointerUp={(event) => commitSeek(Number(event.currentTarget.value))}
+                    onPointerCancel={(event) => commitSeek(Number(event.currentTarget.value))}
+                    onKeyUp={(event) => {
+                      if (
+                        seekPreviewRef.current !== null &&
+                        ["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(
+                          event.key,
+                        )
+                      ) {
+                        commitSeek(Number(event.currentTarget.value));
+                      }
+                    }}
+                    onBlur={(event) => {
+                      if (seekPreviewRef.current !== null) {
+                        commitSeek(Number(event.currentTarget.value));
+                      }
+                    }}
+                  />
+                </span>
+                <span className="player-controlbar__time">
+                  {formatTime(duration)}
                 </span>
               </div>
 
-              <div className="playback-tools">
+              <div className="player-controlbar__tools">
                 <TrackControl
                   kind="audio"
                   label="音轨"
@@ -835,58 +863,65 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
 
                 <div className="volume-control">
                   <button
-                    className="volume-toggle"
+                    className="tool-button"
                     type="button"
                     onClick={() => void toggleMuted()}
                     aria-label={muted ? "取消静音" : "静音"}
                     aria-pressed={muted}
                   >
-                    <PlayerIcon name={muted ? "volume-off" : "volume"} size={18} />
+                    <PlayerIcon name={muted ? "volume-off" : "volume"} size={17} />
                   </button>
                   <label className="visually-hidden" htmlFor="player-volume">
                     音量
                   </label>
-                  <input
-                    id="player-volume"
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={volume}
-                    aria-valuetext={`${volume}%`}
-                    onChange={(event) => void setVolume(Number(event.currentTarget.value))}
-                    style={{ background: rangeBackground(volume) }}
-                  />
+                  <span className="range-wrap range-wrap--volume">
+                    <span
+                      className="range-fill"
+                      style={{ width: `${volume}%` }}
+                      aria-hidden="true"
+                    />
+                    <input
+                      id="player-volume"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={volume}
+                      aria-valuetext={`${volume}%`}
+                      onChange={(event) => void setVolume(Number(event.currentTarget.value))}
+                    />
+                  </span>
                   <span className="volume-value">{volume}</span>
                 </div>
 
                 <button
-                  className="tool-button player-tool"
+                  className="tool-button"
                   type="button"
                   onClick={() => void toggleFullscreen()}
                   aria-label={isFullscreen ? "退出全屏" : "全屏"}
+                  title={isFullscreen ? "退出全屏" : "全屏"}
                 >
-                  <PlayerIcon name="fullscreen" size={16} />
-                  <span className="tool-button__text">{isFullscreen ? "退出全屏" : "全屏"}</span>
+                  <PlayerIcon name="fullscreen" size={17} />
                 </button>
                 <button
-                  className="tool-button player-tool"
+                  className="tool-button"
                   type="button"
                   onClick={leavePlayer}
                   aria-label="返回详情"
+                  title="返回详情"
                 >
-                  <PlayerIcon name="arrow-left" size={16} />
-                  <span className="tool-button__text">返回</span>
+                  <PlayerIcon name="arrow-left" size={17} />
                 </button>
                 <button
-                  className="tool-button player-tool"
+                  className="tool-button"
                   type="button"
                   aria-expanded={controlsVisible}
                   aria-controls="player-controls"
                   onClick={hideControls}
+                  aria-label="隐藏控制条"
+                  title="隐藏控制条"
                 >
-                  <span className="tool-button__text">隐藏控制</span>
-                  <PlayerIcon name="chevron" size={15} />
+                  <PlayerIcon name="chevron" size={16} />
                 </button>
               </div>
             </div>
@@ -905,45 +940,6 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
               />
             )}
 
-            <div className="seek-row">
-              <span>{formatTime(boundedPosition)}</span>
-              <label className="visually-hidden" htmlFor="player-seek">
-                播放进度
-              </label>
-              <input
-                ref={seekInputRef}
-                id="player-seek"
-                className="seek-range"
-                type="range"
-                min="0"
-                max={duration > 0 ? duration : 1}
-                step="1"
-                value={boundedPosition}
-                disabled={!canSeek}
-                aria-valuetext={`${formatTime(boundedPosition)} / ${formatTime(duration)}`}
-                onChange={(event) => updateSeekPreview(Number(event.currentTarget.value))}
-                onPointerUp={(event) => commitSeek(Number(event.currentTarget.value))}
-                onPointerCancel={(event) => commitSeek(Number(event.currentTarget.value))}
-                onKeyUp={(event) => {
-                  if (
-                    seekPreviewRef.current !== null &&
-                    ["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(
-                      event.key,
-                    )
-                  ) {
-                    commitSeek(Number(event.currentTarget.value));
-                  }
-                }}
-                onBlur={(event) => {
-                  if (seekPreviewRef.current !== null) {
-                    commitSeek(Number(event.currentTarget.value));
-                  }
-                }}
-                style={{ background: rangeBackground(progressPercent) }}
-              />
-              <span>{formatTime(duration)}</span>
-            </div>
-
             <span className="visually-hidden" aria-live="polite">
               {label}
             </span>
@@ -952,7 +948,7 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
           <div className="player-dock--collapsed">
             <span className="player-dock__status">
               <span className={`status-square status-square--${status}`} />
-              控制条已收起 · 视频区域自动扩展
+              控制条已收起
             </span>
             <button
               ref={showControlsButtonRef}
@@ -962,7 +958,6 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
               aria-controls="player-controls"
               onClick={showControls}
             >
-              <span className="controls-recall__dot" />
               显示控制
               <PlayerIcon name="chevron" size={15} />
             </button>
@@ -970,23 +965,6 @@ export default function PlayerPage({ title, playback, onBack }: PlayerPageProps)
         )}
       </div>
 
-      <footer className="player-footer">
-        <span className="player-shortcuts">
-          <kbd>Space</kbd> 播放 / 暂停 <i /> <kbd>←</kbd>
-          <kbd>→</kbd> 跳转 10 秒 <i /> <kbd>F</kbd> 全屏 <i /> <kbd>Esc</kbd> 返回
-        </span>
-        <span className="player-footer__source">
-          {hasMedia
-            ? isDesktop
-              ? playback
-                ? "原生 mpv · Emby 直链"
-                : "原生 mpv · 调试直链"
-              : "浏览器预览 · 本地假状态"
-            : playback
-              ? "等待 Emby 播放直链"
-              : "等待调试直链"}
-        </span>
-      </footer>
     </main>
   );
 }

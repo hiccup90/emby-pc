@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmbyPlaybackTarget } from "./emby/contract";
 import { hasTauriRuntime } from "./emby/client";
 import type { EmbyLibraryItem } from "./emby/useEmby";
@@ -6,16 +6,13 @@ import { useEmbyLibrary, useEmbySession } from "./emby/useEmby";
 import DetailScreen from "./screens/DetailScreen";
 import LibraryScreen from "./screens/LibraryScreen";
 import LoginScreen from "./screens/LoginScreen";
-import { BrandMark } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import "./styles.css";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
   const icon = document.createElement("link");
   icon.rel = "icon";
-  icon.type = "image/svg+xml";
-  const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='#171a17'/><path d='M16 6 26 16 16 26 6 16Z' fill='none' stroke='#c58b65' stroke-width='2'/></svg>";
-  icon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  icon.href = "data:,";
   document.head.append(icon);
 }
 
@@ -38,10 +35,9 @@ type Route =
 function BootScreen() {
   return (
     <main className="boot-screen" role="status" aria-live="polite">
-      <BrandMark />
-      <span className="eyebrow">EMBY DESKTOP</span>
-      <h1>正在读取 Emby 会话…</h1>
-      <span className="boot-screen__line" aria-hidden="true" />
+      <span className="boot-screen__brand">Emby PC</span>
+      <span className="boot-screen__status">正在读取 Emby 会话…</span>
+      <span className="boot-screen__bar" aria-hidden="true" />
     </main>
   );
 }
@@ -54,6 +50,8 @@ export default function App() {
     Boolean(sessionController.session),
   );
   const [route, setRoute] = useState<Route>({ screen: "login" });
+  const previousScreenRef = useRef<Route["screen"] | null>(null);
+  const { refreshResume } = library;
 
   useEffect(() => {
     if (sessionController.session && route.screen === "login") {
@@ -62,16 +60,23 @@ export default function App() {
   }, [route.screen, sessionController.session]);
 
   useEffect(() => {
+    const previous = previousScreenRef.current;
+    previousScreenRef.current = route.screen;
+    if (
+      route.screen === "library" &&
+      (previous === "detail" || previous === "player")
+    ) {
+      refreshResume();
+    }
+  }, [refreshResume, route.screen]);
+
+  useEffect(() => {
     if (route.screen === "detail" || route.screen === "player") {
       window.scrollTo(0, 0);
     }
   }, [route]);
 
   const openItem = useCallback((item: EmbyLibraryItem) => {
-    setRoute({ screen: "detail", itemId: item.id, seed: item });
-  }, []);
-
-  const openRelated = useCallback((item: EmbyLibraryItem) => {
     setRoute({ screen: "detail", itemId: item.id, seed: item });
   }, []);
 
@@ -127,12 +132,10 @@ export default function App() {
           key={route.itemId}
           itemId={route.itemId}
           seed={route.seed}
-          libraryItems={library.items}
           session={sessionController.session}
           desktop={desktop}
           logoutPending={sessionController.logoutPending}
           onBack={() => setRoute({ screen: "library" })}
-          onOpenRelated={openRelated}
           onPlay={(playback, title) =>
             openPlayer(playback, title, {
               itemId: route.itemId,

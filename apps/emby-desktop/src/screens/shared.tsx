@@ -1,15 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-export type IconName =
-  | "arrow-left"
-  | "arrow-right"
-  | "play"
-  | "chevron"
-  | "logout"
-  | "refresh"
-  | "alert"
-  | "library";
+export type IconName = "arrow-left" | "play" | "refresh" | "alert";
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const shared = {
@@ -26,21 +18,7 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
         <path d="M5 12h14" />
       </>
     ),
-    "arrow-right": (
-      <>
-        <path d="M5 12h14" />
-        <path d="m13 6 6 6-6 6" />
-      </>
-    ),
     play: <path d="m8 5 11 7-11 7z" fill="currentColor" stroke="none" />,
-    chevron: <path d="m7 10 5 5 5-5" />,
-    logout: (
-      <>
-        <path d="M10 5H5v14h5" />
-        <path d="m14 8 4 4-4 4" />
-        <path d="M18 12H9" />
-      </>
-    ),
     refresh: (
       <>
         <path d="M20 7v5h-5" />
@@ -55,27 +33,12 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
         <path d="M12 17.2v.1" />
       </>
     ),
-    library: (
-      <>
-        <rect x="4" y="5" width="5" height="14" />
-        <rect x="10.5" y="5" width="4" height="14" />
-        <path d="m16.2 6.2 3.2-.9 3.4 12.4-3.2.9z" />
-      </>
-    ),
   };
 
   return (
     <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" {...shared}>
       {paths[name]}
     </svg>
-  );
-}
-
-export function BrandMark() {
-  return (
-    <span className="brand-mark" aria-hidden="true">
-      <span />
-    </span>
   );
 }
 

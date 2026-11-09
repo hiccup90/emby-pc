@@ -268,6 +268,38 @@ impl EmbyClient {
         Ok(raw.into_page())
     }
 
+    /// Continue-watching list (`GET /Users/{id}/Items/Resume`).
+    ///
+    /// Emby returns the most recently played item first; ordering is left to
+    /// the server, so no `SortBy`/`SortOrder` is sent. Only video is requested
+    /// and the response has the same shape as [`Self::items`]. `limit == 0`
+    /// omits `Limit` entirely (server default page size).
+    pub async fn resume(&self, user_id: &str, limit: u32) -> ApiResult<EmbyItemsPage> {
+        let _token = self.token()?;
+
+        let mut query: Vec<(&str, String)> = vec![
+            ("MediaTypes", "Video".to_string()),
+            ("EnableUserData", "true".to_string()),
+            ("Fields", ITEM_FIELDS.to_string()),
+            ("EnableImageTypes", "Primary,Backdrop".to_string()),
+            ("ImageTypeLimit", "1".to_string()),
+        ];
+        if limit > 0 {
+            query.push(("Limit", limit.to_string()));
+        }
+
+        let pairs: Vec<(&str, &str)> = query
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        let url = self.endpoint(&["Users", user_id, "Items", "Resume"], &pairs)?;
+        let body = self
+            .send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        let raw: RawItemsResponse = parse_json(&body, "继续观看列表")?;
+        Ok(raw.into_page())
+    }
+
     pub async fn item(&self, user_id: &str, item_id: &str) -> ApiResult<EmbyItem> {
         let _token = self.token()?;
         let item_id = required_item_id(item_id)?;
@@ -566,6 +598,146 @@ fn device_profile() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serves exactly one HTTP request and returns the raw request text.
+    /// The test thread drives reqwest while this thread only blocks on the
+    /// loopback socket, so no extra runtime feature is needed.
+    fn spawn_mock_server(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let addr = listener.local_addr().expect("mock server address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout");
+
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            String::from_utf8(request).expect("utf-8 request")
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn test_client(server_url: String) -> EmbyClient {
+        EmbyClient::with_token(
+            default_http_client().expect("http client"),
+            server_url,
+            "test-device",
+            "Test",
+            "test-token",
+        )
+    }
+
+    #[tokio::test]
+    async fn resume_uses_the_official_endpoint_without_a_client_side_sort() {
+        const PAGE: &str = r#"{
+            "Items": [
+                {
+                    "Id": "newest",
+                    "Name": "Newest episode",
+                    "Type": "Episode",
+                    "MediaType": "Video",
+                    "UserData": {"PlaybackPositionTicks": 90000000, "Played": false}
+                },
+                {
+                    "Id": "older",
+                    "Name": "Older movie",
+                    "Type": "Movie",
+                    "MediaType": "Video",
+                    "UserData": {"PlaybackPositionTicks": 10000000, "Played": false}
+                }
+            ],
+            "TotalRecordCount": 2,
+            "StartIndex": 0
+        }"#;
+        let (server_url, server) = spawn_mock_server(PAGE);
+
+        let page = test_client(server_url)
+            .resume("u1", 12)
+            .await
+            .expect("resume request");
+        let request = server.join().expect("mock server thread");
+
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("GET /Users/u1/Items/Resume?"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("MediaTypes=Video"), "{request_line}");
+        assert!(request_line.contains("EnableUserData=true"), "{request_line}");
+        assert!(request_line.contains("Fields=PrimaryImageAspectRatio"), "{request_line}");
+        assert!(
+            request_line.contains("EnableImageTypes=Primary%2CBackdrop")
+                || request_line.contains("EnableImageTypes=Primary,Backdrop"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("ImageTypeLimit=1"), "{request_line}");
+        assert!(request_line.contains("Limit=12"), "{request_line}");
+        assert!(!request_line.contains("SortBy"), "{request_line}");
+        assert!(!request_line.contains("SortOrder"), "{request_line}");
+        assert!(!request_line.contains("Filters="), "{request_line}");
+
+        assert_eq!(page.total_record_count, 2);
+        assert_eq!(page.start_index, 0);
+        assert_eq!(page.items.len(), 2);
+        // Server order is preserved verbatim; the client must not re-sort.
+        assert_eq!(page.items[0].id, "newest");
+        assert_eq!(page.items[1].id, "older");
+        assert_eq!(
+            page.items[0].user_data.playback_position_ticks,
+            Some(90_000_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_with_zero_limit_omits_limit() {
+        const PAGE: &str = r#"{"Items":[],"TotalRecordCount":0,"StartIndex":0}"#;
+        let (server_url, server) = spawn_mock_server(PAGE);
+
+        let page = test_client(server_url)
+            .resume("u1", 0)
+            .await
+            .expect("resume request");
+        let request = server.join().expect("mock server thread");
+
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("GET /Users/u1/Items/Resume?"),
+            "{request_line}"
+        );
+        assert!(
+            !request_line
+                .split('?')
+                .nth(1)
+                .unwrap_or_default()
+                .split('&')
+                .any(|pair| pair.starts_with("Limit=")),
+            "{request_line}"
+        );
+        assert!(page.items.is_empty());
+    }
 
     #[test]
     fn device_profile_keeps_direct_play_enabled_for_video() {

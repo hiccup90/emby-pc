@@ -46,6 +46,10 @@ export interface EmbyItemsPage {
   startIndex: number;
 }
 
+export interface EmbyResumeRequest {
+  limit?: number;
+}
+
 export interface EmbyPlaybackTarget {
   itemId: string;
   url: string;

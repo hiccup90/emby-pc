@@ -106,6 +106,12 @@ pub struct EmbyItemsRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct EmbyResumeRequest {
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct EmbyPlaybackRequest {
     pub item_id: String,
     pub start_seconds: Option<f64>,
@@ -524,5 +530,10 @@ mod tests {
             serde_json::from_str(r#"{"itemId":"i1"}"#).unwrap();
         assert_eq!(image.image_type, None);
         assert_eq!(image.max_width, None);
+
+        let resume: EmbyResumeRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(resume.limit, None);
+        let resume: EmbyResumeRequest = serde_json::from_str(r#"{"limit":24}"#).unwrap();
+        assert_eq!(resume.limit, Some(24));
     }
 }

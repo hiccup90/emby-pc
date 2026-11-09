@@ -30,6 +30,16 @@ export function itemProgress(item: EmbyItem): number {
   return Math.min(1, Math.max(0, position / duration));
 }
 
+/** Remaining play time for a Continue Watching card. */
+export function formatRemainingTicks(item: EmbyItem): string | null {
+  const duration = item.runTimeTicks;
+  const position = item.userData?.playbackPositionTicks;
+  if (typeof duration !== "number" || duration <= 0) return null;
+  const remaining = duration - (typeof position === "number" ? position : 0);
+  if (remaining <= 0) return null;
+  return `剩余 ${formatRuntimeTicks(remaining)}`;
+}
+
 export function itemKindLabel(item: Pick<EmbyItem, "type" | "mediaType">): string {
   switch (item.type) {
     case "Movie":
@@ -42,6 +52,12 @@ export function itemKindLabel(item: Pick<EmbyItem, "type" | "mediaType">): strin
       return "季";
     case "BoxSet":
       return "合集";
+    case "MusicAlbum":
+      return "音乐专辑";
+    case "Audio":
+      return "音频";
+    case "Video":
+      return "视频";
     default:
       return item.mediaType === "Video" ? "视频" : item.type || "条目";
   }
@@ -60,10 +76,28 @@ export function itemEpisodeLabel(
   return `S${String(item.parentIndexNumber).padStart(2, "0")} · E${String(item.indexNumber).padStart(2, "0")}`;
 }
 
-export function userInitial(name: string): string {
-  const trimmed = name.trim();
-  if (!trimmed) return "·";
-  return Array.from(trimmed)[0] ?? "·";
+export function itemEpisodeCode(
+  item: Pick<EmbyItem, "parentIndexNumber" | "indexNumber">,
+): string | null {
+  if (item.parentIndexNumber === null || item.indexNumber === null) return null;
+  return `S${String(item.parentIndexNumber).padStart(2, "0")}E${String(item.indexNumber).padStart(2, "0")}`;
+}
+
+/** "剧名 · SxxExx · 集名" for the player title. */
+export function episodePlaybackTitle(
+  seriesName: string | null | undefined,
+  item: Pick<EmbyItem, "name" | "parentIndexNumber" | "indexNumber">,
+): string {
+  const code = itemEpisodeCode(item);
+  return [seriesName?.trim(), code, item.name.trim()]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+}
+
+export function itemPlaybackTitle(item: EmbyItem): string {
+  return item.type === "Episode"
+    ? episodePlaybackTitle(item.seriesName, item)
+    : item.name;
 }
 
 export function compactUrl(rawUrl: string | null | undefined): string {

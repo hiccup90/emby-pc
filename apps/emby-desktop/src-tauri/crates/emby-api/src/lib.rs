@@ -35,8 +35,8 @@ pub use reqwest::Client as HttpClient;
 pub use error::{ApiError, ApiErrorKind, ApiResult};
 pub use model::{
     EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest,
-    EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbySession, EmbyUserData,
-    EmbyView, DEFAULT_IMAGE_WIDTH,
+    EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbyResumeRequest, EmbySession,
+    EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
 };
 pub use report::ReportEvent;
 pub use session::{generate_device_id, SessionStore, StoredSession};
