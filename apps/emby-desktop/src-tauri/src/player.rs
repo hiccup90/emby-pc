@@ -380,8 +380,18 @@ fn mpv_log_path() -> PathBuf {
 // `req` -> `req`, ...). Wire types serialize with `rename_all = "camelCase"`.
 
 #[tauri::command]
-pub fn video_sync(req: VideoSync, state: State<'_, PlayerService>) -> Result<(), String> {
-    state.video_sync(req)
+pub fn video_sync(
+    app: tauri::AppHandle,
+    req: VideoSync,
+    state: State<'_, PlayerService>,
+) -> Result<(), String> {
+    // The host owns mpv's embedding; the overlay mirrors the same rectangle so
+    // the transparent controls window can follow it. Feed the overlay even if
+    // the host reports a stale seq / missing platform support: it has its own
+    // latch and simply stays where it is.
+    let result = state.video_sync(req);
+    crate::overlay::on_video_sync(&app, req);
+    result
 }
 
 // Runs on Tauri's thread pool: `open` waits (bounded, typically < 50 ms) for

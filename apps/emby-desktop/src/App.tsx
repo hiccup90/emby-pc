@@ -148,7 +148,6 @@ export default function App() {
 
       {route.screen === "player" && (
         <PlayerPage
-          title={route.title}
           playback={route.playback}
           onBack={() =>
             setRoute({

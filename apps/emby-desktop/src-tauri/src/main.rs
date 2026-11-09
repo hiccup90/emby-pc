@@ -6,6 +6,7 @@
 //! The Emby session/API commands live in `emby`.
 
 mod emby;
+mod overlay;
 mod player;
 mod video_window;
 
@@ -37,18 +38,74 @@ fn main() {
             };
 
             app.manage(PlayerService::new(host));
+            // Capture focus before creating the helper window; it is created
+            // unfocused, but this keeps the initial state independent of it.
+            let main_focused = window.is_focused().unwrap_or(true);
+            // The native video is a child HWND above WebView2, so the controls
+            // live in their own transparent window. A failure here only
+            // disables the overlay, never the library/player commands.
+            if let Err(err) = overlay::create_controls_window(app.handle()) {
+                eprintln!("[desktop] controls overlay disabled: {err}");
+            }
+            app.manage(overlay::OverlayState::new(main_focused));
+            overlay::spawn_wake_poller(app.handle().clone());
             // Session store lives in the app config dir; a failure here is
             // fatal because login/logout could not persist anything.
             app.manage(emby::EmbyService::new(app.handle())?);
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Stop mpv while the Tauri window still exists: `terminate_destroy`
-            // must run before the parent HWND is destroyed.
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                if let Some(service) = window.app_handle().try_state::<PlayerService>() {
-                    service.shutdown();
+            // Only the main window drives the player/overlay lifecycle; the
+            // controls window is a decoration-less helper and must not run
+            // `PlayerService::shutdown`.
+            if window.label() != "main" {
+                return;
+            }
+            let app = window.app_handle();
+            match event {
+                // Stop mpv while the Tauri window still exists:
+                // `terminate_destroy` must run before the parent HWND is
+                // destroyed.
+                WindowEvent::CloseRequested { .. } => {
+                    if let Some(service) = app.try_state::<PlayerService>() {
+                        service.shutdown();
+                    }
+                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.stop_wake();
+                    }
+                    // The controls window is independent of the main window at
+                    // the OS level; destroying it lets the app exit and avoids
+                    // a stray always-on-top surface during teardown.
+                    if let Some(controls) = app.get_webview_window(overlay::CONTROLS_LABEL) {
+                        let _ = controls.destroy();
+                    }
                 }
+                WindowEvent::Destroyed => {
+                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.on_main_destroyed();
+                    }
+                    // Covers programmatic destroys that never emitted
+                    // CloseRequested (e.g. `app.exit()` paths).
+                    if let Some(controls) = app.get_webview_window(overlay::CONTROLS_LABEL) {
+                        let _ = controls.destroy();
+                    }
+                }
+                WindowEvent::Focused(focused) => {
+                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.on_main_focus(app, *focused);
+                    }
+                }
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.on_main_geometry(app, None);
+                    }
+                }
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.on_main_geometry(app, Some(*scale_factor));
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -73,6 +130,10 @@ fn main() {
             player::player_snapshot,
             player::player_toggle_fullscreen,
             player::player_subscribe,
+            overlay::player_ui_mode,
+            overlay::overlay_set_expanded,
+            overlay::overlay_set_interactive,
+            overlay::overlay_drag_window,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Emby Desktop");
@@ -83,6 +144,9 @@ fn main() {
         if let RunEvent::ExitRequested { .. } = event {
             if let Some(service) = handle.try_state::<PlayerService>() {
                 service.shutdown();
+            }
+            if let Some(state) = handle.try_state::<overlay::OverlayState>() {
+                state.stop_wake();
             }
         }
     });
