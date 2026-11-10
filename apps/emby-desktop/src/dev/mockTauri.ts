@@ -26,6 +26,7 @@ import type {
   EmbyView,
 } from "../emby/contract";
 import type { OpenRequest, PlayerSnapshot, PlayerTrack } from "../player/contract";
+import type { AppSettings } from "../settings/tauri";
 
 const TICKS = 10_000_000;
 
@@ -256,6 +257,39 @@ const SESSION: EmbySession = {
   deviceId: "mock-device",
 };
 let session: EmbySession | null = scenario.signedOut ? null : SESSION;
+
+// ---- settings ---------------------------------------------------------------
+
+const MOCK_SETTINGS_KEY = "emby.mock.settings";
+const DEFAULT_MOCK_SETTINGS: AppSettings = {
+  videoQuality: "low",
+  autoPlay: true,
+  pageSize: 120,
+};
+
+function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): AppSettings {
+  const pageSize =
+    typeof value?.pageSize === "number" && Number.isFinite(value.pageSize) && value.pageSize > 0
+      ? Math.round(value.pageSize)
+      : DEFAULT_MOCK_SETTINGS.pageSize;
+  return {
+    videoQuality: value?.videoQuality === "default" ? "default" : "low",
+    autoPlay: value?.autoPlay !== false,
+    pageSize,
+  };
+}
+
+function readMockSettings(): AppSettings {
+  try {
+    const raw = window.localStorage.getItem(MOCK_SETTINGS_KEY);
+    if (!raw) return { ...DEFAULT_MOCK_SETTINGS };
+    return normalizeMockSettings(JSON.parse(raw) as Partial<AppSettings>);
+  } catch {
+    return { ...DEFAULT_MOCK_SETTINGS };
+  }
+}
+
+let appSettings: AppSettings = readMockSettings();
 
 // ---- generated artwork -------------------------------------------------------
 
@@ -546,8 +580,27 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
     }
     case "emby_person_items": {
       await wait(200);
+      const personId = String(args.personId ?? "");
       const all = [...items.values()].filter((item) => item.type !== "Season");
-      return page(all, req);
+      // Base list items carry no people; enrich recreates the same deterministic
+      // cast as the detail page so the actor screen shows a believable slice.
+      const featured = personId
+        ? all.filter((item) => enrich(item).people.some((person) => person.id === personId))
+        : all;
+      return page(featured.length > 0 ? featured : all, req);
+    }
+    case "settings_get":
+      await wait(120);
+      return { ...appSettings };
+    case "settings_set": {
+      await wait(160);
+      appSettings = normalizeMockSettings((args.settings ?? {}) as Partial<AppSettings>);
+      try {
+        window.localStorage.setItem(MOCK_SETTINGS_KEY, JSON.stringify(appSettings));
+      } catch {
+        // Preview only; localStorage may be unavailable in private windows.
+      }
+      return { ...appSettings };
     }
     case "emby_set_played":
     case "emby_set_favorite":

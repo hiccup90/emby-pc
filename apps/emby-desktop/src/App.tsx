@@ -20,6 +20,7 @@ import type { TitleBarAccount } from "./screens/TitleBar";
 import { BrandMark, PageBackdrop } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import type { PlaybackMeta } from "./player/contract";
+import { getSettings } from "./settings/tauri";
 import "./styles.css";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
@@ -72,6 +73,8 @@ export default function App() {
     Boolean(sessionController.session),
   );
   const [route, setRoute] = useState<Route>({ screen: "login" });
+  /** Persisted auto-play preference; false disables the player's next-episode hop. */
+  const [autoPlay, setAutoPlay] = useState(true);
   const previousScreenRef = useRef<Route["screen"] | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   /** Library scroll offset to restore when coming back from a detail page. */
@@ -84,6 +87,21 @@ export default function App() {
       setRoute({ screen: "home" });
     }
   }, [route.screen, sessionController.session]);
+
+  // Keep the shell's auto-play flag in sync with the persisted settings.
+  useEffect(() => {
+    let cancelled = false;
+    void getSettings()
+      .then((stored) => {
+        if (!cancelled) setAutoPlay(stored.autoPlay);
+      })
+      .catch((reason: unknown) => {
+        console.warn("[settings] could not read the auto-play preference", reason);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const previous = previousScreenRef.current;
@@ -300,7 +318,7 @@ export default function App() {
           playback={route.playback}
           meta={route.meta}
           trackScope={route.trackScope}
-          onNext={playNext}
+          onNext={autoPlay ? playNext : undefined}
           onBack={() => {
             queueRef.current = null;
             setRoute({
@@ -404,7 +422,10 @@ export default function App() {
           )}
 
           {route.screen === "settings" && (
-            <SettingsScreen onBack={() => setRoute({ screen: "home" })} />
+            <SettingsScreen
+              onBack={() => setRoute({ screen: "home" })}
+              onSettingsChange={(next) => setAutoPlay(next.autoPlay)}
+            />
           )}
 
           {route.screen === "actor" && (

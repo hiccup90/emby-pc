@@ -224,3 +224,59 @@
     transition: none;
   }
 }
+
+/* Backend-backed state: load/save feedback and disabled controls. */
+
+.settings-header__status {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.settings-header__status--saved {
+  color: var(--accent);
+}
+
+.settings-alert {
+  max-width: 700px;
+  margin: 0 0 18px;
+}
+
+.settings-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 42px 0;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.settings-segmented__option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-toggle:disabled {
+  opacity: 0.55;
+}
+
+.settings-select:disabled {
+  opacity: 0.6;
+}
+
+@media (max-width: 640px) {
+  .settings-header {
+    flex-wrap: wrap;
+  }
+
+  .settings-header__status {
+    width: 100%;
+    margin-left: 54px;
+  }
+}
