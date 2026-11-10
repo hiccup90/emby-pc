@@ -38,6 +38,43 @@ export interface EmbyItem {
   parentIndexNumber: number | null;
   overview: string | null;
   genres: string[];
+  // Detail data: only `emby_item` fills these; list items have them empty.
+  people: EmbyPerson[];
+  studios: string[];
+  officialRating: string | null;
+  communityRating: number | null;
+  tagline: string | null;
+  premiereDate: string | null;
+  endDate: string | null;
+  /** Series status: "Continuing" / "Ended". */
+  status: string | null;
+  mediaStreams: EmbyMediaStream[];
+}
+
+export interface EmbyPerson {
+  id: string | null;
+  name: string;
+  /** Character name for actors; often empty. */
+  role: string | null;
+  /** "Actor", "Director", "Writer", "GuestStar", ... */
+  kind: string | null;
+  primaryImageTag: string | null;
+}
+
+export interface EmbyMediaStream {
+  /** "Video" | "Audio" | "Subtitle" */
+  kind: string;
+  index: number | null;
+  codec: string | null;
+  language: string | null;
+  title: string | null;
+  displayTitle: string | null;
+  width: number | null;
+  height: number | null;
+  channels: number | null;
+  isDefault: boolean;
+  isForced: boolean;
+  isExternal: boolean;
 }
 
 export interface EmbyItemsPage {

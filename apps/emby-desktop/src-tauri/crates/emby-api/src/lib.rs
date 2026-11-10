@@ -34,7 +34,8 @@ pub use client::{default_http_client, EmbyClient, LoginOutcome, DEFAULT_TIMEOUT,
 pub use reqwest::Client as HttpClient;
 pub use error::{ApiError, ApiErrorKind, ApiResult};
 pub use model::{
-    EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest,
+    EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest, EmbyMediaStream,
+    EmbyPerson,
     EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbyResumeRequest, EmbySession,
     EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
 };

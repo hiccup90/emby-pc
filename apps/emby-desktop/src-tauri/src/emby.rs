@@ -28,6 +28,7 @@ const AUTH_EXPIRED: &str = "登录已失效，请重新登录";
 
 /// Page size used when `emby_resume` does not receive a limit.
 const DEFAULT_RESUME_LIMIT: u32 = 16;
+const DEFAULT_SIMILAR_LIMIT: u32 = 12;
 
 /// Managed state for every `emby_*` command.
 pub struct EmbyService {
@@ -224,6 +225,22 @@ pub async fn emby_item(
     let client = state.client(&session);
     match client.item(&session.user_id, &id).await {
         Ok(item) => Ok(item),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+/// "More like this" row of the detail page.
+#[tauri::command]
+pub async fn emby_similar(
+    id: String,
+    limit: Option<u32>,
+    state: State<'_, EmbyService>,
+) -> Result<EmbyItemsPage, String> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    let limit = limit.unwrap_or(DEFAULT_SIMILAR_LIMIT).clamp(1, 50);
+    match client.similar(&session.user_id, &id, limit).await {
+        Ok(page) => Ok(page),
         Err(err) => Err(state.fail(err).await),
     }
 }

@@ -165,6 +165,12 @@ export async function embyItem(id: string): Promise<EmbyItem> {
   return invoke<EmbyItem>("emby_item", { id });
 }
 
+/** "More like this" for a movie or series. */
+export async function embySimilar(id: string, limit?: number): Promise<EmbyItemsPage> {
+  requireDesktop();
+  return invoke<EmbyItemsPage>("emby_similar", { id, ...(limit ? { limit } : {}) });
+}
+
 export async function embyPlaybackTarget(itemId: string): Promise<EmbyPlaybackTarget> {
   requireDesktop();
   return invoke<EmbyPlaybackTarget>("emby_playback_target", { req: { itemId } });

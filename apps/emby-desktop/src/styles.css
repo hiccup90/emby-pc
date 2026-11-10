@@ -570,6 +570,66 @@ button:disabled {
   scroll-snap-align: start;
 }
 
+.hub__track--poster {
+  grid-auto-columns: clamp(132px, 11vw, 168px);
+  gap: 24px;
+}
+
+.hub__track--person {
+  grid-auto-columns: 124px;
+  gap: 16px;
+}
+
+/* Cast & crew (Plex: round photos, initials when there is none). */
+.person-card {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 2px;
+  text-align: center;
+}
+
+.person-card__photo {
+  display: grid;
+  width: 112px;
+  height: 112px;
+  margin-bottom: 8px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+.person-card__photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.person-card__initials {
+  color: var(--text-2);
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.person-card__name,
+.person-card__role {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.person-card__name {
+  color: var(--text);
+}
+
+.person-card__role {
+  color: var(--text-3);
+}
+
 /* ---- cards ------------------------------------------------------------------- */
 
 .continue-card,
@@ -1100,6 +1160,58 @@ button:disabled {
   font-size: 15px;
   line-height: 1.75;
   white-space: pre-line;
+}
+
+.detail-tagline {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.detail-rating > span {
+  color: var(--accent);
+}
+
+/* Plex's details grid: muted label column, white values. */
+.detail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 56px;
+  margin-top: 18px;
+}
+
+.detail-facts__group {
+  display: grid;
+  max-width: 100%;
+  align-content: start;
+  gap: 6px;
+  margin: 0;
+}
+
+.detail-facts__row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.detail-facts__row dt {
+  color: var(--text-3);
+}
+
+.detail-facts__row dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.detail-rows {
+  margin-top: 44px;
+}
+
+.detail-rows .hub:last-child {
+  margin-bottom: 0;
 }
 
 /* ---- episodes ---------------------------------------------------------------------- */

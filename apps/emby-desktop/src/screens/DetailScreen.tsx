@@ -1,18 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { EmbyPlaybackTarget, EmbySession } from "../emby/contract";
+import type { EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
 import type { PlaybackMeta } from "../player/contract";
 import type { EmbyLibraryItem } from "../emby/useEmby";
-import { useEmbyDetail, useEmbyEpisodes, usePlaybackLauncher } from "../emby/useEmby";
+import { useEmbyDetail, useEmbyEpisodes, useEmbySimilar, usePlaybackLauncher } from "../emby/useEmby";
 import {
+  audioStreamSummary,
   episodePlaybackMeta,
+  formatCommunityRating,
+  formatPremiereDate,
   formatRemainingTicks,
   formatRuntimeTicks,
   itemEpisodeLabel,
   itemPlaybackMeta,
   itemProgress,
   itemYearLabel,
+  seriesStatusLabel,
+  subtitleStreamSummary,
+  videoStreamSummary,
 } from "../emby/format";
 import { isPlayableItemType } from "../emby/library";
+import { HubRow, PosterCard } from "./cards";
 import { ErrorNotice, Icon, MediaArtwork, ProgressBar } from "./shared";
 
 interface DetailScreenProps {
@@ -24,6 +31,107 @@ interface DetailScreenProps {
   onPlay: (target: EmbyPlaybackTarget, meta: PlaybackMeta) => void;
   /** The shell draws the backdrop under the scroll container. */
   onBackdrop?: (src: string | null) => void;
+  /** A "more like this" poster. */
+  onOpenItem: (item: EmbyLibraryItem) => void;
+}
+
+const CREW_ORDER = ["Director", "Writer", "Producer", "Composer"];
+const ROLE_LABELS: Record<string, string> = {
+  Director: "导演",
+  Writer: "编剧",
+  Producer: "制片",
+  Composer: "作曲",
+  GuestStar: "客串",
+};
+
+/** Plex's "Cast & Crew": actors in server order, then the crew. */
+function castAndCrew(people: EmbyPerson[]): EmbyPerson[] {
+  const actors = people.filter((person) => person.kind === "Actor" || person.kind === "GuestStar");
+  const crew = CREW_ORDER.flatMap((kind) => people.filter((person) => person.kind === kind));
+  const seen = new Set<string>();
+  return [...actors, ...crew]
+    .filter((person) => {
+      const key = `${person.id ?? person.name}|${person.kind}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 30);
+}
+
+function personRole(person: EmbyPerson): string | null {
+  if (person.kind === "Actor") return person.role;
+  if (person.kind === "GuestStar") return person.role ?? ROLE_LABELS.GuestStar;
+  return ROLE_LABELS[person.kind ?? ""] ?? null;
+}
+
+function initials(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  if (/[\u2e80-\u9fff]/.test(trimmed)) return Array.from(trimmed)[0];
+  return trimmed
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+function PersonCard({ person, photo }: { person: EmbyPerson; photo: string | undefined }) {
+  const [failed, setFailed] = useState(false);
+  const role = personRole(person);
+  return (
+    <div className="person-card" title={role ? `${person.name} · ${role}` : person.name}>
+      <span className="person-card__photo" aria-hidden="true">
+        {photo && !failed ? (
+          <img src={photo} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
+        ) : (
+          <span className="person-card__initials">{initials(person.name)}</span>
+        )}
+      </span>
+      <span className="person-card__name">{person.name}</span>
+      <span className="person-card__role">{role ?? "\u00a0"}</span>
+    </div>
+  );
+}
+
+function namesOf(people: EmbyPerson[], kind: string): string | null {
+  const names = Array.from(new Set(people.filter((person) => person.kind === kind).map((person) => person.name)));
+  return names.length > 0 ? names.slice(0, 3).join("、") : null;
+}
+
+/** Plex's details grid: credits on the left, media on the right. */
+function DetailFacts({ item }: { item: EmbyLibraryItem }) {
+  const isSeries = item.type === "Series";
+  const credits: Array<[string, string | null]> = [
+    ["导演", namesOf(item.people, "Director")],
+    ["编剧", namesOf(item.people, "Writer")],
+    ["出品", item.studios.length > 0 ? item.studios.slice(0, 3).join("、") : null],
+    [isSeries ? "首播" : item.type === "Episode" ? "播出" : "上映", formatPremiereDate(item.premiereDate)],
+    ["状态", isSeries ? seriesStatusLabel(item.status) : null],
+  ];
+  const media: Array<[string, string | null]> = [
+    ["视频", videoStreamSummary(item.mediaStreams)],
+    ["音频", audioStreamSummary(item.mediaStreams)],
+    ["字幕", subtitleStreamSummary(item.mediaStreams)],
+  ];
+  const groups = [credits, media]
+    .map((rows) => rows.filter((row): row is [string, string] => Boolean(row[1])))
+    .filter((rows) => rows.length > 0);
+  if (groups.length === 0) return null;
+  return (
+    <div className="detail-facts">
+      {groups.map((rows, index) => (
+        <dl className="detail-facts__group" key={index}>
+          {rows.map(([label, value]) => (
+            <div className="detail-facts__row" key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ))}
+    </div>
+  );
 }
 
 function DetailSkeleton() {
@@ -169,6 +277,7 @@ export default function DetailScreen({
   onBack,
   onPlay,
   onBackdrop,
+  onOpenItem,
 }: DetailScreenProps) {
   const detail = useEmbyDetail(itemId, seed, desktop && Boolean(session));
   const playback = usePlaybackLauncher();
@@ -179,6 +288,10 @@ export default function DetailScreen({
   const progress = item ? itemProgress(item) : 0;
   const isSeries = item?.type === "Series";
   const episodes = useEmbyEpisodes(isSeries ? item.id : null, desktop && Boolean(session));
+  const similar = useEmbySimilar(
+    item && (item.type === "Movie" || item.type === "Series") ? item.id : null,
+    desktop && Boolean(session),
+  );
   const landscapeArt = item?.type === "Episode" || item?.type === "Video";
   const backdrop = item ? item.backdropUrl ?? (landscapeArt ? item.posterUrl : null) : null;
 
@@ -259,6 +372,8 @@ export default function DetailScreen({
   }
 
   const remaining = formatRemainingTicks(item);
+  const rating = formatCommunityRating(item.communityRating);
+  const cast = castAndCrew(item.people);
 
   return (
     <main className="page detail-page">
@@ -288,11 +403,17 @@ export default function DetailScreen({
               <p className="detail-subtitle">{episodeLine}</p>
             </>
           )}
-          {(metaParts.length > 0 || item.userData.played) && (
+          {(metaParts.length > 0 || rating || item.officialRating || item.userData.played) && (
             <p className="detail-meta">
               {metaParts.map((part, index) => (
                 <span key={`${part}-${index}`}>{part}</span>
               ))}
+              {rating && (
+                <span className="detail-rating" title="评分">
+                  <span aria-hidden="true">★</span> {rating}
+                </span>
+              )}
+              {item.officialRating && <span className="chip">{item.officialRating}</span>}
               {item.userData.played && <span className="chip">已看完</span>}
             </p>
           )}
@@ -322,7 +443,9 @@ export default function DetailScreen({
 
           {playback.error && <ErrorNotice message={playback.error} />}
 
+          {item.tagline && <p className="detail-tagline">{item.tagline}</p>}
           <p className="detail-overview">{item.overview?.trim() || "暂无简介。"}</p>
+          <DetailFacts item={item} />
         </div>
       </section>
 
@@ -350,6 +473,29 @@ export default function DetailScreen({
             />
           )}
         </section>
+      )}
+
+      {(cast.length > 0 || similar.items.length > 0) && (
+        <div className="detail-rows">
+          {cast.length > 0 && (
+            <HubRow title="演职人员" count={cast.length} variant="person">
+              {cast.map((person, index) => (
+                <PersonCard
+                  key={`${person.id ?? person.name}-${person.kind}-${index}`}
+                  person={person}
+                  photo={person.id ? detail.photos[person.id] : undefined}
+                />
+              ))}
+            </HubRow>
+          )}
+          {similar.items.length > 0 && (
+            <HubRow title="更多类似内容" count={similar.items.length} variant="poster">
+              {similar.items.map((other) => (
+                <PosterCard key={other.id} item={other} landscape={false} onSelect={onOpenItem} />
+              ))}
+            </HubRow>
+          )}
+        </div>
       )}
     </main>
   );

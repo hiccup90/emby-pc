@@ -9,12 +9,14 @@ import {
   embyPlaybackTarget,
   embyResume,
   embySession,
+  embySimilar,
   embyViews,
   hasTauriRuntime,
 } from "./client";
 import type { EmbyCredentials } from "./client";
 import type {
   EmbyItem,
+  EmbyPerson,
   EmbyPlaybackTarget,
   EmbySession,
   EmbyView,
@@ -67,6 +69,8 @@ export interface EmbySessionController {
 
 export interface EmbyDetailState {
   item: EmbyLibraryItem | null;
+  /** Cast/crew photo URLs by person id; filled after the item has loaded. */
+  photos: Record<string, string>;
   loading: boolean;
   error: string | null;
   reload: () => void;
@@ -150,6 +154,29 @@ async function decorateItem(
     includeBackdrop ? safeImageUrl(item, "Backdrop", 1280) : Promise.resolve(null),
   ]);
   return { ...item, posterUrl, backdropUrl };
+}
+
+/** One image URL per cast/crew member that has a primary image. */
+async function personPhotoUrls(people: EmbyPerson[]): Promise<Record<string, string>> {
+  const withPhoto = people.filter((person) => person.id && person.primaryImageTag).slice(0, 40);
+  const entries = await Promise.all(
+    withPhoto.map(async (person): Promise<[string, string] | null> => {
+      const id = person.id as string;
+      try {
+        const url = await embyImageUrl({
+          itemId: id,
+          imageType: "Primary",
+          maxWidth: 240,
+          tag: person.primaryImageTag as string,
+        });
+        return url.trim() ? [id, url] : null;
+      } catch (reason) {
+        console.warn("[emby] could not build a person image URL", reason);
+        return null;
+      }
+    }),
+  );
+  return Object.fromEntries(entries.filter((entry): entry is [string, string] => entry !== null));
 }
 
 function plainLibraryItem(item: EmbyItem): EmbyLibraryItem {
@@ -558,12 +585,14 @@ export function useEmbyDetail(
 ): EmbyDetailState {
   const desktop = hasTauriRuntime();
   const [item, setItem] = useState<EmbyLibraryItem | null>(seed);
+  const [photos, setPhotos] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     setItem(seed);
+    setPhotos({});
     setError(null);
 
     if (!enabled || !itemId || !desktop) {
@@ -580,6 +609,8 @@ export function useEmbyDetail(
         if (disposed) return;
         setItem(decorated);
         setLoading(false);
+        const urls = await personPhotoUrls(next.people);
+        if (!disposed) setPhotos(urls);
       })
       .catch((reason: unknown) => {
         if (disposed) return;
@@ -594,7 +625,36 @@ export function useEmbyDetail(
 
   const reload = useCallback(() => setReloadToken((value) => value + 1), []);
 
-  return { item, loading, error, reload };
+  return { item, photos, loading, error, reload };
+}
+
+export interface EmbySimilarState {
+  items: EmbyLibraryItem[];
+}
+
+/** "More like this". Best effort: a failure only leaves the row out. */
+export function useEmbySimilar(itemId: string | null, enabled: boolean): EmbySimilarState {
+  const desktop = hasTauriRuntime();
+  const [items, setItems] = useState<EmbyLibraryItem[]>([]);
+
+  useEffect(() => {
+    setItems([]);
+    if (!itemId || !enabled || !desktop) return;
+    let disposed = false;
+    void embySimilar(itemId, 12)
+      .then((page) => Promise.all(page.items.map((item) => decorateItem(item, false))))
+      .then((decorated) => {
+        if (!disposed) setItems(decorated);
+      })
+      .catch((reason: unknown) => {
+        console.warn("[emby] could not load similar items", reason);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [desktop, enabled, itemId]);
+
+  return { items };
 }
 
 export function useEmbyEpisodes(

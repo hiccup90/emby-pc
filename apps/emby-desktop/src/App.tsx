@@ -26,15 +26,18 @@ interface DetailLocation {
   seed: EmbyLibraryItem | null;
 }
 
+/** A detail page plus the detail pages it was opened from ("more like this"). */
+type DetailRoute = DetailLocation & { trail: DetailLocation[] };
+
 type Route =
   | { screen: "login" }
   | { screen: "library" }
-  | ({ screen: "detail" } & DetailLocation)
+  | ({ screen: "detail" } & DetailRoute)
   | {
       screen: "player";
       playback: EmbyPlaybackTarget;
       meta: PlaybackMeta;
-      returnTo: DetailLocation;
+      returnTo: DetailRoute;
     };
 
 function BootScreen() {
@@ -105,11 +108,32 @@ export default function App() {
 
   const openItem = useCallback((item: EmbyLibraryItem) => {
     libraryScrollRef.current = contentRef.current?.scrollTop ?? 0;
-    setRoute({ screen: "detail", itemId: item.id, seed: item });
+    setRoute({ screen: "detail", itemId: item.id, seed: item, trail: [] });
+  }, []);
+
+  /** "More like this": back returns to the current detail page. */
+  const openRelated = useCallback((item: EmbyLibraryItem) => {
+    setRoute((current) => ({
+      screen: "detail",
+      itemId: item.id,
+      seed: item,
+      trail:
+        current.screen === "detail"
+          ? [...current.trail, { itemId: current.itemId, seed: current.seed }]
+          : [],
+    }));
+  }, []);
+
+  const leaveDetail = useCallback(() => {
+    setRoute((current) => {
+      if (current.screen !== "detail" || current.trail.length === 0) return { screen: "library" };
+      const previous = current.trail[current.trail.length - 1];
+      return { screen: "detail", ...previous, trail: current.trail.slice(0, -1) };
+    });
   }, []);
 
   const openPlayer = useCallback(
-    (playback: EmbyPlaybackTarget, meta: PlaybackMeta, returnTo: DetailLocation) => {
+    (playback: EmbyPlaybackTarget, meta: PlaybackMeta, returnTo: DetailRoute) => {
       setRoute({ screen: "player", playback, meta, returnTo });
     },
     [],
@@ -152,6 +176,7 @@ export default function App() {
               screen: "detail",
               itemId: route.returnTo.itemId,
               seed: route.returnTo.seed,
+              trail: route.returnTo.trail,
             })
           }
         />
@@ -188,8 +213,8 @@ export default function App() {
     <div className={`app-shell app-shell--${route.screen}`}>
       <TitleBar
         account={account}
-        onBack={route.screen === "detail" ? goToLibrary : undefined}
-        backLabel="返回媒体库"
+        onBack={route.screen === "detail" ? leaveDetail : undefined}
+        backLabel={route.screen === "detail" && route.trail.length > 0 ? "返回" : "返回媒体库"}
       />
       <div className="app-body">
         {route.screen === "detail" && backdrop && <PageBackdrop key={backdrop} src={backdrop} />}
@@ -226,11 +251,13 @@ export default function App() {
               seed={route.seed}
               session={session}
               desktop={desktop}
-              onBack={goToLibrary}
+              onBack={leaveDetail}
+              onOpenItem={openRelated}
               onPlay={(playback, meta) =>
                 openPlayer(playback, meta, {
                   itemId: route.itemId,
                   seed: route.seed,
+                  trail: route.trail,
                 })
               }
               onBackdrop={setBackdrop}

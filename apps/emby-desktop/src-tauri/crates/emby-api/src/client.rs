@@ -29,6 +29,10 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
 /// Fields requested for item lists/details. The frontend contract depends on
 /// these (`userData`, `imageTags`, `primaryImageAspectRatio`, ...).
 const ITEM_FIELDS: &str = "PrimaryImageAspectRatio,Overview,Genres,UserData";
+/// Detail page: the list fields plus cast/crew, studios, taglines and the
+/// streams (top level and per media source; servers differ).
+const DETAIL_FIELDS: &str =
+    "PrimaryImageAspectRatio,Overview,Genres,UserData,People,Studios,Taglines,MediaStreams,MediaSources";
 
 /// Builds the shared HTTP client. `tls` is a crate feature, so the same call
 /// works for plain-http tests and for https in the desktop build.
@@ -305,13 +309,39 @@ impl EmbyClient {
         let item_id = required_item_id(item_id)?;
         let url = self.endpoint(
             &["Users", user_id, "Items", item_id],
-            &[("Fields", ITEM_FIELDS), ("EnableUserData", "true")],
+            &[("Fields", DETAIL_FIELDS), ("EnableUserData", "true")],
         )?;
         let body = self
             .send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
             .await?;
         let raw: RawItem = parse_json(&body, "条目")?;
         Ok(raw.into_item())
+    }
+
+    /// "More like this" (`GET /Items/{id}/Similar`).
+    pub async fn similar(
+        &self,
+        user_id: &str,
+        item_id: &str,
+        limit: u32,
+    ) -> ApiResult<EmbyItemsPage> {
+        let _token = self.token()?;
+        let item_id = required_item_id(item_id)?;
+        let limit = limit.to_string();
+        let url = self.endpoint(
+            &["Items", item_id, "Similar"],
+            &[
+                ("UserId", user_id),
+                ("Limit", limit.as_str()),
+                ("Fields", ITEM_FIELDS),
+                ("EnableUserData", "true"),
+            ],
+        )?;
+        let body = self
+            .send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        let raw: RawItemsResponse = parse_json(&body, "相似条目")?;
+        Ok(raw.into_page())
     }
 
     /// Resolves a directly playable URL.
@@ -773,6 +803,40 @@ mod tests {
             error.kind(),
             ApiErrorKind::NoPlayableSource
         );
+    }
+
+    #[tokio::test]
+    async fn item_requests_the_detail_fields() {
+        const ITEM: &str = r#"{"Id": "m1", "Name": "Movie", "Type": "Movie", "People": [{"Name": "A", "Type": "Actor"}]}"#;
+        let (server_url, server) = spawn_mock_server(ITEM);
+        let item = test_client(server_url)
+            .item("u1", "m1")
+            .await
+            .expect("item request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(request_line.starts_with("GET /Users/u1/Items/m1?"), "{request_line}");
+        for field in ["People", "Studios", "Taglines", "MediaStreams", "MediaSources"] {
+            assert!(request_line.contains(field), "missing {field}: {request_line}");
+        }
+        assert_eq!(item.people.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn similar_uses_the_item_endpoint_with_the_user() {
+        const PAGE: &str = r#"{"Items": [{"Id": "m2", "Name": "Other", "Type": "Movie"}], "TotalRecordCount": 1, "StartIndex": 0}"#;
+        let (server_url, server) = spawn_mock_server(PAGE);
+        let page = test_client(server_url)
+            .similar("u1", "m1", 12)
+            .await
+            .expect("similar request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(request_line.starts_with("GET /Items/m1/Similar?"), "{request_line}");
+        assert!(request_line.contains("UserId=u1"), "{request_line}");
+        assert!(request_line.contains("Limit=12"), "{request_line}");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, "m2");
     }
 
     #[test]

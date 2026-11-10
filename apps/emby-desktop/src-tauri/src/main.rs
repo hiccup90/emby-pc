@@ -144,6 +144,7 @@ fn main() {
             emby::emby_items,
             emby::emby_resume,
             emby::emby_item,
+            emby::emby_similar,
             emby::emby_playback_target,
             emby::emby_report_playback,
             emby::emby_image_url,

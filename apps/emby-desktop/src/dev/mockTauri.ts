@@ -17,6 +17,8 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
   EmbyItem,
+  EmbyMediaStream,
+  EmbyPerson,
   EmbyItemsPage,
   EmbyPlaybackTarget,
   EmbySession,
@@ -148,6 +150,15 @@ function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "ty
     parentIndexNumber: null,
     overview: null,
     genres: [],
+    people: [],
+    studios: [],
+    officialRating: null,
+    communityRating: null,
+    tagline: null,
+    premiereDate: null,
+    endDate: null,
+    status: null,
+    mediaStreams: [],
     ...fields,
   };
   items.set(item.id, item);
@@ -298,12 +309,100 @@ function stillSvg(id: string, caption: string | null): string {
   );
 }
 
+function portraitSvg(id: string): string {
+  const a = hue(id, 7);
+  return svgUrl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">' +
+      '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(' + a + ',28%,46%)"/>' +
+      '<stop offset="1" stop-color="hsl(' + a + ',32%,20%)"/></linearGradient></defs>' +
+      '<rect width="240" height="240" fill="url(#g)"/>' +
+      '<circle cx="120" cy="98" r="46" fill="hsla(' + a + ',30%,84%,0.55)"/>' +
+      '<path d="M32 240c10-58 46-88 88-88s78 30 88 88z" fill="hsla(' + a + ',30%,84%,0.45)"/>' +
+      "</svg>",
+  );
+}
+
 function imageUrl(req: { itemId?: string; imageType?: string }): string {
+  if (req.itemId && PEOPLE.has(req.itemId)) return portraitSvg(req.itemId);
   const item = req.itemId ? items.get(req.itemId) : undefined;
   if (!item) return "";
   if (req.imageType === "Backdrop") return stillSvg(item.id, null);
   if (item.type === "Episode" || item.type === "Video") return stillSvg(item.id, null);
   return posterSvg(item.id, item.name, item.productionYear);
+}
+
+// ---- detail data: cast, studios, ratings, streams ------------------------------
+
+const CAST_POOL: Array<[string, boolean]> = [
+  ["林一凡", true], ["周素心", true], ["陈默", true], ["许知远", false], ["沈青禾", true],
+  ["顾北辰", true], ["苏晚", true], ["韩东", false], ["叶微澜", true], ["秦朗", true],
+  ["江离", true], ["白露", false], ["Anna Berg", true], ["Tom Hale", true], ["Mia Chen", false],
+  ["王川", true], ["李安然", true], ["赵一鸣", false], ["孟夏", true], ["高远", true],
+];
+const DIRECTORS = ["张晓舟", "刘念", "Erik Lund", "陈思远", "黄蔚"];
+const WRITERS = ["吴桐", "郑楠", "Sara Holm", "宋一"];
+const ROLES = ["警探", "林晚", "船长", "记者", "医生", "少年", "母亲", "老板", "科学家", "陌生人", "", ""];
+const STUDIOS = [["北辰影业"], ["长河电影", "星火传媒"], ["Nordlys Pictures"], ["青石影视"], ["蓝湾工作室", "北辰影业"]];
+const RATINGS = ["PG-13", "R", "PG", "TV-14", "TV-MA", "12+"];
+const TAGLINES = ["有些真相，只在雾散之后出现。", "天亮之前，必须做出选择。", "离开得越远，越接近答案。", null, "每个人都有一个回不去的夏天。"];
+
+/** Person id -> name, for the portrait images. */
+const PEOPLE = new Map<string, string>();
+
+function person(id: string, name: string, kind: string, role: string | null, photo: boolean): EmbyPerson {
+  PEOPLE.set(id, name);
+  return { id, name, role, kind, primaryImageTag: photo && !scenario.noArt ? "pt" : null };
+}
+
+function streamsFor(seed: number): EmbyMediaStream[] {
+  const base: Omit<EmbyMediaStream, "kind"> = {
+    index: 0, codec: null, language: null, title: null, displayTitle: null,
+    width: null, height: null, channels: null, isDefault: false, isForced: false, isExternal: false,
+  };
+  const uhd = seed % 4 === 0;
+  return [
+    { ...base, kind: "Video", index: 0, codec: uhd ? "hevc" : "h264", width: uhd ? 3840 : 1920, height: uhd ? 1606 : 1080, isDefault: true },
+    { ...base, kind: "Audio", index: 1, codec: "aac", language: "chi", displayTitle: "国语 AAC 5.1", channels: 6, isDefault: true },
+    { ...base, kind: "Audio", index: 2, codec: "ac3", language: "eng", displayTitle: "English AC3 5.1", channels: 6 },
+    ...(seed % 3 === 0
+      ? []
+      : [
+          { ...base, kind: "Subtitle", index: 3, codec: "srt", language: "chi", displayTitle: "简体中文 (SRT)", isDefault: true, isExternal: true },
+          { ...base, kind: "Subtitle", index: 4, codec: "ass", language: "eng", displayTitle: "English (ASS)" },
+        ]),
+  ];
+}
+
+/** What `emby_item` adds over the list item: cast, studios, ratings, streams. */
+function enrich(item: EmbyItem): EmbyItem {
+  if (item.type === "Video") return { ...item, mediaStreams: streamsFor(1) };
+  const seed = hue(item.id, 9);
+  const episode = item.type === "Episode";
+  const castCount = episode ? 4 : 9;
+  const cast: EmbyPerson[] = [];
+  for (let i = 0; i < castCount; i += 1) {
+    const index = (seed + i * 7) % CAST_POOL.length;
+    const [name, photo] = CAST_POOL[index];
+    const kind = episode && i === castCount - 1 ? "GuestStar" : "Actor";
+    cast.push(person("pp-" + index, name, kind, ROLES[(seed + i) % ROLES.length] || null, photo));
+  }
+  const crew = [
+    person("pd-" + (seed % DIRECTORS.length), DIRECTORS[seed % DIRECTORS.length], "Director", null, seed % 3 !== 0),
+    person("pw-" + (seed % WRITERS.length), WRITERS[seed % WRITERS.length], "Writer", null, false),
+  ];
+  const series = item.type === "Series";
+  const month = String(1 + (seed % 9)).padStart(2, "0");
+  return {
+    ...item,
+    people: [...cast, ...crew],
+    studios: STUDIOS[seed % STUDIOS.length],
+    officialRating: RATINGS[seed % RATINGS.length],
+    communityRating: Math.round((6 + (seed % 35) / 10) * 10) / 10,
+    tagline: episode ? null : TAGLINES[seed % TAGLINES.length],
+    premiereDate: (item.productionYear ?? 2020) + "-" + month + "-1" + (seed % 9) + "T00:00:00.0000000Z",
+    status: series ? (seed % 2 ? "Continuing" : "Ended") : null,
+    mediaStreams: series ? [] : streamsFor(seed),
+  };
 }
 
 // ---- player ------------------------------------------------------------------
@@ -424,7 +523,21 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       await wait(180);
       const item = items.get(String(args.id));
       if (!item) throw new Error("404 Not Found");
-      return item;
+      return enrich(item);
+    }
+    case "emby_similar": {
+      await wait(250);
+      const item = items.get(String(args.id));
+      if (!item) return { items: [], totalRecordCount: 0, startIndex: 0 };
+      const pool =
+        item.type === "Series"
+          ? children.get("v-tv") ?? []
+          : [...(children.get("v-movies") ?? []), ...(children.get("v-docs") ?? [])];
+      const others = pool.filter((other) => other.id !== item.id);
+      const start = hue(item.id, 5) % Math.max(others.length, 1);
+      const limit = typeof args.limit === "number" ? args.limit : 12;
+      const picked = [...others.slice(start), ...others.slice(0, start)].slice(0, limit);
+      return { items: picked, totalRecordCount: picked.length, startIndex: 0 };
     }
     case "emby_image_url":
       return imageUrl(req);
