@@ -27,7 +27,7 @@ pub use error::{DllAttempt, MpvError};
 pub use geometry::{resolve_placement, PixelRect};
 pub use hub::{SnapshotHub, SnapshotSink};
 pub use loader::MpvLibrary;
-pub use options::{MpvOption, build_initial_options};
+pub use options::{build_initial_options, parse_user_options, MpvOption};
 pub use seq::SeqLatch;
 pub use session::{PlayerSession, SessionConfig, EVENT_TIMEOUT_SECS, SHUTDOWN_TIMEOUT, SNAPSHOT_INTERVAL};
 pub use state::SnapshotAssembler;

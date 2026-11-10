@@ -440,6 +440,12 @@ impl OverlayState {
         }
 
         if !shown {
+            // First show in this playback: expose the full-height surface for
+            // one moment while the bar is still faded out, then let the
+            // deferred present() clip it back. The first menu then does not pay
+            // for allocating the taller window surface (that used to flash).
+            apply_region(&controls, geometry.2, geometry.3, geometry.3)?;
+            self.lock().last_active = Some(geometry.3);
             show_controls(&controls)?;
             self.lock().controls_shown = true;
             // `show()` can rewrite the ex-style from Tauri's window flags, so
@@ -448,6 +454,15 @@ impl OverlayState {
             // unknown first so the current state is really pushed.
             self.lock().cursor_ignored = None;
             self.apply_click_through(&controls);
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(220));
+                if let Some(state) = app.try_state::<OverlayState>() {
+                    if let Err(err) = state.present(&app, None) {
+                        eprintln!("[overlay] warm-up collapse failed: {err}");
+                    }
+                }
+            });
         }
         Ok(())
     }
@@ -771,19 +786,17 @@ fn apply_region(
         use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
 
         let hwnd = controls_hwnd(controls)?;
-        let region = if active >= height {
-            // The whole window: no region at all.
-            std::ptr::null_mut()
-        } else {
-            let top = (height - active) as i32;
-            let region = unsafe { CreateRectRgn(0, top, width as i32, height as i32) };
-            if region.is_null() {
-                return Err("apply_region: CreateRectRgn failed".to_string());
-            }
-            region
-        };
-        // On success the system owns the region; on failure it is ours to free.
-        let ok = unsafe { SetWindowRgn(hwnd, region, 1) };
+        // Always a concrete region, even for the whole window: clearing a
+        // region makes Windows repaint the entire window, which showed up as a
+        // one-frame flash the first time a menu opened.
+        let top = height.saturating_sub(active) as i32;
+        let region = unsafe { CreateRectRgn(0, top, width as i32, height as i32) };
+        if region.is_null() {
+            return Err("apply_region: CreateRectRgn failed".to_string());
+        }
+        // `bRedraw = 0`: the region only clips the existing WebView2 surface;
+        // forcing a repaint here is what flashed the bar.
+        let ok = unsafe { SetWindowRgn(hwnd, region, 0) };
         if ok == 0 {
             if !region.is_null() {
                 unsafe {
@@ -831,7 +844,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     .focusable(false)
     .visible(false)
     .background_color(Color(0, 0, 0, 0))
-    .inner_size(1.0, COLLAPSED_HEIGHT)
+    .inner_size(1.0, EXPANDED_HEIGHT)
     .build()
     .map_err(|err| format!("controls window: {err}"))?;
 

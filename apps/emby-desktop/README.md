@@ -64,6 +64,18 @@
 - 若界面提示“播放器组件缺失或无法加载”，先确认 `libmpv-2.dll` 与 exe 同目录；也可用环境变量 `EMBY_MPV_DLL` 指向 DLL 的绝对路径。
 - 实机验收记录见“当前实现状态”里的验证范围；上面的步骤用于复测和收集新问题。
 
+### 调整 mpv 参数（mpv.conf）
+
+播放参数可以在不改代码的情况下覆盖。在 `%APPDATA%\com.ember.emby-desktop\mpv.conf` 里一行写一个 `name=value`（`#` 或 `;` 开头是注释，行首 `--` 可省略）。mpv 实例在应用启动后的第一次播放时创建并读取这个文件，改完参数要重启应用才生效：
+
+```
+# 例：老式 gpu 渲染器 + 最低画质开销
+vo=gpu
+profile=fast
+```
+
+内置参数见 `crates/emby-mpv/src/options.rs` 的 `base_options`；同名参数以 mpv.conf 为准。写错的语法会在启动日志里列出行号，不会影响播放。
+
 ## 本地开发命令
 
 在 `apps/emby-desktop/` 中：

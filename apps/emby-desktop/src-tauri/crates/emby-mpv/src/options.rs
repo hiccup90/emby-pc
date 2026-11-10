@@ -67,21 +67,61 @@ pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
     options
 }
 
-/// Like [`base_options`], but appends `http-header-fields` when the caller has
-/// headers. Only valid for a freshly created handle (pre-initialize).
+/// Like [`base_options`], but appends `extra` (the user's `mpv.conf`) and then
+/// `http-header-fields` when the caller has headers. Only valid for a freshly
+/// created handle (pre-initialize). Later values win in mpv, so user options
+/// override the built-in ones.
 ///
 /// mpv expects a comma-separated list of `Name: value` pairs. Headers carrying
 /// CR/LF are dropped to avoid option injection, and empty entries are ignored.
 pub fn build_initial_options(
     host_hwnd: u64,
     log_path: Option<&Path>,
+    extra: &[MpvOption],
     headers: Option<&[String]>,
 ) -> Vec<MpvOption> {
     let mut options = base_options(host_hwnd, log_path);
+    options.extend(extra.iter().cloned());
     if let Some(value) = headers_option_value(headers) {
         options.push(MpvOption::new("http-header-fields", value));
     }
     options
+}
+
+/// Parses the user's `mpv.conf`: one `name=value` per line, `#` or `;` starts a
+/// comment, a leading `--` and one pair of surrounding quotes are accepted.
+/// Invalid lines are reported instead of failing playback.
+pub fn parse_user_options(text: &str) -> (Vec<MpvOption>, Vec<String>) {
+    let mut options = Vec::new();
+    let mut warnings = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let (name, value) = match line.split_once('=') {
+            Some(parts) => parts,
+            None => {
+                warnings.push(format!("line {}: expected name=value", index + 1));
+                continue;
+            }
+        };
+        let name = name.trim().trim_start_matches('-');
+        let mut value = value.trim();
+        if value.len() >= 2 {
+            let quoted = (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''));
+            if quoted {
+                value = &value[1..value.len() - 1];
+            }
+        }
+        if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            warnings.push(format!("line {}: invalid option name", index + 1));
+            continue;
+        }
+        options.push(MpvOption::new(name, value));
+    }
+    (options, warnings)
 }
 
 /// Build the `http-header-fields` value, or `None` when nothing usable is left.
@@ -190,10 +230,10 @@ mod tests {
 
     #[test]
     fn headers_are_joined_and_none_by_default() {
-        let no_headers = build_initial_options(1, None, None);
+        let no_headers = build_initial_options(1, None, &[], None);
         assert!(find_option(&no_headers, "http-header-fields").is_none());
 
-        let empty = build_initial_options(1, None, Some(&[]));
+        let empty = build_initial_options(1, None, &[], Some(&[]));
         assert!(find_option(&empty, "http-header-fields").is_none());
 
         let headers = vec![
@@ -201,7 +241,7 @@ mod tests {
             "X-Emby-Token: secret-token".to_string(),
             "   ".to_string(),
         ];
-        let with_headers = build_initial_options(1, None, Some(&headers));
+        let with_headers = build_initial_options(1, None, &[], Some(&headers));
         assert_eq!(
             find_option(&with_headers, "http-header-fields"),
             Some("Authorization: Bearer secret-token,X-Emby-Token: secret-token")
@@ -210,7 +250,7 @@ mod tests {
         // (including an opted-in log-file).
         assert_eq!(with_headers.last().unwrap().name, "http-header-fields");
         let path = log_path();
-        let logged = build_initial_options(1, Some(path.as_path()), Some(&headers));
+        let logged = build_initial_options(1, Some(path.as_path()), &[], Some(&headers));
         assert_eq!(logged.last().unwrap().name, "http-header-fields");
     }
 
@@ -230,11 +270,42 @@ mod tests {
         // Simulates the "runtime setter leaks the token into mpv.log" pitfall:
         // with no headers requested, no value may contain header material.
         let path = log_path();
-        let options = build_initial_options(1, Some(path.as_path()), None);
+        let options = build_initial_options(1, Some(path.as_path()), &[], None);
         for option in &options {
             assert!(!option.value.contains("Bearer"));
             assert!(!option.value.contains("Token"));
         }
+    }
+
+    #[test]
+    fn user_options_parse_and_override_built_ins() {
+        let text = "# video\nvo=gpu\nhwdec = d3d11va\n\n; audio\naudio-channels=stereo\nprofile=\"fast\"\n--keep-open=no\nbroken line\n=oops\n";
+        let (options, warnings) = parse_user_options(text);
+        let names: Vec<&str> = options.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["vo", "hwdec", "audio-channels", "profile", "keep-open"]);
+        assert_eq!(find_option(&options, "hwdec"), Some("d3d11va"));
+        assert_eq!(find_option(&options, "profile"), Some("fast"));
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+
+        let merged = build_initial_options(1, None, &options, None);
+        // User options come after every built-in option, so mpv applies them last.
+        assert_eq!(find_option(&merged, "vo"), Some("gpu"));
+        let position = |name: &str| merged.iter().position(|o| o.name == name).unwrap();
+        assert!(position("vo") > position("hwdec"));
+        assert!(position("vo") > position("keep-open"));
+        assert!(position("vo") > position("idle"), "user options come after built-ins");
+    }
+
+    #[test]
+    fn header_option_stays_last_with_user_options() {
+        let (options, _) = parse_user_options("vo=gpu");
+        let merged = build_initial_options(
+            1,
+            None,
+            &options,
+            Some(&["Authorization: Bearer abc".to_string()]),
+        );
+        assert_eq!(merged.last().unwrap().name, "http-header-fields");
     }
 
     #[test]
@@ -243,6 +314,7 @@ mod tests {
         let options = build_initial_options(
             42,
             Some(path.as_path()),
+            &[],
             Some(&["Authorization: Bearer abc".to_string()]),
         );
         for option in &options {

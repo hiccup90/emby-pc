@@ -37,7 +37,7 @@ fn main() {
                 }
             };
 
-            app.manage(PlayerService::new(host));
+            app.manage(PlayerService::new(host, app.path().app_config_dir().ok()));
             // Remove the residual Win11 caption/dialog bits that `decorations:
             // false` leaves in the window style; without this the DWM paints a
             // 1px system line along the top of the window (the reported gap when

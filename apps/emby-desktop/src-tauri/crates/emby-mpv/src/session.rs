@@ -20,7 +20,7 @@ use crate::error::MpvError;
 use crate::ffi::*;
 use crate::hub::SnapshotHub;
 use crate::loader::MpvLibrary;
-use crate::options::build_initial_options;
+use crate::options::{build_initial_options, MpvOption};
 use crate::state::SnapshotAssembler;
 use crate::types::{
     PlayerCommand, PlayerStatus, PlayerTrack, TrackKind, STATUS_ERROR, STATUS_IDLE,
@@ -65,6 +65,8 @@ pub struct SessionConfig {
     pub log_path: Option<PathBuf>,
     /// Only used when this config creates a fresh handle (pre-initialize).
     pub headers: Option<Vec<String>>,
+    /// User overrides from `mpv.conf`; applied after the built-in options.
+    pub extra_options: Vec<MpvOption>,
     /// Volume 0..100 restored from the UI.
     pub volume: f64,
     pub muted: bool,
@@ -607,6 +609,7 @@ impl<'a> MpvCore<'a> {
         for option in build_initial_options(
             config.host_hwnd,
             config.log_path.as_deref(),
+            &config.extra_options,
             config.headers.as_deref(),
         ) {
             let name = cstring("option name", &option.name)?;

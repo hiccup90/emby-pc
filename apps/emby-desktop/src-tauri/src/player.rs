@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use emby_mpv::{
-    MpvLibrary, OpenRequest, PlayerCommand, PlayerSession, PlayerSnapshot, SessionConfig,
+    MpvLibrary, MpvOption, OpenRequest, PlayerCommand, PlayerSession, PlayerSnapshot, SessionConfig,
     SnapshotHub, SnapshotSink, TrackKind, VideoSync, SHUTDOWN_TIMEOUT, STATUS_IDLE,
 };
 use tauri::ipc::Channel;
@@ -83,10 +83,12 @@ pub struct PlayerService {
     shutdown_started: AtomicBool,
     /// `Some` only when `EMBY_MPV_LOG` was set at startup.
     log_path: Option<PathBuf>,
+    /// App config directory; holds the optional user `mpv.conf`.
+    config_dir: Option<PathBuf>,
 }
 
 impl PlayerService {
-    pub fn new(host: Option<VideoHost>) -> Self {
+    pub fn new(host: Option<VideoHost>, config_dir: Option<PathBuf>) -> Self {
         Self {
             hub: Arc::new(SnapshotHub::new()),
             host,
@@ -96,7 +98,38 @@ impl PlayerService {
             resync_pending: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
             log_path: mpv_log_path(),
+            config_dir,
         }
+    }
+
+    /// User overrides from `<config>/mpv.conf`. Read on every open so edits
+    /// apply without restarting the app; a missing file or an unreadable one
+    /// simply means "no overrides".
+    fn user_options(&self) -> Vec<MpvOption> {
+        let Some(directory) = self.config_dir.as_ref() else {
+            return Vec::new();
+        };
+        let path = directory.join("mpv.conf");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) => {
+                eprintln!("[player] could not read {}: {err}", path.display());
+                return Vec::new();
+            }
+        };
+        let (options, warnings) = emby_mpv::parse_user_options(&text);
+        for warning in warnings {
+            eprintln!("[player] {}: {warning}", path.display());
+        }
+        if !options.is_empty() {
+            eprintln!(
+                "[player] applying {} option(s) from {}",
+                options.len(),
+                path.display()
+            );
+        }
+        options
     }
 
     fn lock_last_sync(&self) -> MutexGuard<'_, Option<VideoSync>> {
@@ -135,6 +168,7 @@ impl PlayerService {
             host_hwnd: host.hwnd(),
             log_path: self.log_path.clone(),
             headers,
+            extra_options: self.user_options(),
             volume: desired.volume,
             muted: desired.muted,
         };
