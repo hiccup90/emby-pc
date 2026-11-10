@@ -1121,7 +1121,13 @@ mod tests {
             .expect("person items request");
         let request = server.join().expect("mock server thread");
         let request_line = request.lines().next().unwrap_or_default();
-        assert!(!request_line.contains("Limit="), "{request_line}");
+        // Note: `ImageTypeLimit=1` contains the substring "Limit=", so match
+        // whole query parameters instead.
+        let query = request_line.split('?').nth(1).unwrap_or_default();
+        assert!(
+            !query.split('&').any(|pair| pair.starts_with("Limit=")),
+            "{request_line}"
+        );
 
         let client = test_client("http://127.0.0.1:1".to_string());
         let error = client
