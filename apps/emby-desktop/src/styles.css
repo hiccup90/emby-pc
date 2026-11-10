@@ -1654,3 +1654,38 @@ button:disabled {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ---- detail page: watched / favorite action toggles --------------------------- */
+
+.detail-action-toggle {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.detail-action-toggle:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.detail-action-toggle.is-active {
+  border-color: rgba(229, 160, 13, 0.55);
+  color: var(--accent);
+  background: rgba(229, 160, 13, 0.12);
+}
+
+.detail-action-toggle:disabled {
+  opacity: 0.55;
+}

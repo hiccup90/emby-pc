@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
+import type { EmbyPerson, EmbyPlaybackTarget, EmbySession, EmbyUserData } from "../emby/contract";
 import type { PlaybackMeta } from "../player/contract";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import { useEmbyDetail, useEmbyEpisodes, useEmbySimilar, usePlaybackLauncher } from "../emby/useEmby";
+import { describeEmbyError, embySetFavorite, embySetPlayed } from "../emby/client";
 import {
   audioStreamSummary,
   episodePlaybackMeta,
@@ -47,6 +48,9 @@ interface DetailScreenProps {
   onOpenPerson?: (person: EmbyPerson) => void;
 }
 
+/** `favorite` is not in the wire contract yet; reading it optionally keeps this forward-compatible. */
+type UserDataWithFavorite = EmbyUserData & { favorite?: boolean | null };
+
 const CREW_ORDER = ["Director", "Writer", "Producer", "Composer"];
 const ROLE_LABELS: Record<string, string> = {
   Director: "导演",
@@ -75,6 +79,24 @@ function personRole(person: EmbyPerson): string | null {
   if (person.kind === "Actor") return person.role;
   if (person.kind === "GuestStar") return person.role ?? ROLE_LABELS.GuestStar;
   return ROLE_LABELS[person.kind ?? ""] ?? null;
+}
+
+function HeartIcon({ filled = false, size = 16 }: { filled?: boolean; size?: number }) {
+  return (
+    <svg
+      aria-hidden="true"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M20.8 6.6a5.5 5.5 0 0 0-7.8 0L12 7.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 23l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z" />
+    </svg>
+  );
 }
 
 function initials(name: string): string {
@@ -321,9 +343,17 @@ export default function DetailScreen({
   const playback = usePlaybackLauncher();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const [pendingEpisodeId, setPendingEpisodeId] = useState<string | null>(null);
+  const [watchedOverride, setWatchedOverride] = useState<boolean | null>(null);
+  const [favoriteOverride, setFavoriteOverride] = useState<boolean | null>(null);
+  const [pendingAction, setPendingAction] = useState<"played" | "favorite" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const item = detail.item;
   const progress = item ? itemProgress(item) : 0;
+  const effectiveWatched = watchedOverride ?? item?.userData.played ?? false;
+  const favoriteFromServer = (item?.userData as UserDataWithFavorite | undefined)?.favorite;
+  const favoriteState =
+    favoriteOverride ?? (typeof favoriteFromServer === "boolean" ? favoriteFromServer : null);
   const isSeries = item?.type === "Series";
   const episodes = useEmbyEpisodes(isSeries ? item.id : null, desktop && Boolean(session));
   const similar = useEmbySimilar(
@@ -341,6 +371,14 @@ export default function DetailScreen({
   useEffect(() => {
     if (item) headingRef.current?.focus({ preventScroll: true });
   }, [item]);
+
+  // Local toggles belong to one detail item; drop them when the page changes.
+  useEffect(() => {
+    setWatchedOverride(null);
+    setFavoriteOverride(null);
+    setPendingAction(null);
+    setActionError(null);
+  }, [itemId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -424,6 +462,41 @@ export default function DetailScreen({
   const remaining = formatRemainingTicks(item);
   const rating = formatCommunityRating(item.communityRating);
   const cast = castAndCrew(item.people);
+  const supportsWatchState = isSeries || playable;
+
+  const toggleWatched = async () => {
+    if (pendingAction) return;
+    const next = !effectiveWatched;
+    setPendingAction("played");
+    setActionError(null);
+    try {
+      await embySetPlayed(item.id, next);
+      setWatchedOverride(next);
+      // Re-read the item so counts/progress reflect the server state.
+      detail.reload();
+    } catch (reason) {
+      setActionError(describeEmbyError(reason, "更新观看状态失败，请稍后重试。"));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const toggleFavorite = async () => {
+    if (pendingAction) return;
+    const next = favoriteState !== true;
+    setPendingAction("favorite");
+    setActionError(null);
+    try {
+      await embySetFavorite(item.id, next);
+      setFavoriteOverride(next);
+      // The contract has no favorite field yet; refetch in case the API adds it.
+      detail.reload();
+    } catch (reason) {
+      setActionError(describeEmbyError(reason, "更新收藏状态失败，请稍后重试。"));
+    } finally {
+      setPendingAction(null);
+    }
+  };
 
   return (
     <main className="page detail-page">
@@ -453,7 +526,7 @@ export default function DetailScreen({
               <p className="detail-subtitle">{episodeLine}</p>
             </>
           )}
-          {(metaParts.length > 0 || rating || item.officialRating || item.userData.played) && (
+          {(metaParts.length > 0 || rating || item.officialRating || effectiveWatched) && (
             <p className="detail-meta">
               {metaParts.map((part, index) => (
                 <span key={`${part}-${index}`}>{part}</span>
@@ -464,7 +537,7 @@ export default function DetailScreen({
                 </span>
               )}
               {item.officialRating && <span className="chip">{item.officialRating}</span>}
-              {item.userData.played && <span className="chip">已看完</span>}
+              {effectiveWatched && <span className="chip">已看完</span>}
             </p>
           )}
           {item.genres.length > 0 && <p className="detail-genres">{item.genres.join(" · ")}</p>}
@@ -481,6 +554,42 @@ export default function DetailScreen({
                 {playback.pending ? "正在准备…" : progress > 0 ? "继续播放" : "播放"}
               </button>
             )}
+            {supportsWatchState && (
+              <>
+                <button
+                  type="button"
+                  className={`detail-action-toggle${effectiveWatched ? " is-active" : ""}`}
+                  aria-pressed={effectiveWatched}
+                  aria-label={effectiveWatched ? "标记为未看" : "标记为已看"}
+                  title={effectiveWatched ? "标记为未看" : "标记为已看"}
+                  onClick={() => void toggleWatched()}
+                  disabled={pendingAction !== null}
+                >
+                  {pendingAction === "played" ? (
+                    <span className="spinner spinner--small" aria-hidden="true" />
+                  ) : (
+                    <Icon name="check" size={16} />
+                  )}
+                  {effectiveWatched ? "已看" : "标记为已看"}
+                </button>
+                <button
+                  type="button"
+                  className={`detail-action-toggle${favoriteState === true ? " is-active" : ""}`}
+                  aria-pressed={favoriteState === true}
+                  aria-label={favoriteState === true ? "取消收藏" : "收藏"}
+                  title={favoriteState === true ? "取消收藏" : "收藏"}
+                  onClick={() => void toggleFavorite()}
+                  disabled={pendingAction !== null}
+                >
+                  {pendingAction === "favorite" ? (
+                    <span className="spinner spinner--small" aria-hidden="true" />
+                  ) : (
+                    <HeartIcon filled={favoriteState === true} />
+                  )}
+                  {favoriteState === true ? "已收藏" : "收藏"}
+                </button>
+              </>
+            )}
             {playable && progress > 0 && (
               <span className="detail-resume">
                 <ProgressBar value={progress} />
@@ -492,6 +601,7 @@ export default function DetailScreen({
           </div>
 
           {playback.error && <ErrorNotice message={playback.error} />}
+          {actionError && <ErrorNotice message={actionError} />}
 
           {item.tagline && <p className="detail-tagline">{item.tagline}</p>}
           <p className="detail-overview">{item.overview?.trim() || "暂无简介。"}</p>
