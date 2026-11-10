@@ -1,8 +1,10 @@
 //! All libmpv options set **before** `mpv_initialize()`.
 //!
-//! Deliberately no `vo`, `gpu-api`, `gpu-context` or `gpu-sw`: libmpv picks its
-//! default D3D11 VO when embedded with `wid`, and forcing those options is what
-//! breaks HDR passthrough / tone-mapping on some drivers.
+//! `vo=gpu` matches Emby Theater, whose bundled mpv 0.35 defaults to the classic
+//! GPU renderer: its per-frame cost is lower than `gpu-next`/libplacebo on weak
+//! iGPUs. Users who want HDR passthrough can set `vo=gpu-next` in mpv.conf.
+//! `gpu-api`, `gpu-context` and `gpu-sw` stay unset so the embedded D3D11 path is
+//! chosen by libmpv itself.
 //!
 //! `http-header-fields` is the only sensitive option (auth headers). libmpv
 //! only accepts it before initialization; setting it at runtime writes the
@@ -56,8 +58,12 @@ pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
         MpvOption::new("load-scripts", "no"),
         // --wid expects the HWND in decimal.
         MpvOption::new("wid", host_hwnd.to_string()),
+        // Same renderer as Emby Theater's mpv 0.35 (cheaper than gpu-next on iGPUs).
+        MpvOption::new("vo", "gpu"),
         // D3D11VA hardware decoding without -copy: frames stay on the GPU.
         MpvOption::new("hwdec", "auto-safe"),
+        // Cover art must not be decoded as a video stream (Emby Theater does the same).
+        MpvOption::new("audio-display", "no"),
         MpvOption::new("keep-open", "yes"),
         MpvOption::new("idle", "yes"),
     ];
@@ -172,13 +178,17 @@ mod tests {
                 "osd-bar",
                 "load-scripts",
                 "wid",
+                "vo",
                 "hwdec",
+                "audio-display",
                 "keep-open",
                 "idle",
             ]
         );
         assert_eq!(find_option(&options, "wid"), Some("4660")); // decimal HWND
+        assert_eq!(find_option(&options, "vo"), Some("gpu"));
         assert_eq!(find_option(&options, "hwdec"), Some("auto-safe"));
+        assert_eq!(find_option(&options, "audio-display"), Some("no"));
         assert_eq!(find_option(&options, "keep-open"), Some("yes"));
         assert_eq!(find_option(&options, "idle"), Some("yes"));
         assert_eq!(find_option(&options, "config"), Some("no"));
@@ -210,9 +220,11 @@ mod tests {
     }
 
     #[test]
-    fn vo_and_gpu_options_are_left_to_mpv_defaults() {
+    fn gpu_backend_options_are_left_to_mpv_defaults() {
         let options = base_options(0xdead_beef, None);
-        for forbidden in ["vo", "gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs"] {
+        // The renderer is pinned to the classic GPU VO; the D3D11 backend is not.
+        assert_eq!(find_option(&options, "vo"), Some("gpu"));
+        for forbidden in ["gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs"] {
             assert!(
                 find_option(&options, forbidden).is_none(),
                 "{forbidden} must not be forced"
@@ -279,21 +291,27 @@ mod tests {
 
     #[test]
     fn user_options_parse_and_override_built_ins() {
-        let text = "# video\nvo=gpu\nhwdec = d3d11va\n\n; audio\naudio-channels=stereo\nprofile=\"fast\"\n--keep-open=no\nbroken line\n=oops\n";
+        let text = "# video\nvo=gpu-next\nhwdec = d3d11va\n\n; audio\naudio-channels=stereo\nprofile=\"fast\"\n--keep-open=no\nbroken line\n=oops\n";
         let (options, warnings) = parse_user_options(text);
         let names: Vec<&str> = options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(names, ["vo", "hwdec", "audio-channels", "profile", "keep-open"]);
+        assert_eq!(find_option(&options, "vo"), Some("gpu-next"));
         assert_eq!(find_option(&options, "hwdec"), Some("d3d11va"));
         assert_eq!(find_option(&options, "profile"), Some("fast"));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
 
         let merged = build_initial_options(1, None, &options, None);
-        // User options come after every built-in option, so mpv applies them last.
-        assert_eq!(find_option(&merged, "vo"), Some("gpu"));
-        let position = |name: &str| merged.iter().position(|o| o.name == name).unwrap();
-        assert!(position("vo") > position("hwdec"));
-        assert!(position("vo") > position("keep-open"));
-        assert!(position("vo") > position("idle"), "user options come after built-ins");
+        // User options come after every built-in option, so mpv applies them last:
+        // the built-in `vo=gpu` is followed by the user's `vo=gpu-next`.
+        let vo_values: Vec<&str> = merged
+            .iter()
+            .filter(|o| o.name == "vo")
+            .map(|o| o.value.as_str())
+            .collect();
+        assert_eq!(vo_values, ["gpu", "gpu-next"]);
+        let idle = merged.iter().position(|o| o.name == "idle").unwrap();
+        let last_hwdec = merged.iter().rposition(|o| o.name == "hwdec").unwrap();
+        assert!(last_hwdec > idle, "user options come after every built-in");
     }
 
     #[test]

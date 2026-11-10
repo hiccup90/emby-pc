@@ -69,12 +69,14 @@
 播放参数可以在不改代码的情况下覆盖。在 `%APPDATA%\com.ember.emby-desktop\mpv.conf` 里一行写一个 `name=value`（`#` 或 `;` 开头是注释，行首 `--` 可省略）。mpv 实例在应用启动后的第一次播放时创建并读取这个文件，改完参数要重启应用才生效：
 
 ```
-# 例：老式 gpu 渲染器 + 最低画质开销
-vo=gpu
+# 例：HDR 直通（用回 libplacebo 渲染器）
+vo=gpu-next
+
+# 例：进一步压低核显占用
 profile=fast
 ```
 
-内置参数见 `crates/emby-mpv/src/options.rs` 的 `base_options`；同名参数以 mpv.conf 为准。写错的语法会在启动日志里列出行号，不会影响播放。
+默认值与 Emby Theater 对齐：`vo=gpu`（经典渲染器，比 gpu-next 省 GPU）、`hwdec=auto-safe`、`audio-display=no`。内置参数见 `crates/emby-mpv/src/options.rs` 的 `base_options`；同名参数以 mpv.conf 为准。写错的语法会在启动日志里列出行号，不会影响播放。
 
 ## 本地开发命令
 
