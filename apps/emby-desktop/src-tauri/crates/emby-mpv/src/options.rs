@@ -1,10 +1,10 @@
 //! All libmpv options set **before** `mpv_initialize()`.
 //!
-//! `vo=gpu` matches Emby Theater, whose bundled mpv 0.35 defaults to the classic
-//! GPU renderer: its per-frame cost is lower than `gpu-next`/libplacebo on weak
-//! iGPUs. Users who want HDR passthrough can set `vo=gpu-next` in mpv.conf.
-//! `gpu-api`, `gpu-context` and `gpu-sw` stay unset so the embedded D3D11 path is
-//! chosen by libmpv itself.
+//! The renderer is mpv's own default: on this libmpv build that is
+//! `gpu-next`/libplacebo. Pinning `vo=gpu` to match Emby Theater's ancient
+//! mpv 0.35 measured *worse* on an AMD 780M (3D engine 20 % → 32 %), so it is
+//! left alone; mpv.conf can force any VO. `gpu-api`, `gpu-context` and
+//! `gpu-sw` stay unset so the embedded D3D11 path is chosen by libmpv itself.
 //!
 //! `http-header-fields` is the only sensitive option (auth headers). libmpv
 //! only accepts it before initialization; setting it at runtime writes the
@@ -58,8 +58,6 @@ pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
         MpvOption::new("load-scripts", "no"),
         // --wid expects the HWND in decimal.
         MpvOption::new("wid", host_hwnd.to_string()),
-        // Same renderer as Emby Theater's mpv 0.35 (cheaper than gpu-next on iGPUs).
-        MpvOption::new("vo", "gpu"),
         // D3D11VA hardware decoding without -copy: frames stay on the GPU.
         MpvOption::new("hwdec", "auto-safe"),
         // Cover art must not be decoded as a video stream (Emby Theater does the same).
@@ -178,7 +176,6 @@ mod tests {
                 "osd-bar",
                 "load-scripts",
                 "wid",
-                "vo",
                 "hwdec",
                 "audio-display",
                 "keep-open",
@@ -186,7 +183,6 @@ mod tests {
             ]
         );
         assert_eq!(find_option(&options, "wid"), Some("4660")); // decimal HWND
-        assert_eq!(find_option(&options, "vo"), Some("gpu"));
         assert_eq!(find_option(&options, "hwdec"), Some("auto-safe"));
         assert_eq!(find_option(&options, "audio-display"), Some("no"));
         assert_eq!(find_option(&options, "keep-open"), Some("yes"));
@@ -222,9 +218,8 @@ mod tests {
     #[test]
     fn gpu_backend_options_are_left_to_mpv_defaults() {
         let options = base_options(0xdead_beef, None);
-        // The renderer is pinned to the classic GPU VO; the D3D11 backend is not.
-        assert_eq!(find_option(&options, "vo"), Some("gpu"));
-        for forbidden in ["gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs"] {
+        // The renderer and the D3D11 backend both stay at mpv's defaults.
+        for forbidden in ["vo", "gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs"] {
             assert!(
                 find_option(&options, forbidden).is_none(),
                 "{forbidden} must not be forced"
@@ -301,14 +296,13 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
 
         let merged = build_initial_options(1, None, &options, None);
-        // User options come after every built-in option, so mpv applies them last:
-        // the built-in `vo=gpu` is followed by the user's `vo=gpu-next`.
+        // User options come after every built-in option, so mpv applies them last.
         let vo_values: Vec<&str> = merged
             .iter()
             .filter(|o| o.name == "vo")
             .map(|o| o.value.as_str())
             .collect();
-        assert_eq!(vo_values, ["gpu", "gpu-next"]);
+        assert_eq!(vo_values, ["gpu-next"]);
         let idle = merged.iter().position(|o| o.name == "idle").unwrap();
         let last_hwdec = merged.iter().rposition(|o| o.name == "hwdec").unwrap();
         assert!(last_hwdec > idle, "user options come after every built-in");

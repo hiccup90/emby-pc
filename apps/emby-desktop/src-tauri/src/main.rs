@@ -52,7 +52,12 @@ fn main() {
             // (the OS keeps it above the owner and destroys it with it). A
             // failure here only disables the overlay, never the library/player
             // commands.
-            if let Err(err) = overlay::create_controls_window(app.handle()) {
+            // `EMBY_NO_OVERLAY=1` skips the controls window entirely: a
+            // diagnostic switch for comparing GPU use with and without the
+            // transparent window that sits on top of the video.
+            if overlay_disabled() {
+                eprintln!("[desktop] controls overlay disabled by EMBY_NO_OVERLAY");
+            } else if let Err(err) = overlay::create_controls_window(app.handle()) {
                 eprintln!("[desktop] controls overlay disabled: {err}");
             }
             app.manage(overlay::OverlayState::new());
@@ -231,4 +236,17 @@ fn chrome_hwnd_webview(window: &tauri::WebviewWindow) -> Option<isize> {
 #[cfg(not(windows))]
 fn chrome_hwnd_webview(_window: &tauri::WebviewWindow) -> Option<isize> {
     None
+}
+
+/// `EMBY_NO_OVERLAY=1` (1/true/yes/on) skips the controls window. Diagnostic
+/// switch for comparing GPU use with and without the transparent window that
+/// sits above the video; playback itself is unaffected.
+fn overlay_disabled() -> bool {
+    matches!(
+        std::env::var("EMBY_NO_OVERLAY")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
