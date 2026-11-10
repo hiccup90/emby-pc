@@ -16,6 +16,7 @@ use emby_mpv::{
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::settings::{AppSettings, SettingsStore, VideoQuality};
 use crate::video_window::VideoHost;
 
 /// `player_open` waits at most this long for the worker's loading snapshot.
@@ -85,10 +86,17 @@ pub struct PlayerService {
     log_path: Option<PathBuf>,
     /// App config directory; holds the optional user `mpv.conf`.
     config_dir: Option<PathBuf>,
+    /// Persisted quality/autoplay/page-size preferences (`settings.json`).
+    settings: Option<SettingsStore>,
+    /// Quality preset the running mpv session was created with.
+    session_quality: Mutex<Option<VideoQuality>>,
 }
 
 impl PlayerService {
     pub fn new(host: Option<VideoHost>, config_dir: Option<PathBuf>) -> Self {
+        let settings = config_dir
+            .as_ref()
+            .map(|dir| SettingsStore::new(dir.clone()));
         Self {
             hub: Arc::new(SnapshotHub::new()),
             host,
@@ -99,7 +107,33 @@ impl PlayerService {
             shutdown_started: AtomicBool::new(false),
             log_path: mpv_log_path(),
             config_dir,
+            settings,
+            session_quality: Mutex::new(None),
         }
+    }
+
+    /// Current persisted settings. A missing file, unreadable file or broken
+    /// JSON yields [`AppSettings::default`] (low-overhead preset), preserving
+    /// the pre-settings playback behaviour.
+    pub(crate) fn current_settings(&self) -> AppSettings {
+        self.settings
+            .as_ref()
+            .map(SettingsStore::load)
+            .unwrap_or_default()
+    }
+
+    /// Saves settings. A quality change takes effect the next time an mpv
+    /// session is created: mpv options are immutable after initialization.
+    pub(crate) fn save_settings(&self, settings: AppSettings) -> Result<AppSettings, String> {
+        let settings = settings.normalized();
+        let store = self
+            .settings
+            .as_ref()
+            .ok_or_else(|| "无法定位应用配置目录，设置未保存".to_string())?;
+        store
+            .save(&settings)
+            .map_err(|err| format!("无法保存设置：{err}"))?;
+        Ok(settings)
     }
 
     /// User overrides from `<config>/mpv.conf`. Read on every open so edits
@@ -150,6 +184,12 @@ impl PlayerService {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    fn lock_session_quality(&self) -> MutexGuard<'_, Option<VideoQuality>> {
+        self.session_quality
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     fn spawn_session(
         &self,
         headers: Option<Vec<String>>,
@@ -164,16 +204,20 @@ impl PlayerService {
         let library = MpvLibrary::load().map_err(|err| err.to_string())?;
         library.check_api_version().map_err(|err| err.to_string())?;
         let desired = *self.lock_desired();
+        let settings = self.current_settings();
         let config = SessionConfig {
             host_hwnd: host.hwnd(),
             log_path: self.log_path.clone(),
             headers,
+            profile: settings.video_quality.mpv_profile().map(str::to_string),
             extra_options: self.user_options(),
             volume: desired.volume,
             muted: desired.muted,
         };
-        PlayerSession::spawn(library, config, Arc::clone(&self.hub))
-            .map_err(|err| format!("player_open: {err}"))
+        let session = PlayerSession::spawn(library, config, Arc::clone(&self.hub))
+            .map_err(|err| format!("player_open: {err}"))?;
+        *self.lock_session_quality() = Some(settings.video_quality);
+        Ok(session)
     }
 
     // ---- commands -----------------------------------------------------------
@@ -188,6 +232,9 @@ impl PlayerService {
         }
         let start_seconds = request.start_seconds.filter(|s| s.is_finite() && *s > 0.0);
         let headers = request.headers.clone();
+        // Read settings before taking the session lock so a slow disk cannot
+        // block player controls; the quality preset only matters when spawning.
+        let desired_quality = self.current_settings().video_quality;
 
         let reply = {
             let mut session = self.lock_session();
@@ -196,6 +243,15 @@ impl PlayerService {
             // freshly spawned worker targeting a destroyed host window.
             if self.shutdown_started.load(Ordering::SeqCst) {
                 return Err("player_open: the application is shutting down".to_string());
+            }
+            // mpv options are fixed before `mpv_initialize()`. If the user
+            // changed the quality preset since this worker was created, retire
+            // it so the next command below spawns with the new profile.
+            if session.is_some() && *self.lock_session_quality() != Some(desired_quality) {
+                if let Some(mut stale) = session.take() {
+                    let _ = stale.shutdown(SHUTDOWN_TIMEOUT);
+                }
+                *self.lock_session_quality() = None;
             }
             let created = session.is_none();
             if created {
@@ -447,6 +503,7 @@ impl PlayerService {
             return;
         }
         let session = self.lock_session().take();
+        *self.lock_session_quality() = None;
         let mut clean = true;
         if let Some(mut session) = session {
             clean = session.shutdown(SHUTDOWN_TIMEOUT);

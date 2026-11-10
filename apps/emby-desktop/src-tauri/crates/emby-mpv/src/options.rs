@@ -6,9 +6,11 @@
 //! left alone; mpv.conf can force any VO. `gpu-api`, `gpu-context` and
 //! `gpu-sw` stay unset so the embedded D3D11 path is chosen by libmpv itself.
 //!
-//! `profile=fast` is the one deliberate quality trade: on the same 780M it took
-//! GPU use from ~25 % to Emby Theater's level. It switches the scalers to
-//! bilinear and turns off dithering, linear-light downscaling and deband.
+//! The quality profile is supplied by the caller (`base_options`): the
+//! low-overhead preset uses `profile=fast`, which on the same 780M took GPU use
+//! from ~25 % to Emby Theater's level. It switches the scalers to bilinear and
+//! turns off dithering, linear-light downscaling and deband. The "default"
+//! preset passes `None`, leaving mpv's own quality defaults untouched.
 //! Individual options can be overridden in mpv.conf (later options win).
 //!
 //! `http-header-fields` is the only sensitive option (auth headers). libmpv
@@ -52,7 +54,13 @@ impl MpvOption {
 /// Options every session must have, in a stable order (index-based diffs help
 /// when diagnosing a log). `host_hwnd` is the parent `HWND` for `--wid`.
 /// `log_path` is `None` unless the user opted in via [`LOG_ENV_VAR`].
-pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
+/// `profile` is the optional mpv quality profile: `Some("fast")` for the
+/// low-overhead preset, `None` for mpv's own default quality.
+pub fn base_options(
+    host_hwnd: u64,
+    log_path: Option<&Path>,
+    profile: Option<&str>,
+) -> Vec<MpvOption> {
     let mut options = vec![
         MpvOption::new("config", "no"),
         MpvOption::new("terminal", "no"),
@@ -65,14 +73,18 @@ pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
         MpvOption::new("wid", host_hwnd.to_string()),
         // D3D11VA hardware decoding without -copy: frames stay on the GPU.
         MpvOption::new("hwdec", "auto-safe"),
-        // Cheapest scaling/dithering path: the default pipeline cost ~10 points
-        // of 3D engine time on an AMD 780M iGPU. Override in mpv.conf for quality.
-        MpvOption::new("profile", "fast"),
-        // Cover art must not be decoded as a video stream (Emby Theater does the same).
-        MpvOption::new("audio-display", "no"),
-        MpvOption::new("keep-open", "yes"),
-        MpvOption::new("idle", "yes"),
     ];
+    // The cheap scaling/dithering path is opt-in: the low-overhead preset
+    // passes `Some("fast")` (it cost ~10 points of 3D engine time on an AMD
+    // 780M iGPU); the default quality preset passes `None` so mpv keeps its
+    // own defaults. mpv.conf overrides still win (appended later).
+    if let Some(profile) = profile.map(str::trim).filter(|value| !value.is_empty()) {
+        options.push(MpvOption::new("profile", profile));
+    }
+    // Cover art must not be decoded as a video stream (Emby Theater does the same).
+    options.push(MpvOption::new("audio-display", "no"));
+    options.push(MpvOption::new("keep-open", "yes"));
+    options.push(MpvOption::new("idle", "yes"));
     if let Some(path) = log_path {
         options.push(MpvOption::new("log-file", path.to_string_lossy().into_owned()));
     }
@@ -89,10 +101,11 @@ pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
 pub fn build_initial_options(
     host_hwnd: u64,
     log_path: Option<&Path>,
+    profile: Option<&str>,
     extra: &[MpvOption],
     headers: Option<&[String]>,
 ) -> Vec<MpvOption> {
-    let mut options = base_options(host_hwnd, log_path);
+    let mut options = base_options(host_hwnd, log_path, profile);
     options.extend(extra.iter().cloned());
     if let Some(value) = headers_option_value(headers) {
         options.push(MpvOption::new("http-header-fields", value));
@@ -170,8 +183,8 @@ mod tests {
     }
 
     #[test]
-    fn base_option_set_is_exact_and_ordered() {
-        let options = base_options(0x1234, None);
+    fn base_option_set_is_exact_and_ordered_with_the_fast_profile() {
+        let options = base_options(0x1234, None, Some("fast"));
         let names: Vec<&str> = options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(
             names,
@@ -203,15 +216,27 @@ mod tests {
     }
 
     #[test]
+    fn base_option_set_omits_profile_for_default_quality() {
+        let options = base_options(0x1234, None, None);
+        assert!(
+            find_option(&options, "profile").is_none(),
+            "default quality must not force an mpv profile"
+        );
+        // Blank/whitespace profile values are ignored as well.
+        let blank = base_options(0x1234, None, Some("  "));
+        assert!(find_option(&blank, "profile").is_none());
+    }
+
+    #[test]
     fn log_file_is_only_set_when_requested() {
         let path = log_path();
-        let options = base_options(0x1234, Some(path.as_path()));
+        let options = base_options(0x1234, Some(path.as_path()), None);
         assert_eq!(options.last().unwrap().name, "log-file");
         assert_eq!(
             find_option(&options, "log-file"),
             Some(path.to_string_lossy().as_ref())
         );
-        assert!(find_option(&base_options(0x1234, None), "log-file").is_none());
+        assert!(find_option(&base_options(0x1234, None, None), "log-file").is_none());
     }
 
     #[test]
@@ -227,9 +252,9 @@ mod tests {
 
     #[test]
     fn gpu_backend_options_are_left_to_mpv_defaults() {
-        let options = base_options(0xdead_beef, None);
-        // The renderer and the D3D11 backend both stay at mpv's defaults.
-        for forbidden in ["vo", "gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs"] {
+        let options = base_options(0xdead_beef, None, None);
+        // The renderer, the D3D11 backend and the quality profile stay at mpv's defaults.
+        for forbidden in ["vo", "gpu-api", "gpu-context", "gpu-sw", "hwdec-codecs", "profile"] {
             assert!(
                 find_option(&options, forbidden).is_none(),
                 "{forbidden} must not be forced"
@@ -239,7 +264,7 @@ mod tests {
 
     #[test]
     fn hwdec_never_uses_copy_back() {
-        let options = base_options(1, None);
+        let options = base_options(1, None, None);
         let hwdec = find_option(&options, "hwdec").unwrap();
         assert!(!hwdec.contains("copy"), "hwdec must stay zero-copy: {hwdec}");
         assert!(!hwdec.starts_with('-'));
@@ -247,10 +272,10 @@ mod tests {
 
     #[test]
     fn headers_are_joined_and_none_by_default() {
-        let no_headers = build_initial_options(1, None, &[], None);
+        let no_headers = build_initial_options(1, None, None, &[], None);
         assert!(find_option(&no_headers, "http-header-fields").is_none());
 
-        let empty = build_initial_options(1, None, &[], Some(&[]));
+        let empty = build_initial_options(1, None, None, &[], Some(&[]));
         assert!(find_option(&empty, "http-header-fields").is_none());
 
         let headers = vec![
@@ -258,7 +283,7 @@ mod tests {
             "X-Emby-Token: secret-token".to_string(),
             "   ".to_string(),
         ];
-        let with_headers = build_initial_options(1, None, &[], Some(&headers));
+        let with_headers = build_initial_options(1, None, Some("fast"), &[], Some(&headers));
         assert_eq!(
             find_option(&with_headers, "http-header-fields"),
             Some("Authorization: Bearer secret-token,X-Emby-Token: secret-token")
@@ -267,7 +292,7 @@ mod tests {
         // (including an opted-in log-file).
         assert_eq!(with_headers.last().unwrap().name, "http-header-fields");
         let path = log_path();
-        let logged = build_initial_options(1, Some(path.as_path()), &[], Some(&headers));
+        let logged = build_initial_options(1, Some(path.as_path()), None, &[], Some(&headers));
         assert_eq!(logged.last().unwrap().name, "http-header-fields");
     }
 
@@ -287,7 +312,7 @@ mod tests {
         // Simulates the "runtime setter leaks the token into mpv.log" pitfall:
         // with no headers requested, no value may contain header material.
         let path = log_path();
-        let options = build_initial_options(1, Some(path.as_path()), &[], None);
+        let options = build_initial_options(1, Some(path.as_path()), None, &[], None);
         for option in &options {
             assert!(!option.value.contains("Bearer"));
             assert!(!option.value.contains("Token"));
@@ -305,7 +330,7 @@ mod tests {
         assert_eq!(find_option(&options, "profile"), Some("fast"));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
 
-        let merged = build_initial_options(1, None, &options, None);
+        let merged = build_initial_options(1, None, Some("fast"), &options, None);
         // User options come after every built-in option, so mpv applies them last.
         let vo_values: Vec<&str> = merged
             .iter()
@@ -319,11 +344,25 @@ mod tests {
     }
 
     #[test]
+    fn user_mpv_conf_can_override_the_quality_profile() {
+        let (options, _) = parse_user_options("profile=gpu-hq");
+        let merged = build_initial_options(1, None, Some("fast"), &options, None);
+        let profiles: Vec<&str> = merged
+            .iter()
+            .filter(|option| option.name == "profile")
+            .map(|option| option.value.as_str())
+            .collect();
+        // Built-in preset first, user mpv.conf later: mpv applies the last one.
+        assert_eq!(profiles, ["fast", "gpu-hq"]);
+    }
+
+    #[test]
     fn header_option_stays_last_with_user_options() {
         let (options, _) = parse_user_options("vo=gpu");
         let merged = build_initial_options(
             1,
             None,
+            Some("fast"),
             &options,
             Some(&["Authorization: Bearer abc".to_string()]),
         );
@@ -336,6 +375,7 @@ mod tests {
         let options = build_initial_options(
             42,
             Some(path.as_path()),
+            None,
             &[],
             Some(&["Authorization: Bearer abc".to_string()]),
         );

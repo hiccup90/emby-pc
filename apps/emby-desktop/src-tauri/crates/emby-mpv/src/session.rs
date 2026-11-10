@@ -65,6 +65,9 @@ pub struct SessionConfig {
     pub log_path: Option<PathBuf>,
     /// Only used when this config creates a fresh handle (pre-initialize).
     pub headers: Option<Vec<String>>,
+    /// Optional mpv quality profile applied before user `mpv.conf` overrides:
+    /// `Some("fast")` for the low-overhead preset, `None` for mpv's default.
+    pub profile: Option<String>,
     /// User overrides from `mpv.conf`; applied after the built-in options.
     pub extra_options: Vec<MpvOption>,
     /// Volume 0..100 restored from the UI.
@@ -643,6 +646,7 @@ impl<'a> MpvCore<'a> {
         for option in build_initial_options(
             config.host_hwnd,
             config.log_path.as_deref(),
+            config.profile.as_deref(),
             &config.extra_options,
             config.headers.as_deref(),
         ) {

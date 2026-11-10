@@ -8,6 +8,7 @@
 mod emby;
 mod overlay;
 mod player;
+mod settings;
 mod video_window;
 
 use player::PlayerService;
@@ -156,6 +157,8 @@ fn main() {
             emby::emby_playback_target,
             emby::emby_report_playback,
             emby::emby_image_url,
+            settings::settings_get,
+            settings::settings_set,
             player::video_sync,
             player::player_open,
             player::player_set_paused,
