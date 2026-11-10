@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { EmbyPlaybackTarget } from "./emby/contract";
 import { hasTauriRuntime } from "./emby/client";
 import type { EmbyLibraryItem } from "./emby/useEmby";
-import { useEmbyLibrary, useEmbySession } from "./emby/useEmby";
+import { useEmbyLibrary, useEmbySession, usePlaybackLauncher } from "./emby/useEmby";
+import { episodePlaybackMeta, itemPlaybackMeta } from "./emby/format";
 import DetailScreen from "./screens/DetailScreen";
 import LibraryScreen from "./screens/LibraryScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -38,6 +39,8 @@ type Route =
       playback: EmbyPlaybackTarget;
       meta: PlaybackMeta;
       returnTo: DetailRoute;
+      /** Series or movie id used to remember the chosen audio/subtitle track. */
+      trackScope: string | null;
     };
 
 function BootScreen() {
@@ -132,11 +135,60 @@ export default function App() {
     });
   }, []);
 
+  const { launch } = usePlaybackLauncher();
+  /** Episodes still to play: [0] is on screen, the rest auto-play in order. */
+  const queueRef = useRef<EmbyLibraryItem[] | null>(null);
+
   const openPlayer = useCallback(
-    (playback: EmbyPlaybackTarget, meta: PlaybackMeta, returnTo: DetailRoute) => {
-      setRoute({ screen: "player", playback, meta, returnTo });
+    (
+      playback: EmbyPlaybackTarget,
+      meta: PlaybackMeta,
+      returnTo: DetailRoute,
+      queue: EmbyLibraryItem[] | null = null,
+      trackScope: string | null = null,
+    ) => {
+      queueRef.current = queue;
+      setRoute({ screen: "player", playback, meta, returnTo, trackScope });
     },
     [],
+  );
+
+  /** Auto-play the next queued episode; false when the queue is exhausted. */
+  const playNext = useCallback(async () => {
+    const queue = queueRef.current;
+    if (!queue || queue.length < 2) return false;
+    const next = queue[1];
+    const target = await launch(next.id);
+    if (!target) return false;
+    queueRef.current = queue.slice(1);
+    const meta =
+      next.type === "Episode"
+        ? episodePlaybackMeta(next.seriesName, next)
+        : itemPlaybackMeta(next);
+    setRoute((current) =>
+      current.screen === "player"
+        ? { ...current, playback: target, meta, trackScope: next.seriesId ?? next.id }
+        : current,
+    );
+    return true;
+  }, [launch]);
+
+  /** Continue-watching cards start playback directly; the server supplies the resume point. */
+  const resumeItem = useCallback(
+    async (item: EmbyLibraryItem) => {
+      const target = await launch(item.id);
+      if (!target) return;
+      const meta =
+        item.type === "Episode"
+          ? episodePlaybackMeta(item.seriesName, item)
+          : itemPlaybackMeta(item);
+      const returnTo: DetailRoute =
+        item.type === "Episode" && item.seriesId
+          ? { itemId: item.seriesId, seed: null, trail: [] }
+          : { itemId: item.id, seed: item, trail: [] };
+      openPlayer(target, meta, returnTo, [item], item.seriesId ?? item.id);
+    },
+    [launch, openPlayer],
   );
 
   const logout = useCallback(() => {
@@ -171,14 +223,17 @@ export default function App() {
         <PlayerPage
           playback={route.playback}
           meta={route.meta}
-          onBack={() =>
+          trackScope={route.trackScope}
+          onNext={playNext}
+          onBack={() => {
+            queueRef.current = null;
             setRoute({
               screen: "detail",
               itemId: route.returnTo.itemId,
               seed: route.returnTo.seed,
               trail: route.returnTo.trail,
-            })
-          }
+            });
+          }}
         />
       </div>
     );
@@ -241,7 +296,13 @@ export default function App() {
           )}
 
           {route.screen === "library" && (
-            <LibraryScreen session={session} desktop={desktop} library={library} onOpen={openItem} />
+            <LibraryScreen
+              session={session}
+              desktop={desktop}
+              library={library}
+              onOpen={openItem}
+              onPlay={resumeItem}
+            />
           )}
 
           {route.screen === "detail" && (
@@ -253,12 +314,14 @@ export default function App() {
               desktop={desktop}
               onBack={leaveDetail}
               onOpenItem={openRelated}
-              onPlay={(playback, meta) =>
-                openPlayer(playback, meta, {
-                  itemId: route.itemId,
-                  seed: route.seed,
-                  trail: route.trail,
-                })
+              onPlay={(playback, meta, queue, trackScope) =>
+                openPlayer(
+                  playback,
+                  meta,
+                  { itemId: route.itemId, seed: route.seed, trail: route.trail },
+                  queue,
+                  trackScope,
+                )
               }
               onBackdrop={setBackdrop}
             />

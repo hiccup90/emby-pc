@@ -28,7 +28,16 @@ interface DetailScreenProps {
   session: EmbySession | null;
   desktop: boolean;
   onBack: () => void;
-  onPlay: (target: EmbyPlaybackTarget, meta: PlaybackMeta) => void;
+  /**
+   * Start playback. `queue` lists the items to auto-play in order (starting
+   * with the one just opened); `trackScope` keys the remembered track choice.
+   */
+  onPlay: (
+    target: EmbyPlaybackTarget,
+    meta: PlaybackMeta,
+    queue?: EmbyLibraryItem[],
+    trackScope?: string,
+  ) => void;
   /** The shell draws the backdrop under the scroll container. */
   onBackdrop?: (src: string | null) => void;
   /** A "more like this" poster. */
@@ -318,7 +327,7 @@ export default function DetailScreen({
   const startPlayback = async () => {
     if (!item || playback.pending || !isPlayableItemType(item.type)) return;
     const target = await playback.launch(item.id);
-    if (target) onPlay(target, itemPlaybackMeta(item));
+    if (target) onPlay(target, itemPlaybackMeta(item), [item], item.id);
   };
 
   const playEpisode = async (episode: EmbyLibraryItem) => {
@@ -326,7 +335,12 @@ export default function DetailScreen({
     setPendingEpisodeId(episode.id);
     const target = await playback.launch(episode.id);
     setPendingEpisodeId(null);
-    if (target) onPlay(target, episodePlaybackMeta(item.name, episode));
+    if (!target) return;
+    // Episodes after this one follow automatically; track choice is per series.
+    const list = episodes.items.length > 0 ? episodes.items : [episode];
+    const index = list.findIndex((entry) => entry.id === episode.id);
+    const queue = index >= 0 ? list.slice(index) : [episode];
+    onPlay(target, episodePlaybackMeta(item.name, episode), queue, item.id);
   };
 
   if (!item) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -31,7 +31,47 @@ interface PlayerPageProps {
   playback?: EmbyPlaybackTarget;
   /** Title row for the controls overlay. */
   meta?: PlaybackMeta;
+  /** Series (or movie) id; keys the remembered audio/subtitle choice. */
+  trackScope?: string | null;
+  /** Start the next queued item; resolves false when there is none. */
+  onNext?: () => Promise<boolean>;
   onBack: () => void;
+}
+
+interface TrackChoice {
+  lang: string | null;
+  title: string;
+}
+
+/** Remembered per-series track choice (the ids change per file). */
+interface TrackPreference {
+  audio?: TrackChoice;
+  subtitle?: TrackChoice;
+}
+
+const TRACK_PREF_KEY = "emby.track-preference.";
+
+function readTrackPreference(scope: string): TrackPreference | null {
+  try {
+    const raw = window.localStorage.getItem(TRACK_PREF_KEY + scope);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as TrackPreference;
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTrackPreference(scope: string, value: TrackPreference) {
+  try {
+    window.localStorage.setItem(TRACK_PREF_KEY + scope, JSON.stringify(value));
+  } catch {
+    // Storage may be unavailable; remembering the choice is best effort.
+  }
+}
+
+function sameChoice(track: { lang: string | null; title: string }, choice: TrackChoice): boolean {
+  return (track.lang ?? null) === (choice.lang ?? null) && track.title === choice.title;
 }
 
 /**
@@ -39,7 +79,13 @@ interface PlayerPageProps {
  * the webview, so every control lives in the transparent `controls.html`
  * overlay window and talks back through `overlay-action`.
  */
-export default function PlayerPage({ playback, meta, onBack }: PlayerPageProps) {
+export default function PlayerPage({
+  playback,
+  meta,
+  trackScope = null,
+  onNext,
+  onBack,
+}: PlayerPageProps) {
   const {
     isDesktop,
     snapshot,
@@ -68,6 +114,11 @@ export default function PlayerPage({ playback, meta, onBack }: PlayerPageProps) 
   const playbackKey = playback
     ? `${playback.itemId}:${playback.playSessionId ?? ""}`
     : null;
+
+  /** Playback key whose saved track choice has already been applied. */
+  const restoredTracksForRef = useRef<string | null>(null);
+  const savedTracksRef = useRef<string>("");
+  const [nextUnavailable, setNextUnavailable] = useState(false);
 
   const isFullscreenRef = useRef(isFullscreen);
   useEffect(() => {
@@ -148,6 +199,62 @@ export default function PlayerPage({ playback, meta, onBack }: PlayerPageProps) 
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [isDesktop, playback, status]);
+
+  // Remember the audio/subtitle track per series: restore it once the track
+  // list is known, then keep saving whatever the user picks.
+  useEffect(() => {
+    if (!snapshot || !trackScope || !playbackKey) return;
+    if (restoredTracksForRef.current === playbackKey) return;
+    if (snapshot.status !== "playing" && snapshot.status !== "paused") return;
+    if (snapshot.audioTracks.length === 0 && snapshot.subtitleTracks.length === 0) return;
+    restoredTracksForRef.current = playbackKey;
+    savedTracksRef.current = "";
+    const preference = readTrackPreference(trackScope);
+    if (!preference) return;
+    const wantedAudio = preference.audio;
+    if (wantedAudio) {
+      const audio = snapshot.audioTracks.find((track) => sameChoice(track, wantedAudio));
+      if (audio && !audio.selected) void selectTrack("audio", audio.id);
+    }
+    const wantedSubtitle = preference.subtitle;
+    if (wantedSubtitle) {
+      const subtitle = snapshot.subtitleTracks.find((track) => sameChoice(track, wantedSubtitle));
+      if (subtitle && !subtitle.selected) void selectTrack("subtitle", subtitle.id);
+    }
+  }, [snapshot, trackScope, playbackKey, selectTrack]);
+
+  useEffect(() => {
+    if (!snapshot || !trackScope || !playbackKey) return;
+    if (restoredTracksForRef.current !== playbackKey) return;
+    const audio = snapshot.audioTracks.find((track) => track.selected);
+    const subtitle = snapshot.subtitleTracks.find((track) => track.selected);
+    if (!audio && !subtitle) return;
+    const preference: TrackPreference = {
+      ...(audio ? { audio: { lang: audio.lang, title: audio.title } } : {}),
+      ...(subtitle ? { subtitle: { lang: subtitle.lang, title: subtitle.title } } : {}),
+    };
+    const serialized = JSON.stringify(preference);
+    if (serialized === savedTracksRef.current) return;
+    savedTracksRef.current = serialized;
+    writeTrackPreference(trackScope, preference);
+  }, [snapshot, trackScope, playbackKey]);
+
+  // Auto-play the next queued episode shortly after the current one ends.
+  useEffect(() => {
+    setNextUnavailable(false);
+    if (!isDesktop || !playback || !onNext || status !== "ended") return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const started = await onNext();
+        if (!cancelled && !started) setNextUnavailable(true);
+      })();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isDesktop, onNext, playback, status]);
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -456,7 +563,11 @@ export default function PlayerPage({ playback, meta, onBack }: PlayerPageProps) 
           ? "等待播放"
           : status === "loading"
             ? "正在载入"
-            : null);
+            : status === "ended"
+              ? onNext && !nextUnavailable
+                ? "播放结束，正在播放下一集…"
+                : "播放结束"
+              : null);
 
   return (
     <main

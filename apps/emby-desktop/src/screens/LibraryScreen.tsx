@@ -16,16 +16,18 @@ interface LibraryScreenProps {
   desktop: boolean;
   library: EmbyLibraryController;
   onOpen: (item: EmbyLibraryItem) => void;
+  /** Continue-watching cards start playback directly instead of opening details. */
+  onPlay: (item: EmbyLibraryItem) => void;
 }
 
 const SKELETON_COUNT = 14;
 
 function ContinueCard({
   item,
-  onSelect,
+  onPlay,
 }: {
   item: EmbyLibraryItem;
-  onSelect: (item: EmbyLibraryItem) => void;
+  onPlay: (item: EmbyLibraryItem) => void;
 }) {
   const progress = itemProgress(item);
   const episode = item.type === "Episode";
@@ -38,7 +40,7 @@ function ContinueCard({
     : `继续观看《${title}》`;
 
   return (
-    <button type="button" className="continue-card" onClick={() => onSelect(item)} aria-label={label}>
+    <button type="button" className="continue-card" onClick={() => onPlay(item)} aria-label={label}>
       <span className="continue-card__frame">
         <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
         <ProgressBar value={progress} className="continue-card__progress" />
@@ -66,7 +68,13 @@ function LibrarySkeleton({ label, landscape }: { label: string; landscape: boole
   );
 }
 
-export default function LibraryScreen({ session, desktop, library, onOpen }: LibraryScreenProps) {
+export default function LibraryScreen({
+  session,
+  desktop,
+  library,
+  onOpen,
+  onPlay,
+}: LibraryScreenProps) {
   const previewMode = !session || !desktop;
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { hasMore, loadMore, loadingMore, status, view } = library;
@@ -104,7 +112,7 @@ export default function LibraryScreen({ session, desktop, library, onOpen }: Lib
       {library.resumable.length > 0 && (
         <HubRow title="继续观看" count={library.resumable.length}>
           {library.resumable.map((item) => (
-            <ContinueCard key={item.id} item={item} onSelect={onOpen} />
+            <ContinueCard key={item.id} item={item} onPlay={onPlay} />
           ))}
         </HubRow>
       )}
