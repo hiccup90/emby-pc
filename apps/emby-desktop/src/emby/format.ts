@@ -1,5 +1,6 @@
 import type { PlaybackMeta } from "../player/contract";
 import type { EmbyItem, EmbyMediaStream } from "./contract";
+import type { PlaybackChapter } from "../player/contract";
 
 const TICKS_PER_SECOND = 10_000_000;
 
@@ -104,6 +105,14 @@ export function formatPremiereDate(value: string | null | undefined): string | n
   const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!match) return null;
   return `${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日`;
+}
+
+/** Chapter list for the player, or undefined when there is nothing to show. */
+export function itemChapters(item: EmbyItem): PlaybackChapter[] | undefined {
+  const chapters = (item.chapters ?? [])
+    .filter((chapter) => Number.isFinite(chapter.startSeconds) && chapter.startSeconds >= 0)
+    .map((chapter) => ({ seconds: chapter.startSeconds, title: chapter.name }));
+  return chapters.length > 1 ? chapters : undefined;
 }
 
 export function formatCommunityRating(value: number | null | undefined): string | null {

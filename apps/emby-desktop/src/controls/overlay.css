@@ -270,6 +270,22 @@ input:focus:not(:focus-visible) {
   height: var(--ov-seek-h);
 }
 
+/* Chapter markers: thin ticks above the seek rail. */
+.ov-seek__chapters {
+  position: absolute;
+  inset: 2px 0 auto;
+  height: 6px;
+  pointer-events: none;
+}
+
+.ov-seek__chapter {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
 .ov-controls {
   position: absolute;
   inset: var(--ov-seek-h) 0 0;

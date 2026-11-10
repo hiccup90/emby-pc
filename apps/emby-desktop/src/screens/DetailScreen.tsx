@@ -13,6 +13,7 @@ import {
   itemEpisodeLabel,
   itemPlaybackMeta,
   itemProgress,
+  itemChapters,
   itemYearLabel,
   seriesStatusLabel,
   subtitleStreamSummary,
@@ -327,7 +328,9 @@ export default function DetailScreen({
   const startPlayback = async () => {
     if (!item || playback.pending || !isPlayableItemType(item.type)) return;
     const target = await playback.launch(item.id);
-    if (target) onPlay(target, itemPlaybackMeta(item), [item], item.id);
+    if (target) {
+      onPlay(target, { ...itemPlaybackMeta(item), chapters: itemChapters(item) }, [item], item.id);
+    }
   };
 
   const playEpisode = async (episode: EmbyLibraryItem) => {
@@ -340,7 +343,12 @@ export default function DetailScreen({
     const list = episodes.items.length > 0 ? episodes.items : [episode];
     const index = list.findIndex((entry) => entry.id === episode.id);
     const queue = index >= 0 ? list.slice(index) : [episode];
-    onPlay(target, episodePlaybackMeta(item.name, episode), queue, item.id);
+    onPlay(
+      target,
+      { ...episodePlaybackMeta(item.name, episode), chapters: itemChapters(episode) },
+      queue,
+      item.id,
+    );
   };
 
   if (!item) {

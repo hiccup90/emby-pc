@@ -296,7 +296,7 @@ export default function Overlay() {
     hasTauriRuntime() ? null : createPreviewSnapshot(),
   );
   const [visible, setVisible] = useState(true);
-  const [menu, setMenu] = useState<"audio" | "subtitle" | null>(null);
+  const [menu, setMenu] = useState<"audio" | "subtitle" | "chapters" | null>(null);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -538,7 +538,10 @@ export default function Overlay() {
     : "关闭";
   const errorMessage =
     status === "error" ? snapshot?.error ?? "播放错误" : null;
-  const options = useMemo(() => trackOptions(menu, snapshot), [menu, snapshot]);
+  const options = useMemo(
+    () => trackOptions(menu === "chapters" ? null : menu, snapshot),
+    [menu, snapshot],
+  );
 
   // ---- slider plumbing -----------------------------------------------------
   const updateSeekDraft = (value: number | null) => {
@@ -595,13 +598,13 @@ export default function Overlay() {
   }, []);
 
   // ---- interactions --------------------------------------------------------
-  const toggleMenu = (kind: "audio" | "subtitle") => {
+  const toggleMenu = (kind: "audio" | "subtitle" | "chapters") => {
     wake();
     setMenu((current) => (current === kind ? null : kind));
   };
 
   const selectTrack = (option: TrackOption) => {
-    if (menu === null) return;
+    if (menu !== "audio" && menu !== "subtitle") return;
     send({ type: "set-track", kind: menu, id: option.id });
     setMenu(null);
   };
@@ -703,7 +706,9 @@ export default function Overlay() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menu, send, wake]);
 
-  const menuLabel = menu === "audio" ? "音轨" : "字幕";
+  const menuLabel =
+    menu === "audio" ? "音轨" : menu === "chapters" ? "章节" : "字幕";
+  const chapters = meta?.chapters ?? [];
   const displayError = errorMessage ?? sendError;
   const timeText =
     duration > 0 ? `${formatTime(boundedPosition)} / ${formatTime(duration)}` : null;
@@ -745,7 +750,36 @@ export default function Overlay() {
               </button>
             </div>
             <div className="ov-menu__list" role="menu" aria-label={`选择${menuLabel}`}>
-              {options.length === 0 ? (
+              {menu === "chapters" ? (
+                chapters.length === 0 ? (
+                  <span className="ov-menu__empty">暂无章节</span>
+                ) : (
+                  chapters.map((chapter, index) => (
+                    <button
+                      key={`${chapter.seconds}-${index}`}
+                      type="button"
+                      className="ov-menu__option"
+                      role="menuitem"
+                      data-no-drag="true"
+                      onPointerDown={actionPointerDown(() => {
+                        send({ type: "seek", seconds: chapter.seconds });
+                        setMenu(null);
+                      })}
+                      onKeyDown={actionKeyDown(() => {
+                        send({ type: "seek", seconds: chapter.seconds });
+                        setMenu(null);
+                      })}
+                      onClick={swallowClick}
+                    >
+                      <span className="ov-menu__text">
+                        <span className="ov-menu__title">{chapter.title}</span>
+                        <span className="ov-menu__detail">{formatTime(chapter.seconds)}</span>
+                      </span>
+                      <span className="ov-menu__check" aria-hidden="true" />
+                    </button>
+                  ))
+                )
+              ) : options.length === 0 ? (
                 <span className="ov-menu__empty">暂无可用轨道</span>
               ) : (
                 options.map((option) => (
@@ -782,6 +816,17 @@ export default function Overlay() {
         <div className="ov-bar__band" aria-hidden="true" />
 
         <div className="ov-seek">
+          {duration > 0 && chapters.length > 1 && (
+            <div className="ov-seek__chapters" aria-hidden="true">
+              {chapters.map((chapter, index) => (
+                <span
+                  key={`${chapter.seconds}-${index}`}
+                  className="ov-seek__chapter"
+                  style={{ left: `${Math.min(100, (chapter.seconds / duration) * 100)}%` }}
+                />
+              ))}
+            </div>
+          )}
           <Slider
             className="ov-slider--seek"
             label="播放进度"
@@ -913,6 +958,21 @@ export default function Overlay() {
               onCommit={changeVolume}
               onGestureStart={wake}
             />
+            <button
+              className={`ov-btn${menu === "chapters" ? " is-active" : ""}`}
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => toggleMenu("chapters"))}
+              onKeyDown={actionKeyDown(() => toggleMenu("chapters"))}
+              onClick={swallowClick}
+              disabled={!hasMedia || chapters.length < 2}
+              aria-label="章节"
+              title="章节"
+              aria-haspopup="menu"
+              aria-expanded={menu === "chapters"}
+            >
+              <OverlayIcon name="chapters" />
+            </button>
             <button
               className={`ov-btn${menu === "audio" ? " is-active" : ""}`}
               type="button"

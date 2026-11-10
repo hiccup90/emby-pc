@@ -16,6 +16,7 @@
  */
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
+  EmbyChapter,
   EmbyItem,
   EmbyMediaStream,
   EmbyPerson,
@@ -159,6 +160,7 @@ function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "ty
     endDate: null,
     status: null,
     mediaStreams: [],
+    chapters: [],
     ...fields,
   };
   items.set(item.id, item);
@@ -373,6 +375,16 @@ function streamsFor(seed: number): EmbyMediaStream[] {
   ];
 }
 
+function buildChapters(item: EmbyItem): EmbyChapter[] {
+  const seconds = (item.runTimeTicks ?? 0) / 10_000_000;
+  if (item.type === "Video" || seconds < 600) return [];
+  const names = ["开场", "第一幕", "第二幕", "第三幕", "结尾"];
+  return names.map((name, index) => ({
+    startSeconds: Math.round((seconds * index) / (names.length + 1)),
+    name,
+  }));
+}
+
 /** What `emby_item` adds over the list item: cast, studios, ratings, streams. */
 function enrich(item: EmbyItem): EmbyItem {
   if (item.type === "Video") return { ...item, mediaStreams: streamsFor(1) };
@@ -402,6 +414,7 @@ function enrich(item: EmbyItem): EmbyItem {
     premiereDate: (item.productionYear ?? 2020) + "-" + month + "-1" + (seed % 9) + "T00:00:00.0000000Z",
     status: series ? (seed % 2 ? "Continuing" : "Ended") : null,
     mediaStreams: series ? [] : streamsFor(seed),
+    chapters: buildChapters(item),
   };
 }
 

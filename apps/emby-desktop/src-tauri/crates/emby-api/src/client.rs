@@ -32,7 +32,7 @@ const ITEM_FIELDS: &str = "PrimaryImageAspectRatio,Overview,Genres,UserData";
 /// Detail page: the list fields plus cast/crew, studios, taglines and the
 /// streams (top level and per media source; servers differ).
 const DETAIL_FIELDS: &str =
-    "PrimaryImageAspectRatio,Overview,Genres,UserData,People,Studios,Taglines,MediaStreams,MediaSources";
+    "PrimaryImageAspectRatio,Overview,Genres,UserData,People,Studios,Taglines,MediaStreams,MediaSources,Chapters";
 
 /// Builds the shared HTTP client. `tls` is a crate feature, so the same call
 /// works for plain-http tests and for https in the desktop build.

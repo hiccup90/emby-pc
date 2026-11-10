@@ -14,7 +14,8 @@ export type OverlayIconName =
   | "back"
   | "retry"
   | "check"
-  | "close";
+  | "close"
+  | "chapters";
 
 const SPEAKER = <path d="M4 9.5h3l4.5-4v13l-4.5-4H4z" fill="currentColor" />;
 
@@ -103,6 +104,14 @@ const PATHS: Record<OverlayIconName, ReactNode> = {
   ),
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   close: <path d="M6.5 6.5l11 11m0-11-11 11" />,
+  chapters: (
+    <>
+      <path d="M9 7h11M9 12h11M9 17h11" />
+      <circle cx="5" cy="7" r="1.3" fill="currentColor" stroke="none" />
+      <circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none" />
+      <circle cx="5" cy="17" r="1.3" fill="currentColor" stroke="none" />
+    </>
+  ),
 };
 
 export function OverlayIcon({

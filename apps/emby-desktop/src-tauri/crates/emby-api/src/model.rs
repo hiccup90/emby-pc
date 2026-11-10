@@ -83,6 +83,17 @@ pub struct EmbyItem {
     pub status: Option<String>,
     #[serde(default)]
     pub media_streams: Vec<EmbyMediaStream>,
+    /// Chapter markers of the item (detail requests only).
+    #[serde(default)]
+    pub chapters: Vec<EmbyChapter>,
+}
+
+/// One chapter marker (`StartPositionTicks` converted to seconds).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbyChapter {
+    pub start_seconds: f64,
+    pub name: String,
 }
 
 /// Cast or crew member of an item.
@@ -238,6 +249,15 @@ pub(crate) struct RawItem {
     pub media_streams: Option<Vec<RawMediaStream>>,
     #[serde(deserialize_with = "lenient_list")]
     pub media_sources: Option<Vec<RawMediaSource>>,
+    #[serde(deserialize_with = "lenient_list")]
+    pub chapters: Option<Vec<RawChapter>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub(crate) struct RawChapter {
+    pub start_position_ticks: Option<i64>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -410,6 +430,13 @@ impl RawItem {
             end_date: trim_optional(self.end_date),
             status: trim_optional(self.status),
             media_streams: pick_media_streams(self.media_streams, self.media_sources),
+            chapters: self
+                .chapters
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, chapter)| RawChapter::into_chapter(chapter, index))
+                .collect(),
         }
     }
 
@@ -483,6 +510,17 @@ fn pick_media_streams(
         .into_iter()
         .filter_map(RawMediaStream::into_stream)
         .collect()
+}
+
+impl RawChapter {
+    fn into_chapter(self, index: usize) -> Option<EmbyChapter> {
+        let ticks = self.start_position_ticks.filter(|ticks| *ticks >= 0)?;
+        let name = trim_optional(self.name).unwrap_or_else(|| format!("第 {} 章", index + 1));
+        Some(EmbyChapter {
+            start_seconds: ticks as f64 / 10_000_000.0,
+            name,
+        })
+    }
 }
 
 fn unique_studio_names(studios: Vec<RawStudio>) -> Vec<String> {
@@ -668,6 +706,11 @@ mod tests {
             {"Name": 5},
             {"Name": "  ", "Id": "p3"}
         ],
+        "Chapters": [
+            {"StartPositionTicks": 0, "Name": "Opening"},
+            {"StartPositionTicks": 150000000, "Name": "  "},
+            {"StartPositionTicks": -5, "Name": "Broken"}
+        ],
         "MediaStreams": [
             {"Type": "Video", "Index": 0, "Codec": "h264", "Width": 1920, "Height": 818, "IsDefault": true},
             {"Type": "Audio", "Index": 1, "Codec": "aac", "Language": "eng", "Channels": 6, "DisplayTitle": "English AAC 5.1", "IsDefault": true},
@@ -693,6 +736,11 @@ mod tests {
         assert_eq!(item.people[0].primary_image_tag.as_deref(), Some("t1"));
         assert_eq!(item.people[1].id.as_deref(), Some("77"));
         assert_eq!(item.people[1].primary_image_tag, None);
+
+        assert_eq!(item.chapters.len(), 2, "{:?}", item.chapters);
+        assert_eq!(item.chapters[0].start_seconds, 0.0);
+        assert_eq!(item.chapters[1].start_seconds, 15.0);
+        assert_eq!(item.chapters[1].name, "第 2 章");
 
         let kinds: Vec<&str> = item.media_streams.iter().map(|s| s.kind.as_str()).collect();
         assert_eq!(kinds, ["Video", "Audio", "Subtitle"]);

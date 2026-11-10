@@ -49,6 +49,12 @@ export interface EmbyItem {
   /** Series status: "Continuing" / "Ended". */
   status: string | null;
   mediaStreams: EmbyMediaStream[];
+  chapters: EmbyChapter[];
+}
+
+export interface EmbyChapter {
+  startSeconds: number;
+  name: string;
 }
 
 export interface EmbyPerson {

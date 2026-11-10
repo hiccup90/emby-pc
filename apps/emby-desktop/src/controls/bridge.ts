@@ -153,5 +153,12 @@ export function createPreviewMeta(): PlaybackMeta {
     subtitle: params.has("subtitle")
       ? params.get("subtitle") || null
       : "S1 · E8 — 上元灯会",
+    chapters: [
+      { seconds: 0, title: "开场" },
+      { seconds: 420, title: "第一幕" },
+      { seconds: 980, title: "第二幕" },
+      { seconds: 1500, title: "第三幕" },
+      { seconds: 2100, title: "结尾" },
+    ],
   };
 }

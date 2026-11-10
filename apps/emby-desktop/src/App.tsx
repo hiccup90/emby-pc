@@ -2,8 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { EmbyPlaybackTarget } from "./emby/contract";
 import { hasTauriRuntime } from "./emby/client";
 import type { EmbyLibraryItem } from "./emby/useEmby";
+import type { EmbyItem } from "./emby/contract";
 import { useEmbyLibrary, useEmbySession, usePlaybackLauncher } from "./emby/useEmby";
-import { episodePlaybackMeta, itemPlaybackMeta } from "./emby/format";
+import { embyItems } from "./emby/client";
+import { episodePlaybackMeta, itemChapters, itemPlaybackMeta } from "./emby/format";
 import DetailScreen from "./screens/DetailScreen";
 import LibraryScreen from "./screens/LibraryScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -137,14 +139,14 @@ export default function App() {
 
   const { launch } = usePlaybackLauncher();
   /** Episodes still to play: [0] is on screen, the rest auto-play in order. */
-  const queueRef = useRef<EmbyLibraryItem[] | null>(null);
+  const queueRef = useRef<EmbyItem[] | null>(null);
 
   const openPlayer = useCallback(
     (
       playback: EmbyPlaybackTarget,
       meta: PlaybackMeta,
       returnTo: DetailRoute,
-      queue: EmbyLibraryItem[] | null = null,
+      queue: EmbyItem[] | null = null,
       trackScope: string | null = null,
     ) => {
       queueRef.current = queue;
@@ -155,7 +157,30 @@ export default function App() {
 
   /** Auto-play the next queued episode; false when the queue is exhausted. */
   const playNext = useCallback(async () => {
-    const queue = queueRef.current;
+    let queue = queueRef.current;
+    if (!queue || queue.length === 0) return false;
+    if (queue.length < 2) {
+      // Opened from continue-watching: only the current episode is queued, so
+      // fetch the rest of the series on demand.
+      const current = queue[0];
+      if (current.type !== "Episode" || !current.seriesId) return false;
+      try {
+        const page = await embyItems({
+          parentId: current.seriesId,
+          includeItemTypes: "Episode",
+          recursive: true,
+          sortBy: "ParentIndexNumber,IndexNumber",
+          limit: 500,
+        });
+        const index = page.items.findIndex((entry) => entry.id === current.id);
+        if (index < 0 || index + 1 >= page.items.length) return false;
+        queue = page.items.slice(index);
+        queueRef.current = queue;
+      } catch (reason) {
+        console.warn("[player] could not load the next episode", reason);
+        return false;
+      }
+    }
     if (!queue || queue.length < 2) return false;
     const next = queue[1];
     const target = await launch(next.id);
@@ -163,8 +188,8 @@ export default function App() {
     queueRef.current = queue.slice(1);
     const meta =
       next.type === "Episode"
-        ? episodePlaybackMeta(next.seriesName, next)
-        : itemPlaybackMeta(next);
+        ? { ...episodePlaybackMeta(next.seriesName, next), chapters: itemChapters(next) }
+        : { ...itemPlaybackMeta(next), chapters: itemChapters(next) };
     setRoute((current) =>
       current.screen === "player"
         ? { ...current, playback: target, meta, trackScope: next.seriesId ?? next.id }
@@ -180,8 +205,8 @@ export default function App() {
       if (!target) return;
       const meta =
         item.type === "Episode"
-          ? episodePlaybackMeta(item.seriesName, item)
-          : itemPlaybackMeta(item);
+          ? { ...episodePlaybackMeta(item.seriesName, item), chapters: itemChapters(item) }
+          : { ...itemPlaybackMeta(item), chapters: itemChapters(item) };
       const returnTo: DetailRoute =
         item.type === "Episode" && item.seriesId
           ? { itemId: item.seriesId, seed: null, trail: [] }
