@@ -108,9 +108,9 @@ input:focus:not(:focus-visible) {
   pointer-events: auto;
 }
 
-/* Expanded part: 352 - 96 = 256 px above the bar. Always mounted and only
- * toggled with opacity: mounting layout while Rust resizes the window is what
- * flashed the bar before. */
+/* Expanded part: 352 - 96 = 256 px above the bar. The window always has the
+ * expanded size (Rust only changes its window region), and the panel is always
+ * mounted and only toggled with opacity, so a menu never moves the bar. */
 .overlay__panel {
   position: absolute;
   right: 0;

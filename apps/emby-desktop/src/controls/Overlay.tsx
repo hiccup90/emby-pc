@@ -411,7 +411,7 @@ export default function Overlay() {
   useEffect(() => {
     if (!desktop) return;
     void setOverlayExpanded(expanded).catch((reason) => {
-      console.warn("[overlay] could not resize the overlay window", reason);
+      console.warn("[overlay] could not expand/collapse the overlay window", reason);
     });
   }, [desktop, expanded]);
 

@@ -23,6 +23,12 @@
 //! (equal to `outer_position()` because the app window is always undecorated);
 //! the clamp still uses the outer top so the overlay can never leave the window.
 //!
+//! Menus never resize the window. It always has the expanded size, and a
+//! window region exposes only the bottom bar while no menu is open (see
+//! [`OverlayState::present`]). Resizing on every open/close made WebView2
+//! present one stale frame with the bar at the old offset, which showed as a
+//! flash of the bar whenever a track was picked.
+//!
 //! Click routing: the surface is click-through while it is faded out, but the
 //! page hides itself on a timer (`overlay_set_interactive(false)`). That call is
 //! therefore deferred by [`CLICK_THROUGH_GRACE`]: a press that started while the
@@ -69,7 +75,9 @@ pub fn resume(app: &AppHandle) {
     }
 }
 
-/// Logical (CSS px) heights of the parked control surface. Keep in sync with
+/// Logical (CSS px) heights of the control surface: the window always has the
+/// expanded height; the collapsed height is the strip the window region leaves
+/// visible and clickable while no menu is open. Keep in sync with
 /// `OVERLAY_BAR_HEIGHT` / `OVERLAY_EXPANDED_HEIGHT` (src/controls/contract.ts)
 /// and `--ov-bar-h` / `--ov-panel-h` (src/controls/overlay.css).
 const COLLAPSED_HEIGHT: f64 = 96.0;
@@ -106,6 +114,9 @@ struct Inner {
     latch: SeqLatch,
     /// Last geometry pushed to the controls window, to avoid redundant calls.
     last_geometry: Option<(i32, i32, u32, u32)>,
+    /// Height (physical px) of the bottom strip the window region exposes;
+    /// `None` until the first region is applied.
+    last_active: Option<u32>,
     controls_shown: bool,
     /// Whether the controls should currently receive mouse input.
     interactive: bool,
@@ -136,6 +147,7 @@ impl OverlayState {
                 sync: None,
                 latch: SeqLatch::new(),
                 last_geometry: None,
+                last_active: None,
                 controls_shown: false,
                 interactive: false,
                 // `configure_controls_window` starts click-through before the
@@ -406,15 +418,25 @@ impl OverlayState {
         } else {
             (0, 0)
         };
-        let geometry = compute_geometry(client_origin, outer_top, scale, &sync, expanded, frame);
+        // The window keeps the expanded size; opening or closing a menu only
+        // changes the window region (the visible, hit-testable bottom strip),
+        // so the webview is never resized and cannot show a stale frame.
+        let geometry = compute_geometry(client_origin, outer_top, scale, &sync, frame);
+        let active = active_height(geometry.3, scale, expanded);
 
-        let geometry_changed = self.lock().last_geometry != Some(geometry);
+        let (geometry_changed, region_changed) = {
+            let inner = self.lock();
+            let geometry_changed = inner.last_geometry != Some(geometry);
+            (geometry_changed, geometry_changed || inner.last_active != Some(active))
+        };
         if geometry_changed {
-            // One atomic SetWindowPos instead of separate size/position calls:
-            // resizing a bottom-anchored transparent window in two steps makes
-            // the bar jump (and flash) for a frame when a menu expands.
+            // One atomic SetWindowPos instead of separate size/position calls.
             apply_bounds(&controls, geometry)?;
             self.lock().last_geometry = Some(geometry);
+        }
+        if region_changed {
+            apply_region(&controls, geometry.2, geometry.3, active)?;
+            self.lock().last_active = Some(active);
         }
 
         if !shown {
@@ -521,7 +543,7 @@ impl OverlayState {
     /// the video and not over the (interactive) controls bar.
     #[cfg(windows)]
     fn is_stage_click(&self, app: &AppHandle, cursor: (i32, i32)) -> bool {
-        let (mode, sync, shown, interactive, geometry) = {
+        let (mode, sync, shown, interactive, geometry, active) = {
             let inner = self.lock();
             (
                 inner.mode,
@@ -529,6 +551,7 @@ impl OverlayState {
                 inner.controls_shown,
                 inner.interactive,
                 inner.last_geometry,
+                inner.last_active,
             )
         };
         if mode != UiMode::Player {
@@ -559,11 +582,15 @@ impl OverlayState {
             return false;
         }
         // Clicks on a visible bar belong to the controls window, not the stage.
+        // Only the bottom strip the window region exposes counts: above a
+        // collapsed bar the window is clipped and the click reaches the video.
         if shown && interactive {
             if let Some((gx, gy, gw, gh)) = geometry {
+                let active = active.unwrap_or(gh).min(gh);
+                let top = gy.saturating_add((gh - active) as i32);
                 if cursor.0 >= gx
                     && cursor.0 < gx.saturating_add(gw as i32)
-                    && cursor.1 >= gy
+                    && cursor.1 >= top
                     && cursor.1 < gy.saturating_add(gh as i32)
                 {
                     return false;
@@ -637,14 +664,8 @@ fn compute_geometry(
     outer_top: i32,
     scale: f64,
     sync: &VideoSync,
-    expanded: bool,
     frame: (i32, i32),
 ) -> (i32, i32, u32, u32) {
-    let height_css = if expanded {
-        EXPANDED_HEIGHT
-    } else {
-        COLLAPSED_HEIGHT
-    };
     // The controls window must never cover the frameless main window resize
     // band: tao hit-tests SM_CXFRAME/SM_CYFRAME pixels *inside* the window rect,
     // and an owned window on top steals those hits. Leave that band free on the
@@ -654,13 +675,25 @@ fn compute_geometry(
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
     let width = ((sync.w * scale).round() as i32 - frame_x * 2).max(1) as u32;
     let video_bottom = video_top + (sync.h * scale).round().max(0.0) as i32;
-    // Bottom-anchored: expanding grows upwards. Never above the main window:
-    // on a short window the expanded surface shrinks instead of hanging below
-    // the video (the popover scrolls).
+    // Bottom-anchored and always the expanded height: the window region hides
+    // the part above the bar while no menu is open (`active_height` /
+    // `apply_region`). Never above the main window: on a short window the
+    // surface shrinks instead of hanging below the video (the popover scrolls).
     let room = (video_bottom - frame_y - outer_top).max(1);
-    let height = ((height_css * scale).round() as i32).clamp(1, room) as u32;
+    let height = ((EXPANDED_HEIGHT * scale).round() as i32).clamp(1, room) as u32;
     let y = (video_bottom - height as i32 - frame_y).max(outer_top);
     (x, y, width, height)
+}
+
+/// Height (physical px) of the bottom strip that is visible and receives input:
+/// the bar, or the whole surface while a menu is open. Never taller than the
+/// window (a short main window shrinks the surface).
+fn active_height(window_height: u32, scale: f64, expanded: bool) -> u32 {
+    if expanded {
+        return window_height;
+    }
+    let collapsed = (COLLAPSED_HEIGHT * scale).round().max(1.0) as u32;
+    collapsed.min(window_height)
 }
 
 /// Physical thickness of the resize band tao hit-tests for an undecorated,
@@ -723,6 +756,50 @@ fn apply_bounds(controls: &WebviewWindow, geometry: (i32, i32, u32, u32)) -> Res
     }
 }
 
+/// Clip the controls window to its bottom `active` pixels with a window region.
+/// The clipped part is neither drawn nor hit-tested, so clicks above a
+/// collapsed bar reach the video. Unlike a resize, changing the region leaves
+/// the webview's size and layout alone, so no stale frame can flash.
+fn apply_region(
+    controls: &WebviewWindow,
+    width: u32,
+    height: u32,
+    active: u32,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
+
+        let hwnd = controls_hwnd(controls)?;
+        let region = if active >= height {
+            // The whole window: no region at all.
+            std::ptr::null_mut()
+        } else {
+            let top = (height - active) as i32;
+            let region = unsafe { CreateRectRgn(0, top, width as i32, height as i32) };
+            if region.is_null() {
+                return Err("apply_region: CreateRectRgn failed".to_string());
+            }
+            region
+        };
+        // On success the system owns the region; on failure it is ours to free.
+        let ok = unsafe { SetWindowRgn(hwnd, region, 1) };
+        if ok == 0 {
+            if !region.is_null() {
+                unsafe {
+                    DeleteObject(region as _);
+                }
+            }
+            return Err("apply_region: SetWindowRgn(controls) failed".to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (controls, width, height, active);
+        Ok(())
+    }
+}
 
 // ---- window creation ---------------------------------------------------------
 
