@@ -32,6 +32,7 @@ pub use seq::SeqLatch;
 pub use session::{PlayerSession, SessionConfig, EVENT_TIMEOUT_SECS, SHUTDOWN_TIMEOUT, SNAPSHOT_INTERVAL};
 pub use state::SnapshotAssembler;
 pub use types::{
-    OpenRequest, PlayerCommand, PlayerSnapshot, PlayerStatus, PlayerTrack, TrackKind, VideoSync,
+    OpenRequest, PlayerCommand, PlayerSnapshot, PlayerStats, PlayerStatus, PlayerTrack, TrackKind,
+    VideoSync,
     STATUS_ENDED, STATUS_ERROR, STATUS_IDLE, STATUS_LOADING, STATUS_PAUSED, STATUS_PLAYING,
 };
