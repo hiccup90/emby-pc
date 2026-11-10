@@ -76,6 +76,7 @@ pnpm tauri dev
 ```
 
 - `pnpm dev` 只启动 Vite，浏览器中为 UI 预览，播放命令不会发送，控件仅更新本地假状态。
+- `pnpm dev:mock` 在浏览器里模拟 Tauri IPC（`src/dev/mockTauri.ts`），用一个虚构的 Emby 影库跑完整主窗口：登录、影库、详情、播放页都能点。URL 参数可切换场景：`?session=none`（登录页，密码填 `wrong` 会失败）、`?state=loading|error|empty`、`?resume=none`、`?posters=none`。这个模块只在 `--mode mock` 下加载，正式构建不包含。
 - `pnpm build` 执行 `tsc -b && vite build`。
 - `pnpm tauri dev` 需要本机 Rust/Tauri 工具链；原生视频嵌入仅在 Windows 可用。
 - 编译和 Rust 单测统一放在 Windows CI 上跑，本地 Linux 容器不装 Rust 工具链。有 Rust 环境时，可以在本地检查两个不依赖 Tauri 的 crate：
