@@ -51,6 +51,8 @@ pub struct EmbyItem {
     pub r#type: String,
     pub media_type: Option<String>,
     pub production_year: Option<i32>,
+    /// Server-side creation timestamp (ISO 8601), used for "recently added".
+    pub date_created: Option<String>,
     pub run_time_ticks: Option<i64>,
     pub image_tags: HashMap<String, String>,
     pub backdrop_image_tags: Vec<String>,
@@ -220,6 +222,8 @@ pub(crate) struct RawItem {
     pub item_type: Option<String>,
     pub media_type: Option<String>,
     pub production_year: Option<i32>,
+    #[serde(deserialize_with = "lenient")]
+    pub date_created: Option<String>,
     pub run_time_ticks: Option<i64>,
     pub image_tags: Option<HashMap<String, String>>,
     pub backdrop_image_tags: Option<Vec<String>>,
@@ -404,6 +408,7 @@ impl RawItem {
             r#type: self.item_type.unwrap_or_default(),
             media_type: self.media_type,
             production_year: self.production_year,
+            date_created: trim_optional(self.date_created),
             run_time_ticks: self.run_time_ticks,
             image_tags: self.image_tags.unwrap_or_default(),
             backdrop_image_tags: self.backdrop_image_tags.unwrap_or_default(),
@@ -595,6 +600,7 @@ mod tests {
                 "Type": "Movie",
                 "MediaType": "Video",
                 "ProductionYear": 2008,
+                "DateCreated": "2020-05-01T08:30:00.0000000Z",
                 "RunTimeTicks": 5960000000,
                 "Overview": "A rabbit.",
                 "Genres": ["Animation", "Short"],
@@ -634,6 +640,10 @@ mod tests {
         assert_eq!(movie.r#type, "Movie");
         assert_eq!(movie.media_type.as_deref(), Some("Video"));
         assert_eq!(movie.production_year, Some(2008));
+        assert_eq!(
+            movie.date_created.as_deref(),
+            Some("2020-05-01T08:30:00.0000000Z")
+        );
         assert_eq!(movie.run_time_ticks, Some(5_960_000_000));
         assert_eq!(movie.overview.as_deref(), Some("A rabbit."));
         assert_eq!(movie.genres, vec!["Animation", "Short"]);
@@ -652,6 +662,7 @@ mod tests {
         assert_eq!(episode.series_name.as_deref(), Some("The Show"));
         assert_eq!(episode.index_number, Some(2));
         assert_eq!(episode.parent_index_number, Some(1));
+        assert_eq!(episode.date_created, None, "missing DateCreated is tolerated");
         assert!(episode.image_tags.is_empty(), "null ImageTags tolerated");
         assert_eq!(episode.user_data, EmbyUserData::default());
         assert_eq!(episode.user_data.playback_position_ticks, None);
@@ -675,6 +686,7 @@ mod tests {
             "type",
             "mediaType",
             "productionYear",
+            "dateCreated",
             "runTimeTicks",
             "imageTags",
             "backdropImageTags",
@@ -763,6 +775,7 @@ mod tests {
             "Type": "Movie",
             "CommunityRating": "8.1",
             "OfficialRating": 13,
+            "DateCreated": 123,
             "People": {"Name": "not a list"},
             "Studios": "Studio A",
             "Taglines": null,
@@ -772,6 +785,7 @@ mod tests {
         assert_eq!(item.name, "Odd");
         assert_eq!(item.community_rating, None);
         assert_eq!(item.official_rating, None);
+        assert_eq!(item.date_created, None, "numeric DateCreated is ignored");
         assert!(item.people.is_empty());
         assert!(item.studios.is_empty());
         assert_eq!(item.tagline, None);

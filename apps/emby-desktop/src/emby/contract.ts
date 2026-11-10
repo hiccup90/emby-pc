@@ -27,6 +27,8 @@ export interface EmbyItem {
   type: string;
   mediaType: string | null;
   productionYear: number | null;
+  /** Server-side creation time (ISO 8601); list/detail responses supply it. */
+  dateCreated?: string | null;
   runTimeTicks: number | null;
   imageTags: Record<string, string>;
   backdropImageTags: string[];

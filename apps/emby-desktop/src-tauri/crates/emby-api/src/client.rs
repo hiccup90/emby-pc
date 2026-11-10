@@ -28,11 +28,12 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Fields requested for item lists/details. The frontend contract depends on
 /// these (`userData`, `imageTags`, `primaryImageAspectRatio`, ...).
-const ITEM_FIELDS: &str = "PrimaryImageAspectRatio,Overview,Genres,UserData";
+const ITEM_FIELDS: &str =
+    "PrimaryImageAspectRatio,Overview,Genres,UserData,DateCreated";
 /// Detail page: the list fields plus cast/crew, studios, taglines and the
 /// streams (top level and per media source; servers differ).
 const DETAIL_FIELDS: &str =
-    "PrimaryImageAspectRatio,Overview,Genres,UserData,People,Studios,Taglines,MediaStreams,MediaSources,Chapters";
+    "PrimaryImageAspectRatio,Overview,Genres,UserData,DateCreated,People,Studios,Taglines,MediaStreams,MediaSources,Chapters";
 
 /// Builds the shared HTTP client. `tls` is a crate feature, so the same call
 /// works for plain-http tests and for https in the desktop build.
@@ -912,7 +913,14 @@ mod tests {
         let request = server.join().expect("mock server thread");
         let request_line = request.lines().next().unwrap_or_default();
         assert!(request_line.starts_with("GET /Users/u1/Items/m1?"), "{request_line}");
-        for field in ["People", "Studios", "Taglines", "MediaStreams", "MediaSources"] {
+        for field in [
+            "DateCreated",
+            "People",
+            "Studios",
+            "Taglines",
+            "MediaStreams",
+            "MediaSources",
+        ] {
             assert!(request_line.contains(field), "missing {field}: {request_line}");
         }
         assert_eq!(item.people.len(), 1);
@@ -1139,8 +1147,18 @@ mod tests {
 
     #[test]
     fn item_fields_cover_the_frontend_contract() {
-        for field in ["PrimaryImageAspectRatio", "Overview", "Genres", "UserData"] {
+        for field in [
+            "PrimaryImageAspectRatio",
+            "Overview",
+            "Genres",
+            "UserData",
+            "DateCreated",
+        ] {
             assert!(ITEM_FIELDS.contains(field), "missing {field}");
         }
+        assert!(
+            DETAIL_FIELDS.contains("DateCreated"),
+            "detail fields must include DateCreated"
+        );
     }
 }
