@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use emby_mpv::{
-    MpvLibrary, MpvOption, OpenRequest, PlayerCommand, PlayerSession, PlayerSnapshot, SessionConfig,
-    SnapshotHub, SnapshotSink, TrackKind, VideoSync, SHUTDOWN_TIMEOUT, STATUS_IDLE,
+    MpvLibrary, MpvOption, OpenRequest, PlayerCommand, PlayerSession, PlayerSnapshot, PlayerStats,
+    SessionConfig, SnapshotHub, SnapshotSink, TrackKind, VideoSync, SHUTDOWN_TIMEOUT, STATUS_IDLE,
 };
 use tauri::ipc::Channel;
 use tauri::State;
@@ -342,6 +342,15 @@ impl PlayerService {
         self.hub.latest()
     }
 
+    /// Live mpv statistics; fails when no session exists yet.
+    pub fn stats(&self) -> Result<PlayerStats, String> {
+        let session = self.lock_session();
+        match session.as_ref() {
+            Some(active) => active.stats(std::time::Duration::from_millis(800)),
+            None => Err("player_stats: no active session".to_string()),
+        }
+    }
+
     pub fn subscribe(&self, channel: Channel<PlayerSnapshot>) -> Result<(), String> {
         // Subscribing is idempotent by design: the UI re-subscribes on every
         // visit to the player page and there is no unsubscribe command, so the
@@ -566,6 +575,11 @@ pub fn player_stop(state: State<'_, PlayerService>) -> Result<(), String> {
 #[tauri::command]
 pub fn player_snapshot(state: State<'_, PlayerService>) -> Result<PlayerSnapshot, String> {
     Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub fn player_stats(state: State<'_, PlayerService>) -> Result<PlayerStats, String> {
+    state.stats()
 }
 
 #[tauri::command]

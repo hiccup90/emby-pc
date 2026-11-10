@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
-import type { PlaybackMeta, PlayerSnapshot } from "../player/contract";
+import type { PlaybackMeta, PlayerSnapshot, PlayerStats } from "../player/contract";
 import type { OverlayAction, OverlayMetaMessage, OverlayUiMode } from "./contract";
 
 type TauriAwareWindow = Window & { __TAURI_INTERNALS__?: unknown };
@@ -81,6 +81,22 @@ export async function onOverlayMeta(
 /** Overlay window: ask the player page to resend the current title row. */
 export async function requestOverlayMeta(): Promise<void> {
   await emitTo("main", META_REQUEST_EVENT, null);
+}
+
+// ---- playback statistics (PlayerStats) ---------------------------------------------
+
+const STATS_EVENT = "overlay-stats";
+
+/** Main window: push the latest mpv statistics to the controls window. */
+export async function publishOverlayStats(stats: PlayerStats | null): Promise<void> {
+  await emitTo("controls", STATS_EVENT, stats);
+}
+
+/** Overlay window: statistics updates from the player page. */
+export async function onOverlayStats(
+  handler: (stats: PlayerStats | null) => void,
+): Promise<() => void> {
+  return listen<PlayerStats | null>(STATS_EVENT, (event) => handler(event.payload));
 }
 
 // ---- browser-only preview ----------------------------------------------------------

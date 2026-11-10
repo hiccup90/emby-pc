@@ -23,6 +23,18 @@ export interface PlayerSnapshot {
   error: string | null;
 }
 
+/** Live mpv statistics for the player's info panel. */
+export interface PlayerStats {
+  hwdec: string | null;
+  vo: string | null;
+  pixelFormat: string | null;
+  videoCodec: string | null;
+  displayFps: number | null;
+  videoFps: number | null;
+  droppedFrames: number | null;
+  bitrate: number | null;
+}
+
 export interface VideoSync {
   seq: number;
   visible: boolean;

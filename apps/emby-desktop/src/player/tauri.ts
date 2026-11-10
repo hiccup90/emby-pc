@@ -1,5 +1,11 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { OpenRequest, PlayerSnapshot, PlayerTrack, VideoSync } from "./contract";
+import type {
+  OpenRequest,
+  PlayerSnapshot,
+  PlayerStats,
+  PlayerTrack,
+  VideoSync,
+} from "./contract";
 
 type TauriAwareWindow = Window & { __TAURI_INTERNALS__?: unknown };
 
@@ -87,6 +93,10 @@ export async function invokePlayerStop(): Promise<void> {
 
 export async function invokePlayerSnapshot(): Promise<PlayerSnapshot> {
   return invoke<PlayerSnapshot>("player_snapshot");
+}
+
+export async function invokePlayerStats(): Promise<PlayerStats> {
+  return invoke<PlayerStats>("player_stats");
 }
 
 export async function invokePlayerToggleFullscreen(): Promise<boolean> {

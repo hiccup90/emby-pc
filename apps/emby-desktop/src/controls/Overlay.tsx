@@ -4,7 +4,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import type { PlaybackMeta, PlayerSnapshot, PlayerTrack } from "../player/contract";
+import type { PlaybackMeta, PlayerSnapshot, PlayerStats, PlayerTrack } from "../player/contract";
 import type { OverlayAction } from "./contract";
 import {
   createPreviewMeta,
@@ -13,6 +13,7 @@ import {
   fetchPlayerSnapshot,
   hasTauriRuntime,
   onOverlayMeta,
+  onOverlayStats,
   onOverlayWake,
   requestOverlayMeta,
   sendOverlayAction,
@@ -296,7 +297,8 @@ export default function Overlay() {
     hasTauriRuntime() ? null : createPreviewSnapshot(),
   );
   const [visible, setVisible] = useState(true);
-  const [menu, setMenu] = useState<"audio" | "subtitle" | "chapters" | null>(null);
+  const [menu, setMenu] = useState<"audio" | "subtitle" | "chapters" | "info" | null>(null);
+  const [stats, setStats] = useState<PlayerStats | null>(null);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -510,6 +512,39 @@ export default function Overlay() {
     };
   }, [desktop]);
 
+  // Live mpv statistics for the info panel; null until the main window pushes.
+  useEffect(() => {
+    if (!desktop) {
+      // Browser preview: fixed sample so the panel can be inspected.
+      setStats({
+        hwdec: "d3d11va",
+        vo: "gpu-next",
+        pixelFormat: "p010",
+        videoCodec: "hevc (Main 10)",
+        displayFps: 59.94,
+        videoFps: 23.976,
+        droppedFrames: 0,
+        bitrate: 18_400_000,
+      });
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onOverlayStats((value) => {
+      if (!disposed) setStats(value);
+    })
+      .then((stop) => {
+        unlisten = stop;
+      })
+      .catch((reason) => {
+        console.warn("[overlay] could not subscribe to player stats", reason);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [desktop]);
+
   // ---- auto hide -----------------------------------------------------------
   const status = snapshot?.status ?? "idle";
   const playing = status === "playing" || status === "loading";
@@ -539,9 +574,40 @@ export default function Overlay() {
   const errorMessage =
     status === "error" ? snapshot?.error ?? "播放错误" : null;
   const options = useMemo(
-    () => trackOptions(menu === "chapters" ? null : menu, snapshot),
+    () => trackOptions(menu === "audio" || menu === "subtitle" ? menu : null, snapshot),
     [menu, snapshot],
   );
+  const videoSize =
+    (snapshot?.videoWidth ?? 0) > 0 ? `${snapshot?.videoWidth}×${snapshot?.videoHeight}` : null;
+  const infoRows: Array<{ label: string; value: string }> = stats
+    ? [
+        { label: "渲染器", value: stats.vo ?? "—" },
+        { label: "硬件解码", value: stats.hwdec ?? "软件解码" },
+        {
+          label: "视频",
+          value: [stats.videoCodec ?? null, videoSize, stats.pixelFormat ?? null]
+            .filter(Boolean)
+            .join(" · ") || "—",
+        },
+        {
+          label: "帧率",
+          value: [
+            stats.videoFps ? `${stats.videoFps.toFixed(2)} fps` : null,
+            stats.displayFps ? `屏 ${stats.displayFps.toFixed(2)} Hz` : null,
+          ]
+            .filter(Boolean)
+            .join(" / ") || "—",
+        },
+        {
+          label: "码率",
+          value: stats.bitrate ? `${(stats.bitrate / 1_000_000).toFixed(1)} Mbps` : "—",
+        },
+        {
+          label: "丢帧",
+          value: stats.droppedFrames != null ? String(stats.droppedFrames) : "—",
+        },
+      ]
+    : [];
 
   // ---- slider plumbing -----------------------------------------------------
   const updateSeekDraft = (value: number | null) => {
@@ -598,7 +664,7 @@ export default function Overlay() {
   }, []);
 
   // ---- interactions --------------------------------------------------------
-  const toggleMenu = (kind: "audio" | "subtitle" | "chapters") => {
+  const toggleMenu = (kind: "audio" | "subtitle" | "chapters" | "info") => {
     wake();
     setMenu((current) => (current === kind ? null : kind));
   };
@@ -707,7 +773,13 @@ export default function Overlay() {
   }, [menu, send, wake]);
 
   const menuLabel =
-    menu === "audio" ? "音轨" : menu === "chapters" ? "章节" : "字幕";
+    menu === "audio"
+      ? "音轨"
+      : menu === "chapters"
+        ? "章节"
+        : menu === "info"
+          ? "播放信息"
+          : "字幕";
   const chapters = meta?.chapters ?? [];
   const displayError = errorMessage ?? sendError;
   const timeText =
@@ -750,7 +822,18 @@ export default function Overlay() {
               </button>
             </div>
             <div className="ov-menu__list" role="menu" aria-label={`选择${menuLabel}`}>
-              {menu === "chapters" ? (
+              {menu === "info" ? (
+                infoRows.length === 0 ? (
+                  <span className="ov-menu__empty">暂无播放信息</span>
+                ) : (
+                  infoRows.map((row) => (
+                    <div className="ov-menu__option ov-menu__option--static" key={row.label}>
+                      <span className="ov-menu__title">{row.label}</span>
+                      <span className="ov-menu__detail">{row.value}</span>
+                    </div>
+                  ))
+                )
+              ) : menu === "chapters" ? (
                 chapters.length === 0 ? (
                   <span className="ov-menu__empty">暂无章节</span>
                 ) : (
@@ -958,6 +1041,21 @@ export default function Overlay() {
               onCommit={changeVolume}
               onGestureStart={wake}
             />
+            <button
+              className={`ov-btn${menu === "info" ? " is-active" : ""}`}
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => toggleMenu("info"))}
+              onKeyDown={actionKeyDown(() => toggleMenu("info"))}
+              onClick={swallowClick}
+              disabled={!hasMedia || !stats}
+              aria-label="播放信息"
+              title="播放信息"
+              aria-haspopup="menu"
+              aria-expanded={menu === "info"}
+            >
+              <OverlayIcon name="info" />
+            </button>
             <button
               className={`ov-btn${menu === "chapters" ? " is-active" : ""}`}
               type="button"

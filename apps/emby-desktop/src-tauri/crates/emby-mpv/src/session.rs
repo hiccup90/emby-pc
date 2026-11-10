@@ -23,7 +23,7 @@ use crate::loader::MpvLibrary;
 use crate::options::{build_initial_options, MpvOption};
 use crate::state::SnapshotAssembler;
 use crate::types::{
-    PlayerCommand, PlayerStatus, PlayerTrack, TrackKind, STATUS_ERROR, STATUS_IDLE,
+    PlayerCommand, PlayerStats, PlayerStatus, PlayerTrack, TrackKind, STATUS_ERROR, STATUS_IDLE,
 };
 
 /// `mpv_wait_event` polling interval: keeps command latency low without busy
@@ -115,6 +115,15 @@ impl PlayerSession {
 
     pub fn send(&self, command: PlayerCommand) -> Result<(), MpvError> {
         self.tx.send(command).map_err(|_| MpvError::NotStarted)
+    }
+
+    /// Read mpv statistics from the worker thread (bounded wait).
+    pub fn stats(&self, timeout: Duration) -> Result<PlayerStats, String> {
+        let (tx, rx) = mpsc::channel();
+        self.tx
+            .send(PlayerCommand::Stats(tx))
+            .map_err(|err| err.to_string())?;
+        rx.recv_timeout(timeout).map_err(|err| err.to_string())
     }
 
     /// Ask the worker to quit, wait up to `timeout`, then join.
@@ -219,6 +228,9 @@ fn run_session(
                 }
                 Ok(PlayerCommand::Snapshot(reply)) => {
                     let _ = reply.send(hub.latest());
+                }
+                Ok(PlayerCommand::Stats(reply)) => {
+                    let _ = reply.send(read_stats(&core));
                 }
                 Ok(command) => {
                     if let Err(err) = handle_command(&core, &mut assembler, command) {
@@ -346,7 +358,29 @@ fn handle_command(
             assembler.on_stopped();
             Ok(())
         }
-        PlayerCommand::Shutdown | PlayerCommand::Snapshot(_) => Ok(()),
+        PlayerCommand::Shutdown | PlayerCommand::Snapshot(_) | PlayerCommand::Stats(_) => Ok(()),
+    }
+}
+
+/// Current mpv statistics for the player's info panel.
+fn read_stats(core: &MpvCore<'_>) -> PlayerStats {
+    let text = |name: &str| {
+        core.get_property_string(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let number = |name: &str| text(name).and_then(|value| value.parse::<f64>().ok());
+    let dropped = number("frame-drop-count").unwrap_or(0.0)
+        + number("decoder-frame-drop-count").unwrap_or(0.0);
+    PlayerStats {
+        hwdec: text("hwdec-current").filter(|value| value != "no"),
+        vo: text("current-vo"),
+        pixel_format: text("video-params/pixelformat"),
+        video_codec: text("video-codec"),
+        display_fps: number("display-fps"),
+        video_fps: number("estimated-vf-fps"),
+        dropped_frames: Some(dropped.round() as i64),
+        bitrate: number("video-bitrate"),
     }
 }
 

@@ -6,12 +6,13 @@ import {
   invokePlayerUiMode,
   onOverlayMetaRequest,
   publishOverlayMeta,
+  publishOverlayStats,
 } from "../controls/bridge";
 import type { OverlayAction } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
 import { reportEmbyPlayback } from "../emby/playback";
 import type { PlaybackMeta, PlayerStatus } from "./contract";
-import { invokePlayerStop } from "./tauri";
+import { invokePlayerStats, invokePlayerStop } from "./tauri";
 import { usePlayer } from "./usePlayer";
 import { useVideoSync } from "./useVideoSync";
 
@@ -238,6 +239,27 @@ export default function PlayerPage({
     savedTracksRef.current = serialized;
     writeTrackPreference(trackScope, preference);
   }, [snapshot, trackScope, playbackKey]);
+
+  // Push mpv statistics to the controls window (info panel) while playing.
+  useEffect(() => {
+    if (!isDesktop || !playback) return;
+    let disposed = false;
+    const poll = async () => {
+      try {
+        const stats = await invokePlayerStats();
+        if (!disposed) await publishOverlayStats(stats);
+      } catch {
+        if (!disposed) await publishOverlayStats(null).catch(() => undefined);
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      void publishOverlayStats(null).catch(() => undefined);
+    };
+  }, [isDesktop, playback]);
 
   // Auto-play the next queued episode shortly after the current one ends.
   useEffect(() => {

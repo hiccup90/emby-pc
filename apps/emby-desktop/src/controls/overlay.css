@@ -286,6 +286,12 @@ input:focus:not(:focus-visible) {
   background: rgba(255, 255, 255, 0.4);
 }
 
+/* Read-only rows in the playback-info panel. */
+.ov-menu__option--static {
+  cursor: default;
+  pointer-events: none;
+}
+
 .ov-controls {
   position: absolute;
   inset: var(--ov-seek-h) 0 0;

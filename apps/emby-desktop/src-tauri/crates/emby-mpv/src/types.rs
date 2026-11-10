@@ -14,6 +14,27 @@ pub const STATUS_ERROR: &str = "error";
 pub const TRACK_AUDIO: &str = "audio";
 pub const TRACK_SUBTITLE: &str = "subtitle";
 
+/// Playback statistics read from mpv properties for the player's info panel.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct PlayerStats {
+    /// Active hardware decoder ("d3d11va"); None when decoding in software.
+    pub hwdec: Option<String>,
+    /// Active video output ("gpu-next", "gpu").
+    pub vo: Option<String>,
+    pub pixel_format: Option<String>,
+    pub video_codec: Option<String>,
+    /// Display refresh rate reported by the OS.
+    pub display_fps: Option<f64>,
+    /// Measured video frame rate.
+    pub video_fps: Option<f64>,
+    /// Dropped frames (renderer + decoder).
+    pub dropped_frames: Option<i64>,
+    /// Video bitrate in bits/s.
+    pub bitrate: Option<f64>,
+}
+
 /// Snapshot of the player state, pushed over a Tauri `Channel<PlayerSnapshot>`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -217,6 +238,8 @@ pub enum PlayerCommand {
     Stop,
     /// Ask the worker to publish a snapshot to `reply`.
     Snapshot(std::sync::mpsc::Sender<PlayerSnapshot>),
+    /// Ask the worker for the current mpv statistics.
+    Stats(std::sync::mpsc::Sender<PlayerStats>),
     /// Quit mpv gracefully, then terminate the handle.
     Shutdown,
 }
@@ -334,6 +357,7 @@ mod tests {
         let rename = "#[cfg_attr(feature = \"serde\", serde(rename_all = \"camelCase\"))]";
         let derive = "#[cfg_attr(feature = \"serde\", derive(serde::Serialize, serde::Deserialize))]";
         for struct_name in [
+            "pub struct PlayerStats",
             "pub struct PlayerSnapshot",
             "pub struct PlayerTrack",
             "pub struct VideoSync",
