@@ -76,7 +76,7 @@ vo=gpu-next
 profile=fast
 ```
 
-默认值与 Emby Theater 对齐：`vo=gpu`（经典渲染器，比 gpu-next 省 GPU）、`hwdec=auto-safe`、`audio-display=no`。内置参数见 `crates/emby-mpv/src/options.rs` 的 `base_options`；同名参数以 mpv.conf 为准。写错的语法会在启动日志里列出行号，不会影响播放。
+默认值是 `hwdec=auto-safe`、`profile=fast`（低开销缩放/关闭抖动，核显上明显省 GPU）、`audio-display=no`；渲染器用 mpv 自己的默认值。内置参数见 `crates/emby-mpv/src/options.rs` 的 `base_options`；同名参数以 mpv.conf 为准，比如想要更好的缩放效果可以写 `scale=lanczos`、`dither=fruit`。写错的语法会在启动日志里列出行号，不会影响播放。
 
 ## 本地开发命令
 

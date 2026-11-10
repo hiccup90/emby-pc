@@ -6,6 +6,11 @@
 //! left alone; mpv.conf can force any VO. `gpu-api`, `gpu-context` and
 //! `gpu-sw` stay unset so the embedded D3D11 path is chosen by libmpv itself.
 //!
+//! `profile=fast` is the one deliberate quality trade: on the same 780M it took
+//! GPU use from ~25 % to Emby Theater's level. It switches the scalers to
+//! bilinear and turns off dithering, linear-light downscaling and deband.
+//! Individual options can be overridden in mpv.conf (later options win).
+//!
 //! `http-header-fields` is the only sensitive option (auth headers). libmpv
 //! only accepts it before initialization; setting it at runtime writes the
 //! value into mpv's log, so we never do that.
@@ -60,6 +65,9 @@ pub fn base_options(host_hwnd: u64, log_path: Option<&Path>) -> Vec<MpvOption> {
         MpvOption::new("wid", host_hwnd.to_string()),
         // D3D11VA hardware decoding without -copy: frames stay on the GPU.
         MpvOption::new("hwdec", "auto-safe"),
+        // Cheapest scaling/dithering path: the default pipeline cost ~10 points
+        // of 3D engine time on an AMD 780M iGPU. Override in mpv.conf for quality.
+        MpvOption::new("profile", "fast"),
         // Cover art must not be decoded as a video stream (Emby Theater does the same).
         MpvOption::new("audio-display", "no"),
         MpvOption::new("keep-open", "yes"),
@@ -177,6 +185,7 @@ mod tests {
                 "load-scripts",
                 "wid",
                 "hwdec",
+                "profile",
                 "audio-display",
                 "keep-open",
                 "idle",
@@ -184,6 +193,7 @@ mod tests {
         );
         assert_eq!(find_option(&options, "wid"), Some("4660")); // decimal HWND
         assert_eq!(find_option(&options, "hwdec"), Some("auto-safe"));
+        assert_eq!(find_option(&options, "profile"), Some("fast"));
         assert_eq!(find_option(&options, "audio-display"), Some("no"));
         assert_eq!(find_option(&options, "keep-open"), Some("yes"));
         assert_eq!(find_option(&options, "idle"), Some("yes"));
