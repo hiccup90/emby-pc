@@ -6,7 +6,7 @@ import { invokePlayerUiMode } from "../controls/bridge";
 import type { OverlayAction } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
 import { reportEmbyPlayback } from "../emby/playback";
-import type { PlayerStatus } from "./contract";
+import type { PlaybackMeta, PlayerStatus } from "./contract";
 import { invokePlayerStop } from "./tauri";
 import { usePlayer } from "./usePlayer";
 import { useVideoSync } from "./useVideoSync";
@@ -25,6 +25,8 @@ function statusLabel(status: PlayerStatus): string {
 
 interface PlayerPageProps {
   playback?: EmbyPlaybackTarget;
+  /** Title row for the controls overlay. */
+  meta?: PlaybackMeta;
   onBack: () => void;
 }
 

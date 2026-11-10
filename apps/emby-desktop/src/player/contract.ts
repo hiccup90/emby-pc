@@ -33,6 +33,14 @@ export interface VideoSync {
   dpr: number;
 }
 
+/** What the player shows about the current item (title row of the controls). */
+export interface PlaybackMeta {
+  /** Movie title, or the episode name. */
+  title: string;
+  /** Secondary line: the year for movies, "剧名 · S1 · E3" for episodes. */
+  subtitle: string | null;
+}
+
 export interface OpenRequest {
   url: string;
   startSeconds?: number | null;

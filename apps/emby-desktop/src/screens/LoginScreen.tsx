@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import type { EmbyCredentials } from "../emby/client";
+import { BrandMark } from "./shared";
 
 interface LoginScreenProps {
   desktop: boolean;
@@ -68,16 +69,15 @@ export default function LoginScreen({
 
   return (
     <main className="login-page">
-      <section className="login-panel" aria-labelledby="login-title">
+      <section className="login-card" aria-labelledby="login-title">
+        <BrandMark large />
         <h1 id="login-title" className="login-title">
           登录 Emby
         </h1>
-        <p className="login-subtitle">
-          连接你的 Emby 服务器，浏览媒体库并使用本机 mpv 播放。
-        </p>
+        <p className="login-subtitle">连接你的 Emby 服务器，浏览媒体库并使用本机 mpv 播放。</p>
 
         {!desktop && (
-          <div className="preview-callout" role="status">
+          <div className="notice" role="status">
             预览模式：浏览器中不会连接 Emby。请在 Tauri 桌面客户端中登录。
           </div>
         )}
@@ -155,17 +155,18 @@ export default function LoginScreen({
           )}
 
           <button
-            className="button button--primary login-submit"
+            className="button button--primary button--large button--block"
             type="submit"
             disabled={!desktop || pending}
           >
-            {pending ? "正在连接…" : "连接 Emby"}
+            {pending && <span className="spinner spinner--small spinner--dark" aria-hidden="true" />}
+            {pending ? "正在连接…" : "登录"}
           </button>
         </form>
 
         {!desktop && (
           <button
-            className="button button--secondary login-secondary"
+            className="button button--ghost button--block"
             type="button"
             onClick={onPreview}
           >

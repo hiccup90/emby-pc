@@ -3,8 +3,25 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import { hasTauriRuntime } from "../emby/client";
+import { BrandMark, Icon } from "./shared";
 
 type WindowAction = "minimize" | "toggle-maximize" | "close";
+
+/** Signed-in user shown in the title bar. `userName` is null in browser preview. */
+export interface TitleBarAccount {
+  userName: string | null;
+  serverName: string | null;
+  serverUrl: string | null;
+  logoutPending: boolean;
+  onLogout: () => void;
+}
+
+interface TitleBarProps {
+  /** Shows a back button (detail page). */
+  onBack?: () => void;
+  backLabel?: string;
+  account?: TitleBarAccount | null;
+}
 
 function currentWindow(): TauriWindow | null {
   if (!hasTauriRuntime()) return null;
@@ -75,13 +92,89 @@ function CloseIcon() {
   );
 }
 
+function AccountMenu({ account }: { account: TitleBarAccount }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    // Capture phase, so the detail page's Escape (= back) does not also fire.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [open]);
+
+  const name = account.userName?.trim() || null;
+  const initial = (name ? Array.from(name)[0] : "?").toUpperCase();
+  const server = account.serverName || account.serverUrl || "未连接服务器";
+
+  return (
+    <div className="account" ref={rootRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="account__button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={name ? `账户：${name}` : "预览模式"}
+        title={name ?? "预览模式"}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="avatar" aria-hidden="true">
+          {initial}
+        </span>
+      </button>
+      {open && (
+        <div className="account__menu" role="menu" aria-label="账户">
+          <div className="account__identity">
+            <span className="avatar avatar--large" aria-hidden="true">
+              {initial}
+            </span>
+            <span className="account__text">
+              <strong>{name ?? "预览模式"}</strong>
+              <span title={account.serverUrl ?? undefined}>{server}</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            className="account__item"
+            autoFocus
+            disabled={account.logoutPending}
+            onClick={() => {
+              setOpen(false);
+              account.onLogout();
+            }}
+          >
+            <Icon name="logout" size={16} />
+            {account.logoutPending ? "退出中…" : name ? "退出登录" : "返回登录"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
- * 36px custom title bar for every non-player screen. The whole bar (except the
- * window buttons) is a Tauri drag region; the buttons map to the matching
- * `@tauri-apps/api/window` commands. Browser previews keep the chrome text but
- * hide the buttons, so no window API is touched without a Tauri runtime.
+ * Custom title bar for every non-player screen: back button, wordmark, account
+ * menu and the window buttons. Everything that is not a control is a Tauri drag
+ * region. Browser previews hide the window buttons, so no window API is touched
+ * without a Tauri runtime.
  */
-export default function TitleBar() {
+export default function TitleBar({ onBack, backLabel = "返回", account = null }: TitleBarProps) {
   const [desktop] = useState(hasTauriRuntime);
   const [maximized, setMaximized] = useState(false);
   const mountedRef = useRef(true);
@@ -157,7 +250,7 @@ export default function TitleBar() {
   const handleMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
     if (event.detail !== 2 || event.button !== 0) return;
     const target = event.target;
-    if (target instanceof HTMLElement && target.closest("button")) return;
+    if (target instanceof HTMLElement && target.closest("button, [role=menu]")) return;
     event.stopPropagation();
     if (!desktop) return;
     void run("toggle-maximize");
@@ -170,14 +263,22 @@ export default function TitleBar() {
       data-tauri-drag-region="true"
       onMouseDown={handleMouseDown}
     >
-      <span className="titlebar__brand" data-tauri-drag-region="true">
-        Emby PC
-      </span>
-      <div
-        className="titlebar__drag"
-        data-tauri-drag-region="true"
-        aria-hidden="true"
-      />
+      <div className="titlebar__lead" data-tauri-drag-region="true">
+        {onBack && (
+          <button
+            type="button"
+            className="titlebar__back"
+            onClick={onBack}
+            aria-label={backLabel}
+            title={backLabel}
+          >
+            <Icon name="arrow-left" size={18} />
+          </button>
+        )}
+        <BrandMark drag />
+      </div>
+      <div className="titlebar__drag" data-tauri-drag-region="true" aria-hidden="true" />
+      {account && <AccountMenu account={account} />}
       {desktop && (
         <div className="titlebar__controls" role="group" aria-label="窗口控制">
           <button

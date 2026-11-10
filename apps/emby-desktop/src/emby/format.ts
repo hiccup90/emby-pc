@@ -1,3 +1,4 @@
+import type { PlaybackMeta } from "../player/contract";
 import type { EmbyItem } from "./contract";
 
 const TICKS_PER_SECOND = 10_000_000;
@@ -69,44 +70,28 @@ export function itemYearLabel(item: Pick<EmbyItem, "productionYear">): string | 
     : null;
 }
 
+/** "S1 · E3" (Plex style, no zero padding). */
 export function itemEpisodeLabel(
   item: Pick<EmbyItem, "parentIndexNumber" | "indexNumber">,
 ): string | null {
   if (item.parentIndexNumber === null || item.indexNumber === null) return null;
-  return `S${String(item.parentIndexNumber).padStart(2, "0")} · E${String(item.indexNumber).padStart(2, "0")}`;
+  return `S${item.parentIndexNumber} · E${item.indexNumber}`;
 }
 
-export function itemEpisodeCode(
-  item: Pick<EmbyItem, "parentIndexNumber" | "indexNumber">,
-): string | null {
-  if (item.parentIndexNumber === null || item.indexNumber === null) return null;
-  return `S${String(item.parentIndexNumber).padStart(2, "0")}E${String(item.indexNumber).padStart(2, "0")}`;
-}
-
-/** "剧名 · SxxExx · 集名" for the player title. */
-export function episodePlaybackTitle(
+/** Player title row for an episode: name, then "剧名 · S1 · E3". */
+export function episodePlaybackMeta(
   seriesName: string | null | undefined,
   item: Pick<EmbyItem, "name" | "parentIndexNumber" | "indexNumber">,
-): string {
-  const code = itemEpisodeCode(item);
-  return [seriesName?.trim(), code, item.name.trim()]
+): PlaybackMeta {
+  const label = itemEpisodeLabel(item);
+  const subtitle = [seriesName?.trim(), label]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
+  return { title: item.name.trim() || label || "", subtitle: subtitle || null };
 }
 
-export function itemPlaybackTitle(item: EmbyItem): string {
+export function itemPlaybackMeta(item: EmbyItem): PlaybackMeta {
   return item.type === "Episode"
-    ? episodePlaybackTitle(item.seriesName, item)
-    : item.name;
-}
-
-export function compactUrl(rawUrl: string | null | undefined): string {
-  if (!rawUrl) return "";
-  try {
-    const url = new URL(rawUrl);
-    const path = url.pathname.length > 44 ? `${url.pathname.slice(0, 41)}…` : url.pathname;
-    return `${url.origin}${path}`;
-  } catch {
-    return rawUrl.split("?")[0] ?? rawUrl;
-  }
+    ? episodePlaybackMeta(item.seriesName, item)
+    : { title: item.name, subtitle: itemYearLabel(item) };
 }

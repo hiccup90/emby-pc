@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { EmbyPlaybackTarget } from "./emby/contract";
 import { hasTauriRuntime } from "./emby/client";
 import type { EmbyLibraryItem } from "./emby/useEmby";
@@ -6,8 +6,12 @@ import { useEmbyLibrary, useEmbySession } from "./emby/useEmby";
 import DetailScreen from "./screens/DetailScreen";
 import LibraryScreen from "./screens/LibraryScreen";
 import LoginScreen from "./screens/LoginScreen";
+import Sidebar from "./screens/Sidebar";
 import TitleBar from "./screens/TitleBar";
+import type { TitleBarAccount } from "./screens/TitleBar";
+import { BrandMark, PageBackdrop } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
+import type { PlaybackMeta } from "./player/contract";
 import "./styles.css";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
@@ -29,16 +33,16 @@ type Route =
   | {
       screen: "player";
       playback: EmbyPlaybackTarget;
-      title: string;
+      meta: PlaybackMeta;
       returnTo: DetailLocation;
     };
 
 function BootScreen() {
   return (
     <main className="boot-screen" role="status" aria-live="polite">
-      <span className="boot-screen__brand">Emby PC</span>
+      <BrandMark large />
+      <span className="spinner" aria-hidden="true" />
       <span className="boot-screen__status">正在读取 Emby 会话…</span>
-      <span className="boot-screen__bar" aria-hidden="true" />
     </main>
   );
 }
@@ -53,6 +57,9 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ screen: "login" });
   const previousScreenRef = useRef<Route["screen"] | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  /** Library scroll offset to restore when coming back from a detail page. */
+  const libraryScrollRef = useRef(0);
+  const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
 
   useEffect(() => {
@@ -72,22 +79,38 @@ export default function App() {
     }
   }, [refreshResume, route.screen]);
 
-  useEffect(() => {
-    if (route.screen === "detail" || route.screen === "player") {
-      // The non-player screens scroll inside `.app-content` (the 36px title bar
-      // is fixed above it), so reset that box instead of the window.
-      contentRef.current?.scrollTo({ top: 0 });
-      window.scrollTo(0, 0);
+  // Pages scroll inside `.app-content` (title bar and sidebar stay put): detail
+  // pages start at the top, the library returns to where the user left it.
+  useLayoutEffect(() => {
+    const box = contentRef.current;
+    if (!box) return;
+    if (route.screen === "library") {
+      box.scrollTop = libraryScrollRef.current;
+    } else if (route.screen === "detail") {
+      box.scrollTop = 0;
     }
   }, [route]);
 
+  const goToLibrary = useCallback(() => setRoute({ screen: "library" }), []);
+
+  const chooseView = useCallback(
+    (viewId: string) => {
+      libraryScrollRef.current = 0;
+      library.selectView(viewId);
+      setRoute({ screen: "library" });
+      contentRef.current?.scrollTo({ top: 0 });
+    },
+    [library],
+  );
+
   const openItem = useCallback((item: EmbyLibraryItem) => {
+    libraryScrollRef.current = contentRef.current?.scrollTop ?? 0;
     setRoute({ screen: "detail", itemId: item.id, seed: item });
   }, []);
 
   const openPlayer = useCallback(
-    (playback: EmbyPlaybackTarget, title: string, returnTo: DetailLocation) => {
-      setRoute({ screen: "player", playback, title, returnTo });
+    (playback: EmbyPlaybackTarget, meta: PlaybackMeta, returnTo: DetailLocation) => {
+      setRoute({ screen: "player", playback, meta, returnTo });
     },
     [],
   );
@@ -95,84 +118,128 @@ export default function App() {
   const logout = useCallback(() => {
     void (async () => {
       await sessionController.signOut();
+      libraryScrollRef.current = 0;
       setRoute({ screen: "login" });
     })();
   }, [sessionController]);
 
-  if (desktop && (sessionController.checking || (sessionController.session && route.screen === "login"))) {
+  const booting =
+    desktop &&
+    (sessionController.checking ||
+      (sessionController.session && route.screen === "login"));
+
+  if (booting) {
     return (
       <div className="app-shell app-shell--boot">
         <TitleBar />
-        <div className="app-content" ref={contentRef}>
-          <BootScreen />
+        <div className="app-body">
+          <div className="app-content">
+            <BootScreen />
+          </div>
         </div>
       </div>
     );
   }
 
-  const player = route.screen === "player";
+  if (route.screen === "player") {
+    return (
+      <div className="app-shell app-shell--player">
+        <PlayerPage
+          playback={route.playback}
+          meta={route.meta}
+          onBack={() =>
+            setRoute({
+              screen: "detail",
+              itemId: route.returnTo.itemId,
+              seed: route.returnTo.seed,
+            })
+          }
+        />
+      </div>
+    );
+  }
+
+  const session = sessionController.session;
+  const browsing = route.screen === "library" || route.screen === "detail";
+  const account: TitleBarAccount | null = browsing
+    ? {
+        userName: session?.userName ?? null,
+        serverName: session?.serverName ?? null,
+        serverUrl: session?.serverUrl ?? null,
+        logoutPending: sessionController.logoutPending,
+        onLogout: logout,
+      }
+    : null;
+
+  const previewMode = !session || !desktop;
+  const sidebarLoading = !previewMode && library.views.length === 0 && library.status === "loading";
+  const sidebarStatus =
+    library.views.length > 0
+      ? null
+      : previewMode
+        ? "预览模式：未连接 Emby"
+        : library.status === "error"
+          ? "媒体库读取失败"
+          : library.status === "ready"
+            ? "没有可用的媒体库"
+            : null;
 
   return (
     <div className={`app-shell app-shell--${route.screen}`}>
-      {!player && <TitleBar />}
-      <div
-        className={`app-content${player ? " app-content--player" : ""}`}
-        ref={contentRef}
-      >
-        {route.screen === "login" && (
-          <LoginScreen
-            desktop={desktop}
-            pending={sessionController.loginPending}
-            loginError={sessionController.loginError}
-            startupError={sessionController.startupError}
-            onLogin={sessionController.signIn}
-            onPreview={() => setRoute({ screen: "library" })}
-            onClearError={sessionController.clearLoginError}
+      <TitleBar
+        account={account}
+        onBack={route.screen === "detail" ? goToLibrary : undefined}
+        backLabel="返回媒体库"
+      />
+      <div className="app-body">
+        {browsing && (
+          <Sidebar
+            serverName={session?.serverName || null}
+            views={library.views}
+            activeViewId={library.view?.id ?? null}
+            loading={sidebarLoading}
+            status={sidebarStatus}
+            onSelect={chooseView}
           />
         )}
+        <div className="app-main">
+        {route.screen === "detail" && backdrop && <PageBackdrop key={backdrop} src={backdrop} />}
+        <div className="app-content" ref={contentRef}>
+          {route.screen === "login" && (
+            <LoginScreen
+              desktop={desktop}
+              pending={sessionController.loginPending}
+              loginError={sessionController.loginError}
+              startupError={sessionController.startupError}
+              onLogin={sessionController.signIn}
+              onPreview={goToLibrary}
+              onClearError={sessionController.clearLoginError}
+            />
+          )}
 
-        {route.screen === "library" && (
-          <LibraryScreen
-            session={sessionController.session}
-            desktop={desktop}
-            library={library}
-            logoutPending={sessionController.logoutPending}
-            onOpen={openItem}
-            onLogout={logout}
-          />
-        )}
+          {route.screen === "library" && (
+            <LibraryScreen session={session} desktop={desktop} library={library} onOpen={openItem} />
+          )}
 
-        {route.screen === "detail" && (
-          <DetailScreen
-            key={route.itemId}
-            itemId={route.itemId}
-            seed={route.seed}
-            session={sessionController.session}
-            desktop={desktop}
-            logoutPending={sessionController.logoutPending}
-            onBack={() => setRoute({ screen: "library" })}
-            onPlay={(playback, title) =>
-              openPlayer(playback, title, {
-                itemId: route.itemId,
-                seed: route.seed,
-              })
-            }
-            onLogout={logout}
-          />
-        )}
-
-        {route.screen === "player" && (
-          <PlayerPage
-            playback={route.playback}
-            onBack={() =>
-              setRoute({
-                screen: "detail",
-                itemId: route.returnTo.itemId,
-                seed: route.returnTo.seed,
-              })
-            }
-          />
-        )}
+          {route.screen === "detail" && (
+            <DetailScreen
+              key={route.itemId}
+              itemId={route.itemId}
+              seed={route.seed}
+              session={session}
+              desktop={desktop}
+              onBack={goToLibrary}
+              onPlay={(playback, meta) =>
+                openPlayer(playback, meta, {
+                  itemId: route.itemId,
+                  seed: route.seed,
+                })
+              }
+              onBackdrop={setBackdrop}
+            />
+          )}
+        </div>
+        </div>
       </div>
     </div>
   );
