@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invokePlayerUiMode } from "../controls/bridge";
+import {
+  invokePlayerUiMode,
+  onOverlayMetaRequest,
+  publishOverlayMeta,
+} from "../controls/bridge";
 import type { OverlayAction } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
 import { reportEmbyPlayback } from "../emby/playback";
@@ -35,7 +39,7 @@ interface PlayerPageProps {
  * the webview, so every control lives in the transparent `controls.html`
  * overlay window and talks back through `overlay-action`.
  */
-export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
+export default function PlayerPage({ playback, meta, onBack }: PlayerPageProps) {
   const {
     isDesktop,
     snapshot,
@@ -293,6 +297,50 @@ export default function PlayerPage({ playback, onBack }: PlayerPageProps) {
   useEffect(() => {
     overlayActionRef.current = handleOverlayAction;
   }, [handleOverlayAction]);
+
+  // Title row of the controls window. It is a separate webview, so the meta is
+  // pushed on change, resent when that window (re)loads and asks, and cleared
+  // when the player page goes away.
+  const metaTitle = meta?.title ?? null;
+  const metaSubtitle = meta?.subtitle ?? null;
+  const overlayMetaRef = useRef<PlaybackMeta | null>(null);
+  useEffect(() => {
+    if (!isDesktop) return;
+    const next = metaTitle ? { title: metaTitle, subtitle: metaSubtitle } : null;
+    overlayMetaRef.current = next;
+    void publishOverlayMeta(next).catch((reason: unknown) => {
+      console.warn("[player] could not send the title to the controls", reason);
+    });
+  }, [isDesktop, metaTitle, metaSubtitle]);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    let disposed = false;
+    let stop: (() => void) | null = null;
+    void onOverlayMetaRequest(() => {
+      void publishOverlayMeta(overlayMetaRef.current).catch(() => {
+        // Best effort: the next change sends it again.
+      });
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        stop = unlisten;
+      })
+      .catch((reason: unknown) => {
+        console.warn("[player] could not listen for overlay-meta-request", reason);
+      });
+    return () => {
+      disposed = true;
+      stop?.();
+      overlayMetaRef.current = null;
+      void publishOverlayMeta(null).catch(() => {
+        // The controls window may already be hidden or gone.
+      });
+    };
+  }, [isDesktop]);
 
   // The overlay window is a separate webview: player intents arrive as events
   // so pause/seek/stop reporting stays in this window.

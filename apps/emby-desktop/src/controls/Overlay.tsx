@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import type { PlayerSnapshot, PlayerTrack } from "../player/contract";
+import type { PlaybackMeta, PlayerSnapshot, PlayerTrack } from "../player/contract";
 import type { OverlayAction } from "./contract";
 import {
+  createPreviewMeta,
   createPreviewSnapshot,
   dragOverlayWindow,
   fetchPlayerSnapshot,
   hasTauriRuntime,
+  onOverlayMeta,
   onOverlayWake,
+  requestOverlayMeta,
   sendOverlayAction,
   setOverlayExpanded,
   setOverlayInteractive,
@@ -23,6 +27,9 @@ const SNAPSHOT_POLL_MS = 250;
 const SEEK_STEP_SECONDS = 10;
 const SEEK_HOLD_MS = 900;
 const VOLUME_HOLD_MS = 700;
+/** Transport buttons, as in Plex: back 10 s, forward 30 s. */
+const SKIP_BACK_SECONDS = 10;
+const SKIP_FORWARD_SECONDS = 30;
 
 function formatTime(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds));
@@ -77,11 +84,57 @@ function swallowClick(event: { preventDefault: () => void }) {
   event.preventDefault();
 }
 
+/** Readable names for the ISO 639 codes mpv reports when a track has no title. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  chi: "中文",
+  zho: "中文",
+  zh: "中文",
+  chs: "简体中文",
+  cht: "繁體中文",
+  eng: "English",
+  en: "English",
+  jpn: "日本語",
+  ja: "日本語",
+  kor: "한국어",
+  ko: "한국어",
+  fre: "Français",
+  fra: "Français",
+  fr: "Français",
+  ger: "Deutsch",
+  deu: "Deutsch",
+  de: "Deutsch",
+  spa: "Español",
+  es: "Español",
+  ita: "Italiano",
+  it: "Italiano",
+  rus: "Русский",
+  ru: "Русский",
+  por: "Português",
+  pt: "Português",
+  tha: "ไทย",
+  th: "ไทย",
+};
+
+/** Row label for a track: its own title, else the language, else a number. */
+function trackLabel(
+  track: Pick<PlayerTrack, "id" | "title" | "lang">,
+  fallback: string,
+): { title: string; detail: string | null } {
+  const title = (track.title ?? "").trim();
+  const code = track.lang?.trim().toLowerCase() || null;
+  const language = code ? LANGUAGE_NAMES[code] ?? null : null;
+  if (title) return { title, detail: code ? code.toUpperCase() : null };
+  if (language) return { title: language, detail: null };
+  if (code) return { title: code.toUpperCase(), detail: null };
+  return { title: `${fallback} ${track.id}`, detail: null };
+}
+
 interface TrackOption {
   key: string;
   id: number | "no";
   title: string;
-  lang: string | null;
+  /** Muted language code next to the title. */
+  detail: string | null;
   selected: boolean;
 }
 
@@ -93,28 +146,27 @@ function trackOptions(
     return (snapshot?.audioTracks ?? []).map((track) => ({
       key: `audio-${track.id}`,
       id: track.id,
-      title: track.title,
-      lang: track.lang,
+      ...trackLabel(track, "音轨"),
       selected: track.selected,
     }));
   }
   if (kind === "subtitle") {
     const tracks = snapshot?.subtitleTracks ?? [];
+    // "Off" first, as in Plex's subtitle list.
     return [
-      ...tracks.map((track) => ({
-        key: `subtitle-${track.id}`,
-        id: track.id as number | "no",
-        title: track.title,
-        lang: track.lang,
-        selected: track.selected,
-      })),
       {
         key: "subtitle-off",
         id: "no",
         title: "关闭字幕",
-        lang: null,
+        detail: null,
         selected: !tracks.some((track) => track.selected),
       },
+      ...tracks.map((track) => ({
+        key: `subtitle-${track.id}`,
+        id: track.id as number | "no",
+        ...trackLabel(track, "字幕"),
+        selected: track.selected,
+      })),
     ];
   }
   return [];
@@ -183,14 +235,11 @@ function Slider({
   return (
     <span
       className={`ov-slider${className ? ` ${className}` : ""}`}
+      style={{ "--ov-p": percent / 100 } as CSSProperties}
       data-no-drag="true"
     >
       <span className="ov-slider__rail" aria-hidden="true" />
-      <span
-        className="ov-slider__fill"
-        style={{ width: `${percent}%` }}
-        aria-hidden="true"
-      />
+      <span className="ov-slider__fill" aria-hidden="true" />
       <input
         className="ov-slider__input"
         type="range"
@@ -251,6 +300,9 @@ export default function Overlay() {
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [meta, setMeta] = useState<PlaybackMeta | null>(() =>
+    hasTauriRuntime() ? null : createPreviewMeta(),
+  );
 
   const snapshotRef = useRef<PlayerSnapshot | null>(snapshot);
   const visibleRef = useRef(true);
@@ -428,6 +480,36 @@ export default function Overlay() {
     };
   }, [desktop, wake]);
 
+  // ---- title row ------------------------------------------------------------
+  // The player page pushes PlaybackMeta; a late or reloaded controls window
+  // asks for it once its listener is in place.
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    let lastStamp = 0;
+    let unlisten: (() => void) | null = null;
+    void onOverlayMeta((message) => {
+      if (message.stamp <= lastStamp) return;
+      lastStamp = message.stamp;
+      setMeta(message.meta);
+    })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+        return requestOverlayMeta();
+      })
+      .catch((reason) => {
+        console.warn("[overlay] could not sync the title row", reason);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [desktop]);
+
   // ---- auto hide -----------------------------------------------------------
   const status = snapshot?.status ?? "idle";
   const playing = status === "playing" || status === "loading";
@@ -448,10 +530,12 @@ export default function Overlay() {
   const hasMedia =
     snapshot !== null && status !== "idle" && status !== "error";
   const canSeek = snapshot !== null && duration > 0 && status !== "idle" && status !== "error";
-  const audioTitle =
-    snapshot?.audioTracks.find((track) => track.selected)?.title ?? "默认";
+  const selectedAudio = snapshot?.audioTracks.find((track) => track.selected);
+  const audioTitle = selectedAudio ? trackLabel(selectedAudio, "音轨").title : "默认";
   const selectedSubtitle = snapshot?.subtitleTracks.find((track) => track.selected);
-  const subtitleTitle = selectedSubtitle?.title ?? "关闭";
+  const subtitleTitle = selectedSubtitle
+    ? trackLabel(selectedSubtitle, "字幕").title
+    : "关闭";
   const errorMessage =
     status === "error" ? snapshot?.error ?? "播放错误" : null;
   const options = useMemo(() => trackOptions(menu, snapshot), [menu, snapshot]);
@@ -519,6 +603,24 @@ export default function Overlay() {
   const selectTrack = (option: TrackOption) => {
     if (menu === null) return;
     send({ type: "set-track", kind: menu, id: option.id });
+    setMenu(null);
+  };
+
+  /** Transport skip. Steps from a pending seek so quick presses accumulate. */
+  const skip = (delta: number) => {
+    if (!snapshot || snapshot.durationSeconds <= 0) return;
+    const from = seekDraftRef.current ?? snapshot.positionSeconds;
+    const target = Math.min(Math.max(0, from + delta), snapshot.durationSeconds);
+    send({ type: "seek", seconds: target });
+    holdSeek(target);
+  };
+
+  /** A press on the empty strip above the bar closes the popover (Plex-like). */
+  const handlePanelPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest(".ov-menu")) return;
+    event.preventDefault();
     setMenu(null);
   };
 
@@ -603,6 +705,15 @@ export default function Overlay() {
 
   const menuLabel = menu === "audio" ? "音轨" : "字幕";
   const displayError = errorMessage ?? sendError;
+  const timeText =
+    duration > 0 ? `${formatTime(boundedPosition)} / ${formatTime(duration)}` : null;
+  const statusText =
+    status === "loading" ? "正在载入…" : buffering && status === "playing" ? "缓冲中" : null;
+  const titleText = meta?.title || null;
+  const secondLine = displayError ?? meta?.subtitle ?? null;
+  const thirdLine = [statusText, timeText].filter(Boolean).join(" · ") || null;
+  const volumeIcon =
+    muted || volume === 0 ? "volume-off" : volume < 50 ? "volume-low" : "volume";
 
   return (
     <div
@@ -615,207 +726,237 @@ export default function Overlay() {
         className="overlay__panel"
         data-open={expanded ? "true" : "false"}
         aria-hidden={!expanded}
-        onPointerDown={handleDragStart}
+        onPointerDown={handlePanelPointerDown}
       >
-          <div className="overlay__menus">
-            {menu !== null && (
-              <section
-                className="ov-menu"
-                aria-label={`${menuLabel}选择`}
+        {menu !== null && (
+          <section className="ov-menu" aria-label={`${menuLabel}选择`} data-no-drag="true">
+            <div className="ov-menu__head">
+              <span className="ov-menu__heading">{menuLabel}</span>
+              <button
+                className="ov-menu__close"
+                type="button"
                 data-no-drag="true"
+                onPointerDown={actionPointerDown(() => setMenu(null))}
+                onKeyDown={actionKeyDown(() => setMenu(null))}
+                onClick={swallowClick}
+                aria-label={`关闭${menuLabel}菜单`}
               >
-                <div className="ov-menu__head">
-                  <span>{menuLabel}</span>
+                <OverlayIcon name="close" size={16} />
+              </button>
+            </div>
+            <div className="ov-menu__list" role="menu" aria-label={`选择${menuLabel}`}>
+              {options.length === 0 ? (
+                <span className="ov-menu__empty">暂无可用轨道</span>
+              ) : (
+                options.map((option) => (
                   <button
-                    className="ov-menu__close"
+                    key={option.key}
+                    className={`ov-menu__option${option.selected ? " is-current" : ""}`}
                     type="button"
+                    role="menuitemradio"
+                    aria-checked={option.selected}
+                    aria-label={
+                      option.detail ? `${option.title}（${option.detail}）` : option.title
+                    }
                     data-no-drag="true"
-                    onPointerDown={actionPointerDown(() => setMenu(null))}
-                    onKeyDown={actionKeyDown(() => setMenu(null))}
+                    onPointerDown={actionPointerDown(() => selectTrack(option))}
+                    onKeyDown={actionKeyDown(() => selectTrack(option))}
                     onClick={swallowClick}
-                    aria-label={`关闭${menuLabel}菜单`}
                   >
-                    关闭
+                    <span className="ov-menu__title">{option.title}</span>
+                    {option.detail && (
+                      <span className="ov-menu__detail">{option.detail}</span>
+                    )}
+                    <span className="ov-menu__check" aria-hidden="true">
+                      {option.selected && <OverlayIcon name="check" size={16} />}
+                    </span>
                   </button>
-                </div>
-                <div
-                  className="ov-menu__list"
-                  role="menu"
-                  aria-label={`选择${menuLabel}`}
-                >
-                  {options.length === 0 ? (
-                    <span className="ov-menu__empty">暂无可用轨道</span>
-                  ) : (
-                    options.map((option) => (
-                      <button
-                        key={option.key}
-                        className={`ov-menu__option${option.selected ? " is-current" : ""}`}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={option.selected}
-                        aria-label={
-                          option.lang ? `${option.title}（${option.lang}）` : option.title
-                        }
-                        data-no-drag="true"
-                        onPointerDown={actionPointerDown(() => selectTrack(option))}
-                        onKeyDown={actionKeyDown(() => selectTrack(option))}
-                        onClick={swallowClick}
-                      >
-                        <span className="ov-menu__title">
-                          {option.title}
-                          {option.lang && <small>{option.lang}</small>}
-                        </span>
-                        {option.selected && (
-                          <span className="ov-menu__check" aria-hidden="true">
-                            ✓
-                          </span>
-                        )}
-                      </button>
-                    ))
-                  )}
-                </div>
-              </section>
-            )}
-          </div>
+                ))
+              )}
+            </div>
+          </section>
+        )}
       </div>
 
       <div className="overlay__bar" onPointerDown={handleDragStart}>
-        <button
-          className="ov-btn ov-btn--play"
-          type="button"
-          data-no-drag="true"
-          onPointerDown={actionPointerDown(() => send({ type: "toggle-play" }))}
-          onKeyDown={actionKeyDown(() => send({ type: "toggle-play" }))}
-          onClick={swallowClick}
-          disabled={!hasMedia}
-          aria-label={playing ? "暂停" : "播放"}
-          aria-pressed={playing}
-        >
-          <OverlayIcon name={playing ? "pause" : "play"} size={18} />
-        </button>
+        <div className="ov-bar__band" aria-hidden="true" />
 
-        <span className="ov-time" aria-hidden="true">
-          {formatTime(boundedPosition)}
-        </span>
+        <div className="ov-seek">
+          <Slider
+            className="ov-slider--seek"
+            label="播放进度"
+            valueText={`${formatTime(boundedPosition)} / ${formatTime(duration)}`}
+            value={boundedPosition}
+            max={duration}
+            disabled={!canSeek}
+            onChange={(value) => updateSeekDraft(value)}
+            onCommit={commitSeek}
+            onGestureStart={wake}
+          />
+        </div>
 
-        <Slider
-          className="ov-slider--seek"
-          label="播放进度"
-          valueText={`${formatTime(boundedPosition)} / ${formatTime(duration)}`}
-          value={boundedPosition}
-          max={duration}
-          disabled={!canSeek}
-          onChange={(value) => updateSeekDraft(value)}
-          onCommit={commitSeek}
-          onGestureStart={wake}
-        />
+        <div className="ov-controls">
+          <div className="ov-group ov-group--left">
+            <button
+              className="ov-btn"
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => send({ type: "back" }))}
+              onKeyDown={actionKeyDown(() => send({ type: "back" }))}
+              onClick={swallowClick}
+              aria-label="返回详情"
+              title="返回详情"
+            >
+              <OverlayIcon name="back" size={22} />
+            </button>
+            <div
+              className="ov-meta"
+              title={[titleText, secondLine].filter(Boolean).join("\n") || undefined}
+            >
+              {titleText && <span className="ov-meta__title">{titleText}</span>}
+              {secondLine && (
+                <span
+                  className={`ov-meta__sub${displayError ? " is-error" : ""}`}
+                  role={displayError ? "alert" : undefined}
+                >
+                  {secondLine}
+                </span>
+              )}
+              {thirdLine && (
+                <span className="ov-meta__time">
+                  {statusText && <span className="ov-spinner" aria-hidden="true" />}
+                  {thirdLine}
+                </span>
+              )}
+            </div>
+          </div>
 
-        <span className="ov-time" aria-hidden="true">
-          {formatTime(duration)}
-        </span>
+          <div className="ov-group ov-group--center">
+            <button
+              className="ov-btn"
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => skip(-SKIP_BACK_SECONDS))}
+              onKeyDown={actionKeyDown(() => skip(-SKIP_BACK_SECONDS))}
+              onClick={swallowClick}
+              disabled={!canSeek}
+              aria-label={`后退 ${SKIP_BACK_SECONDS} 秒`}
+            >
+              <OverlayIcon name="replay-10" size={24} />
+            </button>
+            {errorMessage ? (
+              <button
+                key="retry"
+                className="ov-btn ov-btn--play"
+                type="button"
+                data-no-drag="true"
+                onPointerDown={actionPointerDown(() => send({ type: "retry" }))}
+                onKeyDown={actionKeyDown(() => send({ type: "retry" }))}
+                onClick={swallowClick}
+                aria-label="重试"
+                title="重试"
+              >
+                <OverlayIcon name="retry" size={20} />
+              </button>
+            ) : (
+              <button
+                key="play"
+                className="ov-btn ov-btn--play"
+                type="button"
+                data-no-drag="true"
+                onPointerDown={actionPointerDown(() => send({ type: "toggle-play" }))}
+                onKeyDown={actionKeyDown(() => send({ type: "toggle-play" }))}
+                onClick={swallowClick}
+                disabled={!hasMedia}
+                aria-label={playing ? "暂停" : "播放"}
+                aria-pressed={playing}
+              >
+                <OverlayIcon name={playing ? "pause" : "play"} size={22} />
+              </button>
+            )}
+            <button
+              className="ov-btn"
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => skip(SKIP_FORWARD_SECONDS))}
+              onKeyDown={actionKeyDown(() => skip(SKIP_FORWARD_SECONDS))}
+              onClick={swallowClick}
+              disabled={!canSeek}
+              aria-label={`前进 ${SKIP_FORWARD_SECONDS} 秒`}
+            >
+              <OverlayIcon name="forward-30" size={24} />
+            </button>
+          </div>
 
-        <span className="ov-spacer" aria-hidden="true" />
-
-        {displayError && (
-          <span className="ov-error" role="alert" title={displayError}>
-            {displayError}
-          </span>
-        )}
-        {errorMessage && (
-          <button
-            className="ov-btn"
-            type="button"
-            data-no-drag="true"
-            onPointerDown={actionPointerDown(() => send({ type: "retry" }))}
-            onKeyDown={actionKeyDown(() => send({ type: "retry" }))}
-            onClick={swallowClick}
-            aria-label="重试"
-          >
-            <OverlayIcon name="retry" size={16} />
-          </button>
-        )}
-
-        <button
-          className={`ov-btn${menu === "audio" ? " is-active" : ""}`}
-          type="button"
-          data-no-drag="true"
-          onPointerDown={actionPointerDown(() => toggleMenu("audio"))}
-          onKeyDown={actionKeyDown(() => toggleMenu("audio"))}
-          onClick={swallowClick}
-          disabled={!hasMedia || (snapshot?.audioTracks.length ?? 0) === 0}
-          aria-label={`音轨：${audioTitle}`}
-          aria-haspopup="menu"
-          aria-expanded={menu === "audio"}
-        >
-          <OverlayIcon name="audio" />
-        </button>
-
-        <button
-          className={`ov-btn${menu === "subtitle" ? " is-active" : ""}`}
-          type="button"
-          data-no-drag="true"
-          onPointerDown={actionPointerDown(() => toggleMenu("subtitle"))}
-          onKeyDown={actionKeyDown(() => toggleMenu("subtitle"))}
-          onClick={swallowClick}
-          disabled={!hasMedia || (snapshot?.subtitleTracks.length ?? 0) === 0}
-          aria-label={`字幕：${subtitleTitle}`}
-          aria-haspopup="menu"
-          aria-expanded={menu === "subtitle"}
-        >
-          <OverlayIcon name="captions" />
-        </button>
-
-        <button
-          className="ov-btn"
-          type="button"
-          data-no-drag="true"
-          onPointerDown={actionPointerDown(() => send({ type: "toggle-mute" }))}
-          onKeyDown={actionKeyDown(() => send({ type: "toggle-mute" }))}
-          onClick={swallowClick}
-          disabled={!snapshot}
-          aria-label={muted ? "取消静音" : "静音"}
-          aria-pressed={muted}
-        >
-          <OverlayIcon name={muted ? "volume-off" : "volume"} />
-        </button>
-
-        <Slider
-          className="ov-slider--volume"
-          label="音量"
-          valueText={`${volume}%`}
-          value={volume}
-          max={100}
-          disabled={!snapshot}
-          onChange={changeVolume}
-          onCommit={changeVolume}
-          onGestureStart={wake}
-        />
-
-        <button
-          className="ov-btn"
-          type="button"
-          data-no-drag="true"
-          onPointerDown={actionPointerDown(() => send({ type: "toggle-fullscreen" }))}
-          onKeyDown={actionKeyDown(() => send({ type: "toggle-fullscreen" }))}
-          onClick={swallowClick}
-          aria-label="切换全屏"
-          title="切换全屏"
-        >
-          <OverlayIcon name="fullscreen" />
-        </button>
-
-        <button
-          className="ov-btn"
-          type="button"
-          data-no-drag="true"
-          onPointerDown={actionPointerDown(() => send({ type: "back" }))}
-          onKeyDown={actionKeyDown(() => send({ type: "back" }))}
-          onClick={swallowClick}
-          aria-label="返回详情"
-          title="返回详情"
-        >
-          <OverlayIcon name="back" />
-        </button>
+          <div className="ov-group ov-group--right">
+            <button
+              className="ov-btn"
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => send({ type: "toggle-mute" }))}
+              onKeyDown={actionKeyDown(() => send({ type: "toggle-mute" }))}
+              onClick={swallowClick}
+              disabled={!snapshot}
+              aria-label={muted ? "取消静音" : "静音"}
+              aria-pressed={muted}
+            >
+              <OverlayIcon name={volumeIcon} />
+            </button>
+            <Slider
+              className="ov-slider--volume"
+              label="音量"
+              valueText={`${volume}%`}
+              value={volume}
+              max={100}
+              disabled={!snapshot}
+              onChange={changeVolume}
+              onCommit={changeVolume}
+              onGestureStart={wake}
+            />
+            <button
+              className={`ov-btn${menu === "audio" ? " is-active" : ""}`}
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => toggleMenu("audio"))}
+              onKeyDown={actionKeyDown(() => toggleMenu("audio"))}
+              onClick={swallowClick}
+              disabled={!hasMedia || (snapshot?.audioTracks.length ?? 0) === 0}
+              aria-label={`音轨：${audioTitle}`}
+              title="音轨"
+              aria-haspopup="menu"
+              aria-expanded={menu === "audio"}
+            >
+              <OverlayIcon name="audio" />
+            </button>
+            <button
+              className={`ov-btn${menu === "subtitle" ? " is-active" : ""}`}
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => toggleMenu("subtitle"))}
+              onKeyDown={actionKeyDown(() => toggleMenu("subtitle"))}
+              onClick={swallowClick}
+              disabled={!hasMedia || (snapshot?.subtitleTracks.length ?? 0) === 0}
+              aria-label={`字幕：${subtitleTitle}`}
+              title="字幕"
+              aria-haspopup="menu"
+              aria-expanded={menu === "subtitle"}
+            >
+              <OverlayIcon name="subtitles" />
+            </button>
+            <button
+              className="ov-btn"
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => send({ type: "toggle-fullscreen" }))}
+              onKeyDown={actionKeyDown(() => send({ type: "toggle-fullscreen" }))}
+              onClick={swallowClick}
+              aria-label="切换全屏"
+              title="切换全屏"
+            >
+              <OverlayIcon name="fullscreen" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

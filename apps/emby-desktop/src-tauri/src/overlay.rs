@@ -69,9 +69,11 @@ pub fn resume(app: &AppHandle) {
     }
 }
 
-/// Logical (CSS px) heights of the parked control surface.
-const COLLAPSED_HEIGHT: f64 = 64.0;
-const EXPANDED_HEIGHT: f64 = 320.0;
+/// Logical (CSS px) heights of the parked control surface. Keep in sync with
+/// `OVERLAY_BAR_HEIGHT` / `OVERLAY_EXPANDED_HEIGHT` (src/controls/contract.ts)
+/// and `--ov-bar-h` / `--ov-panel-h` (src/controls/overlay.css).
+const COLLAPSED_HEIGHT: f64 = 96.0;
+const EXPANDED_HEIGHT: f64 = 352.0;
 
 const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Squared movement threshold in physical pixels (3 px).
@@ -651,9 +653,12 @@ fn compute_geometry(
     let x = client_origin.x + (sync.x * scale).round() as i32 + frame_x;
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
     let width = ((sync.w * scale).round() as i32 - frame_x * 2).max(1) as u32;
-    let height = (height_css * scale).round().max(1.0) as u32;
     let video_bottom = video_top + (sync.h * scale).round().max(0.0) as i32;
-    // Bottom-anchored: expanding grows upwards. Never above the main window.
+    // Bottom-anchored: expanding grows upwards. Never above the main window:
+    // on a short window the expanded surface shrinks instead of hanging below
+    // the video (the popover scrolls).
+    let room = (video_bottom - frame_y - outer_top).max(1);
+    let height = ((height_css * scale).round() as i32).clamp(1, room) as u32;
     let y = (video_bottom - height as i32 - frame_y).max(outer_top);
     (x, y, width, height)
 }

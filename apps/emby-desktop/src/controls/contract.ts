@@ -3,10 +3,20 @@
 // every user intent travels back as an `overlay-action` payload so playback
 // state (and Emby progress reporting) stays in the main window.
 
-/** Overlay bar height in logical pixels (matches `overlay_set_expanded`). */
-export const OVERLAY_BAR_HEIGHT = 64;
-/** Expanded overlay height in logical pixels. */
-export const OVERLAY_EXPANDED_HEIGHT = 320;
+import type { PlaybackMeta } from "../player/contract";
+
+/**
+ * Collapsed overlay window height in logical pixels. Keep in sync with
+ * `COLLAPSED_HEIGHT` in `src-tauri/src/overlay.rs` and `--ov-bar-h` in
+ * `overlay.css`.
+ */
+export const OVERLAY_BAR_HEIGHT = 96;
+/**
+ * Expanded overlay window height (bar + track popover) in logical pixels. Keep
+ * in sync with `EXPANDED_HEIGHT` in `overlay.rs` and `--ov-panel-h` in
+ * `overlay.css`. Rust shrinks it on windows shorter than this.
+ */
+export const OVERLAY_EXPANDED_HEIGHT = 352;
 /** Expanded panel is the space above the bar. */
 export const OVERLAY_PANEL_HEIGHT = OVERLAY_EXPANDED_HEIGHT - OVERLAY_BAR_HEIGHT;
 
@@ -21,3 +31,13 @@ export type OverlayAction =
   | { type: "retry" };
 
 export type OverlayUiMode = "player" | "app";
+
+/**
+ * `overlay-meta` payload (main -> controls). `stamp` grows with every send so
+ * the overlay can drop a late, out-of-order delivery; `meta: null` clears the
+ * title row when the player page goes away.
+ */
+export interface OverlayMetaMessage {
+  stamp: number;
+  meta: PlaybackMeta | null;
+}

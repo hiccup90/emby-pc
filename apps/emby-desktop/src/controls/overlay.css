@@ -1,18 +1,45 @@
 /*
- * Transparent overlay window (`controls.html`).
- * The window itself is 1440x64 collapsed and 1440x320 expanded; the bar is
- * always anchored to the bottom so the video rectangle never changes.
+ * Transparent controls window (`controls.html`), styled after Plex Web's player:
+ * a flat dark band at the bottom whose top edge carries the seek line, title
+ * block left, transport centre, volume / tracks / fullscreen right.
+ *
+ * Window: 96 px collapsed, 352 px expanded (bar + track popover), bottom-anchored
+ * over the video and inset by the resize band. Keep the heights in sync with
+ * COLLAPSED_HEIGHT / EXPANDED_HEIGHT in src-tauri/src/overlay.rs and
+ * OVERLAY_BAR_HEIGHT / OVERLAY_EXPANDED_HEIGHT in contract.ts.
+ * Colours and type follow the main-window tokens in src/styles.css.
  */
 
 :root {
   color-scheme: dark;
-  --ov-text: #f3f3f5;
-  --ov-muted: #a2a2aa;
-  --ov-accent: #d8a15f;
-  --ov-danger: #d98b7a;
-  --ov-line: rgba(255, 255, 255, 0.14);
-  --ov-surface: rgba(16, 16, 18, 0.94);
-  --ov-font: system-ui, "Segoe UI", sans-serif;
+  /* Layout (logical px). */
+  --ov-bar-h: 96px;
+  --ov-panel-h: 256px; /* 352 - 96 */
+  --ov-seek-h: 24px;
+  --ov-band-top: 12px; /* seek line sits on the band edge */
+  /* Main-window tokens (src/styles.css). */
+  --ov-accent: #e5a00d;
+  --ov-accent-hover: #f3b52f;
+  --ov-accent-ink: #1f2326;
+  /* Plex Web's player seek fill is a darker orange than the UI accent. */
+  --ov-seek-fill: #cc7b19;
+  --ov-text: #eeeeee;
+  --ov-text-2: rgba(255, 255, 255, 0.75);
+  --ov-text-3: rgba(255, 255, 255, 0.5);
+  --ov-surface: #2b2f33;
+  --ov-surface-raised: #33383c;
+  --ov-bg-deep: #191b1e;
+  --ov-danger: #e5656b;
+  --ov-radius: 4px;
+  --ov-radius-menu: 6px;
+  /* Player chrome over video. Plex Web's band measures ~80 % neutral dark. */
+  --ov-band: rgba(28, 30, 33, 0.82);
+  --ov-menu-bg: rgba(25, 27, 30, 0.97);
+  --ov-line: rgba(255, 255, 255, 0.08);
+  --ov-hover: rgba(255, 255, 255, 0.08);
+  --ov-rail: rgba(255, 255, 255, 0.22);
+  --ov-font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
   font-family: var(--ov-font);
 }
 
@@ -30,8 +57,8 @@ body {
 
 body {
   color: var(--ov-text);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.35;
   user-select: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -53,29 +80,24 @@ button {
 }
 
 button:disabled {
-  cursor: not-allowed;
-  opacity: 0.42;
+  cursor: default;
+  opacity: 0.38;
 }
 
 button:focus-visible,
-input:focus-visible,
-summary:focus-visible {
+input:focus-visible {
   outline: 2px solid var(--ov-accent);
   outline-offset: 2px;
 }
 
 button:focus:not(:focus-visible),
-input:focus:not(:focus-visible),
-summary:focus:not(:focus-visible) {
+input:focus:not(:focus-visible) {
   outline: none;
 }
 
 .overlay {
   position: relative;
-  display: flex;
   height: 100%;
-  flex-direction: column;
-  justify-content: flex-end;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.22s ease;
@@ -86,31 +108,17 @@ summary:focus:not(:focus-visible) {
   pointer-events: auto;
 }
 
-/* Expanded panel: 320 - 64 = 256 logical pixels above the bar. */
+/* Expanded part: 352 - 96 = 256 px above the bar. Always mounted and only
+ * toggled with opacity: mounting layout while Rust resizes the window is what
+ * flashed the bar before. */
 .overlay__panel {
-  /* Absolutely positioned above the always-bottom bar: the panel never takes
-   * part in the flex layout, so mounting/showing it cannot move the bar. */
   position: absolute;
-  left: 0;
   right: 0;
-  bottom: 64px;
-  display: flex;
-  height: 256px;
-  min-height: 0;
-  flex: 0 0 256px;
-  align-items: flex-end;
-  gap: 16px;
-  padding: 14px 16px 10px;
-  overflow: hidden;
-  background: linear-gradient(
-    to top,
-    rgba(0, 0, 0, 0.72),
-    rgba(0, 0, 0, 0.28) 70%,
-    transparent
-  );
-  /* The panel is always mounted and only toggled, so opening a menu never
-   * mounts 256px of layout inside a window that the Rust side is resizing at
-   * the same time (that race is what flashed the bar). */
+  bottom: var(--ov-bar-h);
+  left: 0;
+  height: var(--ov-panel-h);
+  /* Nearly invisible but hit-testable: a press here closes the popover. */
+  background: rgba(0, 0, 0, 0.01);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.14s ease;
@@ -121,127 +129,318 @@ summary:focus:not(:focus-visible) {
   pointer-events: auto;
 }
 
-.overlay__menus {
+/* Track popover, like Plex's stream dropdowns. */
+.ov-menu {
+  position: absolute;
+  right: 12px;
+  bottom: 6px;
   display: flex;
-  min-width: 0;
-  max-height: 100%;
-  flex: 1 1 auto;
-  align-items: flex-end;
-  gap: 12px;
+  width: 300px;
+  max-width: calc(100% - 24px);
+  /* Shrinks (and scrolls) when Rust clamps the window on short screens. */
+  max-height: min(calc(var(--ov-panel-h) - 12px), calc(100vh - var(--ov-bar-h) - 12px));
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--ov-radius-menu);
+  background: var(--ov-menu-bg);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  animation: ov-pop 0.14s ease-out;
 }
 
-.overlay__bar {
+.ov-menu__head {
   display: flex;
-  height: 64px;
-  flex: 0 0 64px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 14px;
-  background: linear-gradient(
-    to top,
-    rgba(0, 0, 0, 0.78),
-    rgba(0, 0, 0, 0.35) 60%,
-    transparent
-  );
-}
-
-.ov-btn {
-  display: grid;
-  width: 32px;
-  height: 32px;
+  min-height: 40px;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--ov-line);
+}
+
+.ov-menu__heading {
+  color: var(--ov-text-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.ov-menu__close {
+  display: grid;
+  width: 28px;
+  height: 28px;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ov-radius);
   background: transparent;
+  color: var(--ov-text-3);
+}
+
+.ov-menu__close:hover {
+  background: var(--ov-hover);
   color: var(--ov-text);
 }
 
-.ov-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+.ov-menu__list {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding: 6px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+  scrollbar-width: thin;
 }
 
-.ov-btn--play {
-  color: #ffffff;
+.ov-menu__option {
+  display: flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--ov-text);
+  font-size: 13px;
+  text-align: left;
 }
 
-.ov-btn.is-active {
+.ov-menu__option:hover {
+  background: var(--ov-hover);
+}
+
+.ov-menu__option.is-current {
   color: var(--ov-accent);
 }
 
-.ov-spacer {
-  min-width: 16px;
-  height: 32px;
-  flex: 1 1 auto;
-  cursor: grab;
-}
-
-.ov-time {
-  min-width: 38px;
-  flex: 0 0 auto;
-  color: var(--ov-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.ov-error {
+.ov-menu__title {
   min-width: 0;
-  max-width: 320px;
+  flex: 1 1 auto;
   overflow: hidden;
-  color: var(--ov-danger);
-  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Progress + volume sliders share one rail/fill structure. */
-.ov-slider {
-  position: relative;
-  display: flex;
-  min-width: 80px;
-  height: 32px;
-  flex: 1 1 auto;
-  align-items: center;
+.ov-menu__detail {
+  flex: 0 0 auto;
+  color: var(--ov-text-3);
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }
 
-.ov-slider__rail {
+.ov-menu__check {
+  display: grid;
+  width: 16px;
+  flex: 0 0 16px;
+  place-items: center;
+  color: var(--ov-accent);
+}
+
+.ov-menu__empty {
+  padding: 10px 14px;
+  color: var(--ov-text-3);
+  font-size: 12px;
+}
+
+/* ---- bar ------------------------------------------------------------------- */
+
+.overlay__bar {
   position: absolute;
   right: 0;
+  bottom: 0;
   left: 0;
-  top: 50%;
-  height: 3px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.24);
-  transform: translateY(-50%);
-  transition: height 0.12s ease;
+  height: var(--ov-bar-h);
 }
 
+.ov-bar__band {
+  position: absolute;
+  inset: var(--ov-band-top) 0 0;
+  background: var(--ov-band);
+}
+
+/* Full-width seek line on the band edge; the 24 px row is its hit area. */
+.ov-seek {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  height: var(--ov-seek-h);
+}
+
+.ov-controls {
+  position: absolute;
+  inset: var(--ov-seek-h) 0 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px 6px;
+}
+
+.ov-group {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.ov-group--left {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.ov-group--center {
+  justify-content: center;
+  gap: 12px;
+}
+
+.ov-group--right {
+  justify-content: flex-end;
+}
+
+.ov-btn {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ov-radius);
+  background: transparent;
+  color: rgba(238, 238, 238, 0.86);
+  transition:
+    color 0.12s ease,
+    background-color 0.12s ease;
+}
+
+.ov-btn:hover:not(:disabled) {
+  background: var(--ov-hover);
+  color: #ffffff;
+}
+
+.ov-btn.is-active,
+.ov-btn.is-active:hover {
+  color: var(--ov-accent);
+}
+
+/* Play/pause (and retry) sit in a dark disc, as in Plex. */
+.ov-btn--play {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.42);
+  color: #ffffff;
+}
+
+.ov-btn--play:hover:not(:disabled) {
+  background: var(--ov-accent);
+  color: var(--ov-accent-ink);
+}
+
+/* Title block: title, subtitle (or error), time. */
+.ov-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ov-meta__title,
+.ov-meta__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-meta__title {
+  color: var(--ov-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ov-meta__sub {
+  color: var(--ov-text-2);
+  font-size: 12px;
+}
+
+.ov-meta__sub.is-error {
+  color: var(--ov-danger);
+}
+
+.ov-meta__time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--ov-text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ov-spinner {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  border-top-color: var(--ov-accent);
+  border-radius: 50%;
+  animation: ov-spin 0.8s linear infinite;
+}
+
+/* ---- sliders ----------------------------------------------------------------
+ * Seek and volume share one structure: rail + fill + a native range input that
+ * is one thumb wider than the rail, so the thumb centre lands exactly on the
+ * fill end and the value maps linearly onto the rail. */
+
+.ov-slider {
+  --ov-thumb: 14px;
+  --ov-thumb-offset: 5px;
+  --ov-track: 4px;
+  position: relative;
+  display: block;
+  height: 24px;
+}
+
+.ov-slider__rail,
 .ov-slider__fill {
   position: absolute;
-  left: 0;
   top: 50%;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--ov-accent);
+  left: 0;
+  height: var(--ov-track);
   pointer-events: none;
   transform: translateY(-50%);
   transition: height 0.12s ease;
 }
 
-.ov-slider:hover .ov-slider__rail,
-.ov-slider:hover .ov-slider__fill {
-  height: 5px;
+.ov-slider__rail {
+  right: 0;
+  background: var(--ov-rail);
+}
+
+.ov-slider__fill {
+  width: calc(var(--ov-p, 0) * 100%);
+  background: var(--ov-accent);
+}
+
+.ov-slider--seek .ov-slider__fill {
+  background: var(--ov-seek-fill);
 }
 
 .ov-slider__input {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: calc(var(--ov-thumb) / -2);
   z-index: 1;
-  width: 100%;
-  height: 32px;
+  width: calc(100% + var(--ov-thumb));
+  height: 24px;
   margin: 0;
+  padding: 0;
   appearance: none;
   border: 0;
   background: transparent;
@@ -252,159 +451,147 @@ summary:focus:not(:focus-visible) {
 }
 
 .ov-slider__input::-webkit-slider-runnable-track {
-  height: 32px;
+  height: 24px;
+  background: transparent;
+}
+
+.ov-slider__input::-moz-range-track {
+  height: 24px;
   background: transparent;
 }
 
 .ov-slider__input::-webkit-slider-thumb {
-  width: 11px;
-  height: 11px;
-  margin-top: 10.5px;
+  width: var(--ov-thumb);
+  height: var(--ov-thumb);
+  margin-top: var(--ov-thumb-offset);
   appearance: none;
   border: 0;
   border-radius: 50%;
   background: #ffffff;
-}
-
-.ov-slider__input::-moz-range-track {
-  height: 32px;
-  background: transparent;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease;
 }
 
 .ov-slider__input::-moz-range-thumb {
-  width: 11px;
-  height: 11px;
+  width: var(--ov-thumb);
+  height: var(--ov-thumb);
   border: 0;
   border-radius: 50%;
   background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease;
+}
+
+.ov-slider:has(.ov-slider__input:disabled) {
+  opacity: 0.38;
 }
 
 .ov-slider__input:disabled {
-  opacity: 0.45;
+  cursor: default;
+}
+
+.ov-slider__input:disabled::-webkit-slider-thumb {
+  visibility: hidden;
 }
 
 .ov-slider--seek {
-  flex: 1 1 auto;
+  height: var(--ov-seek-h);
+}
+
+.ov-slider--seek:hover,
+.ov-slider--seek:active,
+.ov-slider--seek:focus-within {
+  --ov-track: 6px;
+}
+
+/* Plex shows the seek thumb only while the pointer is on the line. */
+.ov-slider--seek .ov-slider__input::-webkit-slider-thumb {
+  transform: scale(0);
+}
+
+.ov-slider--seek:hover .ov-slider__input::-webkit-slider-thumb,
+.ov-slider--seek:active .ov-slider__input::-webkit-slider-thumb,
+.ov-slider--seek .ov-slider__input:focus-visible::-webkit-slider-thumb {
+  transform: scale(1);
 }
 
 .ov-slider--volume {
-  width: 72px;
-  min-width: 72px;
-  flex: 0 0 72px;
+  --ov-thumb: 12px;
+  --ov-thumb-offset: 6px;
+  --ov-track: 3px;
+  width: 84px;
+  flex: 0 0 84px;
+  /* Room for the input, which overhangs the rail by half a thumb. */
+  margin: 0 10px 0 4px;
 }
 
-/* Track menus open upwards inside the expanded panel. */
-.ov-menu {
-  display: flex;
-  width: 260px;
-  max-height: 100%;
-  min-height: 0;
-  flex: 0 1 260px;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--ov-line);
-  border-radius: 8px;
-  background: var(--ov-surface);
-}
-
-.ov-menu__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--ov-line);
-  color: var(--ov-muted);
-  font-size: 12px;
-}
-
-.ov-menu__close {
-  min-height: 28px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ov-muted);
-  font-size: 12px;
-}
-
-.ov-menu__close:hover {
-  color: var(--ov-text);
-}
-
-.ov-menu__list {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px;
-  overflow-y: auto;
-}
-
-.ov-menu__option {
-  display: flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 8px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--ov-text);
-  font-size: 12px;
-  text-align: left;
-}
-
-.ov-menu__option:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.ov-menu__option.is-current {
-  color: var(--ov-accent);
-}
-
-.ov-menu__title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-}
-
-.ov-menu__title small {
-  color: var(--ov-muted);
-  font-size: 11px;
-}
-
-.ov-menu__check {
-  color: var(--ov-accent);
-}
-
-.ov-menu__empty {
-  padding: 8px;
-  color: var(--ov-muted);
-  font-size: 12px;
-}
-
-@media (max-width: 720px) {
-  .ov-time {
-    min-width: 32px;
-  }
-
+@media (max-width: 760px) {
   .ov-slider--volume {
     display: none;
   }
+}
+
+@media (max-width: 600px) {
+  .ov-controls {
+    gap: 8px;
+    padding: 0 8px 6px;
+  }
+
+  .ov-group--left,
+  .ov-group--center {
+    gap: 4px;
+  }
+
+  .ov-group--right {
+    gap: 0;
+  }
+
+  .ov-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .ov-btn--play {
+    width: 40px;
+    height: 40px;
+  }
 
   .ov-menu {
-    width: 200px;
-    flex-basis: 200px;
+    right: 8px;
+    width: 260px;
+    max-width: calc(100% - 16px);
+  }
+}
+
+@keyframes ov-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ov-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .overlay,
-  .overlay[data-visible="true"] {
+  .overlay__panel {
     transition-duration: 0.01ms;
+  }
+
+  .ov-menu {
+    animation: none;
+  }
+
+  .ov-spinner {
+    animation-duration: 2.4s;
   }
 }
