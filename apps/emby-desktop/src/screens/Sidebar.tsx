@@ -19,7 +19,6 @@ function viewIcon(view: EmbyView): IconName {
 }
 
 interface SidebarProps {
-  serverName: string | null;
   views: EmbyView[];
   activeViewId: string | null;
   loading: boolean;
@@ -30,7 +29,6 @@ interface SidebarProps {
 
 /** Library navigation (Plex-style left rail). Collapses to icons in narrow windows. */
 export default function Sidebar({
-  serverName,
   views,
   activeViewId,
   loading,
@@ -39,12 +37,6 @@ export default function Sidebar({
 }: SidebarProps) {
   return (
     <nav className="sidebar" aria-label="媒体库">
-      {serverName && (
-        <p className="sidebar__heading" title={serverName}>
-          <Icon name="server" size={14} />
-          <span className="sidebar__label">{serverName}</span>
-        </p>
-      )}
       {views.length > 0 ? (
         <ul className="sidebar__list">
           {views.map((view) => {
@@ -58,7 +50,7 @@ export default function Sidebar({
                   title={view.name}
                   onClick={() => onSelect(view.id)}
                 >
-                  <Icon name={viewIcon(view)} size={20} />
+                  <Icon name={viewIcon(view)} size={22} />
                   <span className="sidebar__label">{view.name}</span>
                 </button>
               </li>

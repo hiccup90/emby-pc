@@ -245,11 +245,12 @@ export default function DetailScreen({
   const runtime = formatRuntimeTicks(item.runTimeTicks);
   const seasonCount = isSeries ? groupSeasons(episodes.items).length : 0;
 
+  // Episode pages read like Plex Web: series, season, "第 8 集 · name".
+  const seasonLabel =
+    item.parentIndexNumber === null ? null : item.parentIndexNumber === 0 ? "特别篇" : `第 ${item.parentIndexNumber} 季`;
+  const episodeLine = item.indexNumber === null ? item.name : `第 ${item.indexNumber} 集 · ${item.name}`;
+
   const metaParts: string[] = [];
-  if (episode) {
-    const label = itemEpisodeLabel(item);
-    if (label) metaParts.push(label);
-  }
   const year = itemYearLabel(item);
   if (year) metaParts.push(year);
   if (runtime !== "时长未知") metaParts.push(runtime);
@@ -278,10 +279,15 @@ export default function DetailScreen({
         </div>
 
         <div className="detail-info">
-          {episode && item.seriesName && <p className="detail-eyebrow">{item.seriesName}</p>}
           <h1 id="detail-title" className="detail-title" ref={headingRef} tabIndex={-1}>
-            {item.name}
+            {episode && item.seriesName ? item.seriesName : item.name}
           </h1>
+          {episode && item.seriesName && (
+            <>
+              {seasonLabel && <p className="detail-season">{seasonLabel}</p>}
+              <p className="detail-subtitle">{episodeLine}</p>
+            </>
+          )}
           {(metaParts.length > 0 || item.userData.played) && (
             <p className="detail-meta">
               {metaParts.map((part, index) => (

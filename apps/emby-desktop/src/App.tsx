@@ -192,9 +192,9 @@ export default function App() {
         backLabel="返回媒体库"
       />
       <div className="app-body">
+        {route.screen === "detail" && backdrop && <PageBackdrop key={backdrop} src={backdrop} />}
         {browsing && (
           <Sidebar
-            serverName={session?.serverName || null}
             views={library.views}
             activeViewId={library.view?.id ?? null}
             loading={sidebarLoading}
@@ -202,8 +202,6 @@ export default function App() {
             onSelect={chooseView}
           />
         )}
-        <div className="app-main">
-        {route.screen === "detail" && backdrop && <PageBackdrop key={backdrop} src={backdrop} />}
         <div className="app-content" ref={contentRef}>
           {route.screen === "login" && (
             <LoginScreen
@@ -238,7 +236,6 @@ export default function App() {
               onBackdrop={setBackdrop}
             />
           )}
-        </div>
         </div>
       </div>
     </div>

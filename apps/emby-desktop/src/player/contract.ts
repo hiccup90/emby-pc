@@ -35,9 +35,9 @@ export interface VideoSync {
 
 /** What the player shows about the current item (title row of the controls). */
 export interface PlaybackMeta {
-  /** Movie title, or the episode name. */
+  /** Movie title, or the series name for an episode. */
   title: string;
-  /** Secondary line: the year for movies, "剧名 · S1 · E3" for episodes. */
+  /** Secondary line: the year for movies, "S1 · E3 — 集名" for episodes. */
   subtitle: string | null;
 }
 

@@ -7,24 +7,33 @@
 :root {
   color-scheme: dark;
   --titlebar-height: 48px;
-  --sidebar-width: 232px;
+  --sidebar-width: 260px;
   --page-x: 40px;
 
-  --bg: #1f2326;
-  --bg-deep: #191b1e;
-  --surface: #2b2f33;
-  --surface-raised: #33383c;
+  /* Plex Web 4.163 tokens (see plex-ref/SPEC.md): neutral greys, amber accent. */
+  --bg: #1f1f1f;
+  --field:
+    radial-gradient(circle at 0 0, #171717, transparent 70%),
+    radial-gradient(circle at 100% 0, #1c1c1c, transparent 70%),
+    radial-gradient(circle at 0 100%, #272727, transparent 70%),
+    radial-gradient(circle at 100% 100%, #414141, transparent 70%),
+    #1f1f1f;
+  --bg-deep: #111111;
+  --sidebar: rgba(0, 0, 0, 0.15);
+  --surface: rgba(0, 0, 0, 0.45);
+  --menu: #191a1c;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.14);
   --text: #eeeeee;
-  --text-2: #aaaaaa;
-  --text-3: #7c7f82;
+  --text-2: rgba(255, 255, 255, 0.75);
+  --text-3: rgba(255, 255, 255, 0.45);
   --accent: #e5a00d;
-  --accent-hover: #f0b429;
-  --accent-ink: #1c1c1c;
+  --accent-hover: #f3b52f;
+  --accent-pressed: #b7800a;
+  --accent-ink: #1f2326;
   --danger: #e5656b;
   --radius-poster: 4px;
-  --radius: 6px;
+  --radius: 4px;
   --shadow-art: 0 10px 28px rgba(0, 0, 0, 0.45);
   --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
     "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
@@ -110,17 +119,15 @@ button:disabled {
   background: var(--bg);
 }
 
+/* The page colour field (and a detail page's backdrop) spans the sidebar and the
+   content, like Plex Web; both sit above it, and the scroller is transparent so
+   the scrollbar gutter shows the same field. */
 .app-body {
+  position: relative;
   display: flex;
   min-height: 0;
   flex: 1 1 auto;
-}
-
-.app-main {
-  position: relative;
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
+  background: var(--field);
 }
 
 .app-content {
@@ -144,7 +151,6 @@ button:disabled {
   align-items: center;
   padding-left: 18px;
   background: var(--bg-deep);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
   user-select: none;
 }
 
@@ -277,10 +283,9 @@ button:disabled {
   z-index: 30;
   width: 264px;
   padding: 6px;
-  border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  background: var(--menu);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
 }
 
 .account__identity {
@@ -327,7 +332,7 @@ button:disabled {
 }
 
 .account__item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .account__item:disabled {
@@ -336,75 +341,81 @@ button:disabled {
 
 /* ---- sidebar ---------------------------------------------------------------- */
 
+/* Plex Web: an inset translucent panel over the page colour field. */
 .sidebar {
+  position: relative;
+  z-index: 1;
   display: flex;
   width: var(--sidebar-width);
   flex: 0 0 var(--sidebar-width);
   flex-direction: column;
-  gap: 2px;
-  padding: 18px 10px;
+  margin: 8px 0 8px 8px;
+  padding: 6px 0;
   overflow-y: auto;
-  background: var(--bg-deep);
-}
-
-.sidebar__heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 2px 12px 10px;
-  overflow: hidden;
-  color: var(--text-3);
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.sidebar__heading svg {
-  flex: 0 0 auto;
+  border-radius: 4px;
+  background: var(--sidebar);
 }
 
 .sidebar__list {
   display: grid;
-  gap: 2px;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .sidebar__item {
+  position: relative;
   display: flex;
   width: 100%;
-  height: 40px;
+  height: 50px;
   align-items: center;
-  gap: 14px;
-  padding: 0 12px;
+  gap: 16px;
+  padding: 0 16px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--text-2);
   background: transparent;
-  font-size: 14px;
+  font-size: 15px;
   text-align: left;
 }
 
 .sidebar__item svg {
   flex: 0 0 auto;
+  opacity: 0.6;
 }
 
 .sidebar__item:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
 }
 
-.sidebar__item.is-active {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.1);
-  font-weight: 600;
-}
-
+.sidebar__item:hover svg,
 .sidebar__item.is-active svg {
+  opacity: 1;
+}
+
+.sidebar__item:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Plex Web: amber label and icon plus a thin bar on the left edge, no fill. */
+.sidebar__item.is-active {
   color: var(--accent);
+}
+
+.sidebar__item.is-active::before {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  content: "";
+}
+
+.sidebar__item.is-active:hover::before {
+  background: #fff;
 }
 
 .sidebar__label {
@@ -416,8 +427,8 @@ button:disabled {
 
 .sidebar__skeleton {
   display: grid;
-  gap: 14px;
-  padding: 8px 12px;
+  gap: 18px;
+  padding: 14px 16px;
 }
 
 .sidebar__skeleton span {
@@ -425,7 +436,7 @@ button:disabled {
 }
 
 .sidebar__status {
-  margin: 8px 12px;
+  margin: 10px 16px;
   color: var(--text-3);
   font-size: 12.5px;
   line-height: 1.5;
@@ -446,14 +457,13 @@ button:disabled {
 
 .page-title {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
-  letter-spacing: -0.01em;
 }
 
 .page-count {
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .page-message {
@@ -498,7 +508,7 @@ button:disabled {
 /* ---- hub rows (continue watching) ------------------------------------------- */
 
 .hub {
-  margin: 0 0 34px;
+  margin: 0 0 40px;
 }
 
 .hub__header {
@@ -510,7 +520,7 @@ button:disabled {
 
 .hub__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 21px;
   font-weight: 700;
 }
 
@@ -528,16 +538,16 @@ button:disabled {
   border: 0;
   border-radius: 50%;
   color: var(--text-2);
-  background: rgba(255, 255, 255, 0.07);
+  background: transparent;
 }
 
 .icon-button:hover:not(:disabled) {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .icon-button:disabled {
-  opacity: 0.35;
+  opacity: 0.2;
 }
 
 .hub__track {
@@ -551,6 +561,9 @@ button:disabled {
   scroll-padding: 0 var(--page-x);
   scroll-snap-type: x proximity;
   scrollbar-width: none;
+  /* Cards slide under faded edges (Plex Web hub rows). */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--page-x), #000 calc(100% - var(--page-x)), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 var(--page-x), #000 calc(100% - var(--page-x)), transparent 100%);
 }
 
 .hub__track > * {
@@ -564,7 +577,7 @@ button:disabled {
   display: grid;
   min-width: 0;
   align-content: start;
-  gap: 2px;
+  gap: 0;
   padding: 0;
   border: 0;
   color: inherit;
@@ -585,7 +598,7 @@ button:disabled {
   overflow: hidden;
   border-radius: var(--radius-poster);
   background: var(--surface);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
   transition: box-shadow 0.15s ease;
 }
 
@@ -605,15 +618,16 @@ button:disabled {
 .poster-card:hover .poster-card__frame,
 .continue-card:focus-visible .continue-card__frame,
 .poster-card:focus-visible .poster-card__frame {
-  box-shadow: 0 0 0 3px var(--accent), 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 4px rgba(0, 0, 0, 0.3);
 }
 
 .continue-card__title,
 .poster-card__title {
   overflow: hidden;
   color: var(--text);
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 24px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -621,8 +635,9 @@ button:disabled {
 .continue-card__meta,
 .poster-card__meta {
   overflow: hidden;
-  color: var(--text-2);
-  font-size: 12.5px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -640,7 +655,7 @@ button:disabled {
   display: block;
   height: 4px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .progress-bar > span {
@@ -662,12 +677,12 @@ button:disabled {
 
 .badge-count {
   position: absolute;
-  top: 0;
-  right: 0;
-  min-width: 24px;
+  top: 4px;
+  right: 4px;
+  min-width: 28px;
   height: 22px;
   padding: 0 6px;
-  border-bottom-left-radius: 4px;
+  border-radius: 4px;
   color: var(--accent-ink);
   background: var(--accent);
   font-size: 12px;
@@ -705,7 +720,7 @@ button:disabled {
   display: grid;
   place-items: center;
   padding: 14%;
-  background: linear-gradient(160deg, #3a3f44, #25292c);
+  background: linear-gradient(160deg, #3a3a3a, #2b2b2b);
 }
 
 .media-artwork__fallback span {
@@ -726,7 +741,7 @@ button:disabled {
 .poster-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 26px 20px;
+  gap: 28px 30px;
 }
 
 .poster-grid--landscape {
@@ -764,7 +779,7 @@ button:disabled {
 .sidebar__skeleton span {
   display: block;
   border-radius: var(--radius-poster);
-  background: linear-gradient(90deg, #2a2e32 25%, #343a3f 50%, #2a2e32 75%);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 25%, rgba(255, 255, 255, 0.09) 50%, rgba(255, 255, 255, 0.04) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
 }
@@ -833,7 +848,7 @@ button:disabled {
 
 .button {
   display: inline-flex;
-  min-height: 38px;
+  min-height: 34px;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -859,6 +874,10 @@ button:disabled {
   background: var(--accent-hover);
 }
 
+.button--primary:active:not(:disabled) {
+  background: var(--accent-pressed);
+}
+
 .button--secondary {
   color: var(--text);
   background: rgba(255, 255, 255, 0.1);
@@ -879,9 +898,9 @@ button:disabled {
 }
 
 .button--large {
-  min-height: 44px;
-  padding: 0 26px;
-  font-size: 15px;
+  min-height: 38px;
+  padding: 0 22px;
+  font-size: 16px;
 }
 
 .button--block {
@@ -891,11 +910,12 @@ button:disabled {
 .chip {
   display: inline-flex;
   align-items: center;
-  padding: 1px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  color: var(--text-2);
-  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .error-notice {
@@ -941,12 +961,13 @@ button:disabled {
 
 /* ---- detail page ------------------------------------------------------------------ */
 
+/* Plex "UltraBlur": the artwork as a soft colour wash behind the whole column. */
 .page-backdrop {
   position: absolute;
-  inset: 0 0 auto;
+  inset: 0;
   z-index: 0;
-  height: min(78vh, 720px);
   overflow: hidden;
+  background: var(--bg);
   pointer-events: none;
 }
 
@@ -954,25 +975,23 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center 25%;
-  opacity: 0.42;
+  filter: blur(64px) saturate(1.4);
+  transform: scale(1.25);
 }
 
 .page-backdrop::after {
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(90deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 72%, transparent) 36%, transparent 78%),
-    linear-gradient(0deg, var(--bg) 0%, transparent 55%);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.52) 100%);
   content: "";
 }
 
 .detail-hero {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 250px minmax(0, 1fr);
   align-items: start;
-  gap: 40px;
-  padding-top: 12px;
+  gap: 50px;
+  padding-top: 16px;
 }
 
 .detail-hero--landscape {
@@ -1000,20 +1019,25 @@ button:disabled {
   padding-top: 6px;
 }
 
-.detail-eyebrow {
-  margin: 0;
-  color: var(--text-2);
-  font-size: 15px;
-  font-weight: 600;
-}
-
 .detail-title {
   margin: 0;
-  font-size: 34px;
+  font-size: 32px;
   font-weight: 700;
   line-height: 1.15;
-  letter-spacing: -0.01em;
   overflow-wrap: anywhere;
+}
+
+/* Episode pages (Plex Web): series as the title, then season, then episode. */
+.detail-season {
+  margin: -2px 0 0;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.detail-subtitle {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 400;
 }
 
 .detail-meta {
@@ -1022,8 +1046,8 @@ button:disabled {
   align-items: center;
   gap: 6px 0;
   margin: 0;
-  color: var(--text-2);
-  font-size: 14px;
+  color: var(--text);
+  font-size: 16px;
 }
 
 .detail-meta > span:not(.chip) + span:not(.chip)::before {
@@ -1038,8 +1062,8 @@ button:disabled {
 
 .detail-genres {
   margin: 0;
-  color: var(--text-3);
-  font-size: 13.5px;
+  color: var(--text-2);
+  font-size: 14px;
 }
 
 .detail-actions {
@@ -1054,26 +1078,26 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: var(--text-2);
-  font-size: 13px;
+  color: var(--text);
+  font-size: 14px;
 }
 
 .detail-resume .progress-bar {
   width: 120px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .detail-hint {
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .detail-overview {
-  max-width: 74ch;
-  margin: 6px 0 0;
-  color: #d4d4d4;
-  font-size: 14.5px;
+  max-width: 750px;
+  margin: 8px 0 0;
+  color: #f2f2f2;
+  font-size: 15px;
   line-height: 1.75;
   white-space: pre-line;
 }
@@ -1093,52 +1117,62 @@ button:disabled {
 
 .section-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
 }
 
+/* Underline tabs, like Plex Web's "Recommended / Library" switcher. */
 .season-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 14px;
+  gap: 0 28px;
+  margin: 0 0 6px;
+  border-bottom: 1px solid var(--line);
 }
 
 .season-tab {
+  position: relative;
   display: inline-flex;
-  height: 32px;
+  height: 42px;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  border: 1px solid var(--line-strong);
-  border-radius: 16px;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   color: var(--text-2);
   background: transparent;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .season-tab:hover {
-  border-color: rgba(255, 255, 255, 0.3);
   color: var(--text);
 }
 
 .season-tab.is-active {
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  background: var(--accent);
+  color: var(--accent);
   font-weight: 600;
+}
+
+.season-tab.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  content: "";
 }
 
 .season-tab__count {
   font-size: 12px;
-  opacity: 0.7;
+  font-weight: 400;
+  opacity: 0.75;
 }
 
 .episode-list {
   display: grid;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--line);
   list-style: none;
 }
 
@@ -1270,11 +1304,8 @@ button:disabled {
 /* ---- login and boot ------------------------------------------------------------------ */
 
 /* The glow sits on the column, not the scroller, so the scrollbar gutter matches. */
-.app-shell--login .app-main {
-  background:
-    radial-gradient(ellipse at 50% -10%, rgba(229, 160, 13, 0.16), transparent 55%),
-    radial-gradient(ellipse at 100% 100%, rgba(80, 110, 140, 0.14), transparent 50%),
-    var(--bg);
+.app-shell--login .app-body {
+  background: radial-gradient(ellipse at 50% -10%, rgba(229, 160, 13, 0.12), transparent 55%), var(--field);
 }
 
 .login-page {
@@ -1290,7 +1321,7 @@ button:disabled {
   gap: 14px;
   padding: 36px 34px 30px;
   border-radius: 8px;
-  background: rgba(25, 27, 30, 0.92);
+  background: rgba(24, 24, 24, 0.94);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--line);
 }
 
@@ -1342,7 +1373,7 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 4px;
   color: var(--text);
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(255, 255, 255, 0.05);
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -1446,16 +1477,16 @@ button:disabled {
   }
 
   .detail-hero {
-    grid-template-columns: 200px minmax(0, 1fr);
-    gap: 28px;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 30px;
   }
 
   .detail-hero--landscape {
-    grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+    grid-template-columns: minmax(220px, 340px) minmax(0, 1fr);
   }
 
   .detail-title {
-    font-size: 30px;
+    font-size: 28px;
   }
 }
 
@@ -1463,15 +1494,6 @@ button:disabled {
   :root {
     --sidebar-width: 64px;
     --page-x: 22px;
-  }
-
-  .sidebar {
-    padding: 14px 8px;
-  }
-
-  .sidebar__heading {
-    justify-content: center;
-    margin: 2px 0 10px;
   }
 
   .sidebar__label,
@@ -1485,7 +1507,7 @@ button:disabled {
   }
 
   .sidebar__skeleton {
-    padding: 8px 4px;
+    padding: 12px 14px;
   }
 
   .poster-grid {

@@ -78,16 +78,17 @@ export function itemEpisodeLabel(
   return `S${item.parentIndexNumber} · E${item.indexNumber}`;
 }
 
-/** Player title row for an episode: name, then "剧名 · S1 · E3". */
+/** Player title row for an episode, like Plex Web: series, then "S1 · E3 — name". */
 export function episodePlaybackMeta(
   seriesName: string | null | undefined,
   item: Pick<EmbyItem, "name" | "parentIndexNumber" | "indexNumber">,
 ): PlaybackMeta {
   const label = itemEpisodeLabel(item);
-  const subtitle = [seriesName?.trim(), label]
-    .filter((part): part is string => Boolean(part))
-    .join(" · ");
-  return { title: item.name.trim() || label || "", subtitle: subtitle || null };
+  const name = item.name.trim();
+  const series = seriesName?.trim();
+  if (!series) return { title: name || label || "", subtitle: name ? label : null };
+  const subtitle = [label, name].filter((part): part is string => Boolean(part)).join(" — ");
+  return { title: series, subtitle: subtitle || null };
 }
 
 export function itemPlaybackMeta(item: EmbyItem): PlaybackMeta {
