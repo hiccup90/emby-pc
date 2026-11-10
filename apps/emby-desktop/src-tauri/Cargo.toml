@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 emby-api = { path = "crates/emby-api", features = ["tls"] }
 emby-mpv = { path = "crates/emby-mpv", default-features = false, features = ["serde"] }
+# Used by the settings module's JSON file and Tauri command argument types.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
