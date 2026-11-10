@@ -165,7 +165,12 @@ pub struct EmbyItemsRequest {
     pub include_item_types: Option<String>,
     pub recursive: Option<bool>,
     pub sort_by: Option<String>,
+    /// Ascending (default) or Descending; compared case-insensitively.
+    pub sort_order: Option<String>,
+    /// Comma-separated Emby Filters values, e.g. IsUnplayed.
     pub filters: Option<String>,
+    /// Comma-separated genre names (the Genres query parameter).
+    pub genres: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -916,7 +921,7 @@ mod tests {
     #[test]
     fn request_types_accept_camel_case_and_defaults() {
         let items: EmbyItemsRequest = serde_json::from_str(
-            r#"{"parentId":"v1","startIndex":5,"limit":20,"searchTerm":"bunny","includeItemTypes":"Movie","recursive":false,"sortBy":"DateCreated","filters":"IsUnplayed"}"#,
+            r#"{"parentId":"v1","startIndex":5,"limit":20,"searchTerm":"bunny","includeItemTypes":"Movie","recursive":false,"sortBy":"DateCreated","sortOrder":"Descending","filters":"IsUnplayed","genres":"Animation,Short"}"#,
         )
         .unwrap();
         assert_eq!(items.parent_id.as_deref(), Some("v1"));
@@ -926,7 +931,9 @@ mod tests {
         assert_eq!(items.include_item_types.as_deref(), Some("Movie"));
         assert_eq!(items.recursive, Some(false));
         assert_eq!(items.sort_by.as_deref(), Some("DateCreated"));
+        assert_eq!(items.sort_order.as_deref(), Some("Descending"));
         assert_eq!(items.filters.as_deref(), Some("IsUnplayed"));
+        assert_eq!(items.genres.as_deref(), Some("Animation,Short"));
 
         let empty: EmbyItemsRequest = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, EmbyItemsRequest::default());

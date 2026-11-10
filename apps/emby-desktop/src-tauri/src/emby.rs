@@ -29,6 +29,7 @@ const AUTH_EXPIRED: &str = "登录已失效，请重新登录";
 /// Page size used when `emby_resume` does not receive a limit.
 const DEFAULT_RESUME_LIMIT: u32 = 16;
 const DEFAULT_SIMILAR_LIMIT: u32 = 12;
+const DEFAULT_PERSON_LIMIT: u32 = 60;
 
 /// Managed state for every `emby_*` command.
 pub struct EmbyService {
@@ -241,6 +242,56 @@ pub async fn emby_similar(
     let limit = limit.unwrap_or(DEFAULT_SIMILAR_LIMIT).clamp(1, 50);
     match client.similar(&session.user_id, &id, limit).await {
         Ok(page) => Ok(page),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+/// Works featuring a person (actor/director) from
+/// `GET /Persons/{personId}/Items`. `limit` defaults to 60 and is clamped to
+/// a sane page size; the item shape matches `emby_items`.
+#[tauri::command]
+pub async fn emby_person_items(
+    person_id: String,
+    limit: Option<u32>,
+    state: State<'_, EmbyService>,
+) -> Result<EmbyItemsPage, String> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    let limit = limit.unwrap_or(DEFAULT_PERSON_LIMIT).clamp(1, 200);
+    match client.person_items(&session.user_id, &person_id, limit).await {
+        Ok(page) => Ok(page),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+/// Marks an item watched (`played = true`) or unwatched
+/// (`POST` / `DELETE /Users/{userId}/PlayedItems/{itemId}`).
+#[tauri::command]
+pub async fn emby_set_played(
+    id: String,
+    played: bool,
+    state: State<'_, EmbyService>,
+) -> Result<(), String> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.set_played(&session.user_id, &id, played).await {
+        Ok(()) => Ok(()),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+/// Adds or removes the user's favorite mark
+/// (`POST` / `DELETE /Users/{userId}/FavoriteItems/{itemId}`).
+#[tauri::command]
+pub async fn emby_set_favorite(
+    id: String,
+    favorite: bool,
+    state: State<'_, EmbyService>,
+) -> Result<(), String> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.set_favorite(&session.user_id, &id, favorite).await {
+        Ok(()) => Ok(()),
         Err(err) => Err(state.fail(err).await),
     }
 }

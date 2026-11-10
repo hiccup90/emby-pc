@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EmbySession } from "../emby/contract";
 import type { EmbyLibraryController, EmbyLibraryItem } from "../emby/useEmby";
 import {
@@ -10,17 +10,87 @@ import {
 import { collectionTypeOf } from "../emby/library";
 import { ErrorNotice, MediaArtwork, ProgressBar } from "./shared";
 import { HubRow, PosterCard } from "./cards";
+import LibraryToolbar, { DEFAULT_LIBRARY_QUERY, isDefaultLibraryQuery } from "./LibraryToolbar";
+import type { LibraryQuery } from "./LibraryToolbar";
 
-interface LibraryScreenProps {
+export interface LibraryScreenProps {
   session: EmbySession | null;
   desktop: boolean;
   library: EmbyLibraryController;
   onOpen: (item: EmbyLibraryItem) => void;
   /** Continue-watching cards start playback directly instead of opening details. */
   onPlay: (item: EmbyLibraryItem) => void;
+  /**
+   * Controlled toolbar query. Optional: when omitted LibraryScreen keeps the
+   * selection in local state and sorts/filters the loaded page itself until
+   * the library data layer accepts query parameters.
+   */
+  query?: LibraryQuery;
+  /** Called whenever the toolbar selection changes. */
+  onQueryChange?: (query: LibraryQuery) => void;
 }
 
 const SKELETON_COUNT = 14;
+
+const NAME_COLLATOR = new Intl.Collator("zh-Hans-CN", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function compareNullableNumbers(
+  a: number | null,
+  b: number | null,
+  direction: number,
+): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return (a - b) * direction;
+}
+
+/**
+ * Client-side fallback while useEmby does not take sort/filter parameters yet.
+ * The server will eventually return the right page; until then the loaded page
+ * is ordered/filtered locally so the toolbar is not dead UI.
+ */
+function applyLocalLibraryQuery(
+  items: EmbyLibraryItem[],
+  query: LibraryQuery,
+): EmbyLibraryItem[] {
+  const direction = query.sortOrder === "Ascending" ? 1 : -1;
+  let next = items;
+  if (query.itemType !== "all") {
+    next = next.filter((item) => item.type === query.itemType);
+  }
+  if (query.unplayedOnly) {
+    next = next.filter((item) => !item.userData.played);
+  }
+
+  switch (query.sortBy) {
+    case "SortName":
+      return [...next].sort((a, b) => {
+        const byName = NAME_COLLATOR.compare(a.name, b.name);
+        if (byName !== 0) return byName * direction;
+        return compareNullableNumbers(a.productionYear, b.productionYear, direction);
+      });
+    case "ProductionYear":
+      return [...next].sort(
+        (a, b) =>
+          compareNullableNumbers(a.productionYear, b.productionYear, direction) ||
+          NAME_COLLATOR.compare(a.name, b.name),
+      );
+    case "CommunityRating":
+      return [...next].sort(
+        (a, b) =>
+          compareNullableNumbers(a.communityRating, b.communityRating, direction) ||
+          NAME_COLLATOR.compare(a.name, b.name),
+      );
+    case "DateCreated":
+      // EmbyItem does not carry DateCreated yet: keep the server order until
+      // useEmby/contract expose the field and sort server-side.
+      return next;
+  }
+}
 
 function ContinueCard({
   item,
@@ -74,11 +144,45 @@ export default function LibraryScreen({
   library,
   onOpen,
   onPlay,
+  query: controlledQuery,
+  onQueryChange,
 }: LibraryScreenProps) {
   const previewMode = !session || !desktop;
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const [localQuery, setLocalQuery] = useState<LibraryQuery>(DEFAULT_LIBRARY_QUERY);
   const { hasMore, loadMore, loadingMore, status, view } = library;
-  const landscape = collectionTypeOf(view) === "homevideos";
+  const collection = collectionTypeOf(view);
+  const landscape = collection === "homevideos";
+
+  const query = controlledQuery ?? localQuery;
+  // Movies/tv views are already restricted by includeItemTypes, so a type
+  // filter only makes sense for mixed (unknown collection type) libraries.
+  const availableTypes: Array<"Movie" | "Series"> =
+    collection === "unknown" ? ["Movie", "Series"] : [];
+  const typeFilterSupported = availableTypes.length > 1;
+  const effectiveQuery: LibraryQuery =
+    typeFilterSupported || query.itemType === "all"
+      ? query
+      : { ...query, itemType: "all" };
+
+  // The server already returns SortName/Ascending by default, so leave that
+  // order untouched; any explicit sort/filter is applied to the loaded page
+  // until useEmby takes over the query server-side.
+  const displayedItems = useMemo(
+    () =>
+      isDefaultLibraryQuery(effectiveQuery)
+        ? library.items
+        : applyLocalLibraryQuery(library.items, effectiveQuery),
+    [library.items, effectiveQuery],
+  );
+
+  const handleQueryChange = (next: LibraryQuery) => {
+    if (controlledQuery === undefined) setLocalQuery(next);
+    onQueryChange?.(next);
+  };
+
+  const filtersActive = effectiveQuery.unplayedOnly || effectiveQuery.itemType !== "all";
+  const localFilterCount = filtersActive && onQueryChange === undefined;
 
   useEffect(() => {
     const node = sentinelRef.current;
@@ -136,14 +240,26 @@ export default function LibraryScreen({
             <h1 className="page-title" id="library-title">
               {view?.name ?? "媒体库"}
             </h1>
-            {library.totalItems > 0 && <span className="page-count">{library.totalItems} 项</span>}
+            {library.totalItems > 0 && (
+              <span className="page-count">
+                {localFilterCount ? `${displayedItems.length} 项` : `${library.totalItems} 项`}
+              </span>
+            )}
           </div>
+
+          <LibraryToolbar
+            value={effectiveQuery}
+            onChange={handleQueryChange}
+            availableTypes={availableTypes}
+          />
 
           {library.items.length === 0 ? (
             <p className="empty-state">{view ? `「${view.name}」中暂无内容。` : "当前媒体库暂无内容。"}</p>
+          ) : displayedItems.length === 0 ? (
+            <p className="empty-state">没有符合当前筛选条件的内容。</p>
           ) : (
             <div className={`poster-grid${landscape ? " poster-grid--landscape" : ""}`}>
-              {library.items.map((item) => (
+              {displayedItems.map((item) => (
                 <PosterCard key={item.id} item={item} landscape={landscape} onSelect={onOpen} />
               ))}
             </div>

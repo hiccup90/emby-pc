@@ -43,6 +43,8 @@ interface DetailScreenProps {
   onBackdrop?: (src: string | null) => void;
   /** A "more like this" poster. */
   onOpenItem: (item: EmbyLibraryItem) => void;
+  /** A cast member: open their filmography. */
+  onOpenPerson?: (person: EmbyPerson) => void;
 }
 
 const CREW_ORDER = ["Director", "Writer", "Producer", "Composer"];
@@ -86,11 +88,36 @@ function initials(name: string): string {
     .join("");
 }
 
-function PersonCard({ person, photo }: { person: EmbyPerson; photo: string | undefined }) {
+function PersonCard({
+  person,
+  photo,
+  onOpen,
+}: {
+  person: EmbyPerson;
+  photo: string | undefined;
+  onOpen?: () => void;
+}) {
   const [failed, setFailed] = useState(false);
   const role = personRole(person);
+  const label = role ? `${person.name} · ${role}` : person.name;
   return (
-    <div className="person-card" title={role ? `${person.name} · ${role}` : person.name}>
+    <div
+      className={`person-card${onOpen ? " person-card--link" : ""}`}
+      title={onOpen ? `${label}（查看作品）` : label}
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpen();
+              }
+            }
+          : undefined
+      }
+    >
       <span className="person-card__photo" aria-hidden="true">
         {photo && !failed ? (
           <img src={photo} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
@@ -288,6 +315,7 @@ export default function DetailScreen({
   onPlay,
   onBackdrop,
   onOpenItem,
+  onOpenPerson,
 }: DetailScreenProps) {
   const detail = useEmbyDetail(itemId, seed, desktop && Boolean(session));
   const playback = usePlaybackLauncher();
@@ -506,6 +534,11 @@ export default function DetailScreen({
                   key={`${person.id ?? person.name}-${person.kind}-${index}`}
                   person={person}
                   photo={person.id ? detail.photos[person.id] : undefined}
+                  onOpen={
+                    onOpenPerson && person.id
+                      ? () => onOpenPerson(person)
+                      : undefined
+                  }
                 />
               ))}
             </HubRow>

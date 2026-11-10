@@ -526,8 +526,44 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       if (scenario.state === "loading") return never();
       await wait(250);
       if (scenario.state === "empty") return { items: [], totalRecordCount: 0, startIndex: 0 };
-      return page(children.get(String(req.parentId)) ?? [], req);
+      const term = String(req.searchTerm ?? "").trim().toLowerCase();
+      if (term) {
+        const all = [...items.values()].filter(
+          (item) =>
+            item.name.toLowerCase().includes(term) ||
+            (item.seriesName ?? "").toLowerCase().includes(term),
+        );
+        return page(all, req);
+      }
+      if (!req.parentId) {
+        const all = [...items.values()].filter((item) => item.type !== "Season");
+        const ordered = req.sortOrder === "Descending" ? [...all].reverse() : all;
+        return page(ordered, req);
+      }
+      const list = children.get(String(req.parentId)) ?? [];
+      const ordered = req.sortOrder === "Descending" ? [...list].reverse() : list;
+      return page(ordered, req);
     }
+    case "emby_person_items": {
+      await wait(200);
+      const all = [...items.values()].filter((item) => item.type !== "Season");
+      return page(all, req);
+    }
+    case "emby_set_played":
+    case "emby_set_favorite":
+      await wait(80);
+      return null;
+    case "player_stats":
+      return {
+        hwdec: "d3d11va",
+        vo: "gpu-next",
+        pixelFormat: "p010",
+        videoCodec: "hevc (Main 10)",
+        displayFps: 59.94,
+        videoFps: 23.976,
+        droppedFrames: 0,
+        bitrate: 18400000,
+      };
     case "emby_resume":
       await wait(200);
       if (scenario.noResume || scenario.state === "empty") return { items: [], totalRecordCount: 0, startIndex: 0 };

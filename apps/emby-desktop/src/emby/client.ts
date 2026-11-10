@@ -2,10 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   EmbyItem,
   EmbyItemsPage,
+  EmbyItemsRequest,
+  EmbyPersonItemsRequest,
   EmbyPlaybackTarget,
   EmbyResumeRequest,
   EmbySession,
+  EmbySetFavoriteRequest,
+  EmbySetPlayedRequest,
   EmbyView,
+} from "./contract";
+
+export type {
+  EmbyItemsRequest,
+  EmbyPersonItemsRequest,
+  EmbySetFavoriteRequest,
+  EmbySetPlayedRequest,
 } from "./contract";
 
 export type EmbyPlaybackEvent =
@@ -21,17 +32,6 @@ export interface EmbyCredentials {
   server: string;
   username: string;
   password: string;
-}
-
-export interface EmbyItemsRequest {
-  parentId?: string;
-  startIndex?: number;
-  limit?: number;
-  searchTerm?: string;
-  includeItemTypes?: string;
-  recursive?: boolean;
-  sortBy?: string;
-  filters?: string;
 }
 
 export interface EmbyImageRequest {
@@ -169,6 +169,57 @@ export async function embyItem(id: string): Promise<EmbyItem> {
 export async function embySimilar(id: string, limit?: number): Promise<EmbyItemsPage> {
   requireDesktop();
   return invoke<EmbyItemsPage>("emby_similar", { id, ...(limit ? { limit } : {}) });
+}
+
+/** Works featuring a person (actor/director). */
+export async function embyPersonItems(req: EmbyPersonItemsRequest): Promise<EmbyItemsPage>;
+export async function embyPersonItems(personId: string, limit?: number): Promise<EmbyItemsPage>;
+export async function embyPersonItems(
+  personIdOrRequest: string | EmbyPersonItemsRequest,
+  limit?: number,
+): Promise<EmbyItemsPage> {
+  requireDesktop();
+  const request =
+    typeof personIdOrRequest === "string"
+      ? { personId: personIdOrRequest, ...(limit ? { limit } : {}) }
+      : personIdOrRequest;
+  return invoke<EmbyItemsPage>("emby_person_items", {
+    personId: request.personId,
+    ...(request.limit ? { limit: request.limit } : {}),
+  });
+}
+
+/** Marks an item watched or unwatched for the signed-in user. */
+export async function embySetPlayed(req: EmbySetPlayedRequest): Promise<void>;
+export async function embySetPlayed(itemId: string, played: boolean): Promise<void>;
+export async function embySetPlayed(
+  itemIdOrRequest: string | EmbySetPlayedRequest,
+  played?: boolean,
+): Promise<void> {
+  requireDesktop();
+  const request =
+    typeof itemIdOrRequest === "string"
+      ? { itemId: itemIdOrRequest, played: played === true }
+      : itemIdOrRequest;
+  await invoke<void>("emby_set_played", { id: request.itemId, played: request.played });
+}
+
+/** Adds or removes the signed-in user's favorite mark. */
+export async function embySetFavorite(req: EmbySetFavoriteRequest): Promise<void>;
+export async function embySetFavorite(itemId: string, favorite: boolean): Promise<void>;
+export async function embySetFavorite(
+  itemIdOrRequest: string | EmbySetFavoriteRequest,
+  favorite?: boolean,
+): Promise<void> {
+  requireDesktop();
+  const request =
+    typeof itemIdOrRequest === "string"
+      ? { itemId: itemIdOrRequest, favorite: favorite === true }
+      : itemIdOrRequest;
+  await invoke<void>("emby_set_favorite", {
+    id: request.itemId,
+    favorite: request.favorite,
+  });
 }
 
 export async function embyPlaybackTarget(itemId: string): Promise<EmbyPlaybackTarget> {

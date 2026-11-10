@@ -89,6 +89,44 @@ export interface EmbyItemsPage {
   startIndex: number;
 }
 
+/** Direction accepted by Emby's `SortOrder` query parameter. */
+export type EmbySortOrder = "Ascending" | "Descending";
+
+/** Query for `emby_items` (`GET /Users/{userId}/Items`). */
+export interface EmbyItemsRequest {
+  parentId?: string;
+  startIndex?: number;
+  limit?: number;
+  searchTerm?: string;
+  includeItemTypes?: string;
+  recursive?: boolean;
+  sortBy?: string;
+  /** Defaults to `Ascending` on the Rust side. */
+  sortOrder?: EmbySortOrder;
+  /** Comma-separated Emby `Filters` values, e.g. `IsUnplayed`. */
+  filters?: string;
+  /** Comma-separated genre names (`Genres` query parameter). */
+  genres?: string;
+}
+
+/** Query for `emby_person_items` (`GET /Persons/{personId}/Items`). */
+export interface EmbyPersonItemsRequest {
+  personId: string;
+  limit?: number;
+}
+
+/** Payload for `emby_set_played`. */
+export interface EmbySetPlayedRequest {
+  itemId: string;
+  played: boolean;
+}
+
+/** Payload for `emby_set_favorite`. */
+export interface EmbySetFavoriteRequest {
+  itemId: string;
+  favorite: boolean;
+}
+
 export interface EmbyResumeRequest {
   limit?: number;
 }

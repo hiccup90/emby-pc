@@ -239,7 +239,7 @@ impl EmbyClient {
                 "SortBy",
                 clean(req.sort_by.as_deref()).unwrap_or_else(|| "SortName".to_string()),
             ),
-            ("SortOrder", "Ascending".to_string()),
+            ("SortOrder", sort_order(req.sort_order.as_deref()).to_string()),
         ];
         if let Some(parent) = clean(req.parent_id.as_deref()) {
             query.push(("ParentId", parent));
@@ -252,6 +252,9 @@ impl EmbyClient {
         }
         if let Some(filters) = clean(req.filters.as_deref()) {
             query.push(("Filters", filters));
+        }
+        if let Some(genres) = clean(req.genres.as_deref()) {
+            query.push(("Genres", genres));
         }
         if let Some(start_index) = req.start_index {
             query.push(("StartIndex", start_index.to_string()));
@@ -341,6 +344,77 @@ impl EmbyClient {
             .send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
             .await?;
         let raw: RawItemsResponse = parse_json(&body, "相似条目")?;
+        Ok(raw.into_page())
+    }
+
+    /// Marks an item watched (`POST`) or unwatched (`DELETE`) for the user.
+    pub async fn set_played(&self, user_id: &str, item_id: &str, played: bool) -> ApiResult<()> {
+        let _token = self.token()?;
+        let item_id = required_item_id(item_id)?;
+        let method = if played { Method::POST } else { Method::DELETE };
+        let url = self.endpoint(&["Users", user_id, "PlayedItems", item_id], &[])?;
+        self.send(self.request(method, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        Ok(())
+    }
+
+    /// Adds (`POST`) or removes (`DELETE`) the user's favorite mark.
+    pub async fn set_favorite(
+        &self,
+        user_id: &str,
+        item_id: &str,
+        favorite: bool,
+    ) -> ApiResult<()> {
+        let _token = self.token()?;
+        let item_id = required_item_id(item_id)?;
+        let method = if favorite {
+            Method::POST
+        } else {
+            Method::DELETE
+        };
+        let url = self.endpoint(&["Users", user_id, "FavoriteItems", item_id], &[])?;
+        self.send(self.request(method, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        Ok(())
+    }
+
+    /// Works featuring a person (`GET /Persons/{id}/Items`).
+    ///
+    /// The response uses the regular item shape, so it goes through the same
+    /// `RawItemsResponse` parser as `items`. `limit == 0` omits `Limit`
+    /// entirely (server default page size).
+    pub async fn person_items(
+        &self,
+        user_id: &str,
+        person_id: &str,
+        limit: u32,
+    ) -> ApiResult<EmbyItemsPage> {
+        let _token = self.token()?;
+        let person_id = required_person_id(person_id)?;
+
+        let mut query: Vec<(&str, String)> = vec![
+            ("UserId", user_id.to_string()),
+            ("Recursive", "true".to_string()),
+            ("Fields", ITEM_FIELDS.to_string()),
+            ("EnableUserData", "true".to_string()),
+            ("EnableImageTypes", "Primary,Backdrop".to_string()),
+            ("ImageTypeLimit", "1".to_string()),
+            ("SortBy", "SortName".to_string()),
+            ("SortOrder", "Ascending".to_string()),
+        ];
+        if limit > 0 {
+            query.push(("Limit", limit.to_string()));
+        }
+
+        let pairs: Vec<(&str, &str)> = query
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        let url = self.endpoint(&["Persons", person_id, "Items"], &pairs)?;
+        let body = self
+            .send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        let raw: RawItemsResponse = parse_json(&body, "演员作品列表")?;
         Ok(raw.into_page())
     }
 
@@ -553,6 +627,14 @@ fn required_item_id(item_id: &str) -> ApiResult<&str> {
     Ok(item_id)
 }
 
+fn required_person_id(person_id: &str) -> ApiResult<&str> {
+    let person_id = person_id.trim();
+    if person_id.is_empty() {
+        return Err(ApiError::config("缺少演员 id"));
+    }
+    Ok(person_id)
+}
+
 fn no_source_error() -> ApiError {
     ApiError::no_playable_source("该媒体没有可直接播放的源（需要转码，当前版本尚未实现）")
 }
@@ -562,6 +644,20 @@ fn clean(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// Emby's `SortOrder` query value. Anything other than an explicit descending
+/// value keeps the historical default (`Ascending`), so older callers that do
+/// not send `sortOrder` are unaffected.
+fn sort_order(value: Option<&str>) -> &'static str {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value)
+            if value.eq_ignore_ascii_case("Descending") || value.eq_ignore_ascii_case("Desc") =>
+        {
+            "Descending"
+        }
+        _ => "Ascending",
+    }
 }
 
 fn parse_json<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> ApiResult<T> {
@@ -837,6 +933,202 @@ mod tests {
         assert!(request_line.contains("Limit=12"), "{request_line}");
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].id, "m2");
+    }
+
+    #[tokio::test]
+    async fn items_sends_sort_order_filters_and_genres() {
+        const PAGE: &str = r#"{"Items":[],"TotalRecordCount":0,"StartIndex":0}"#;
+        let (server_url, server) = spawn_mock_server(PAGE);
+        let req = EmbyItemsRequest {
+            parent_id: Some("v1".to_string()),
+            sort_by: Some("DateCreated".to_string()),
+            sort_order: Some("Descending".to_string()),
+            filters: Some("IsUnplayed".to_string()),
+            genres: Some("Animation,Short".to_string()),
+            limit: Some(24),
+            ..EmbyItemsRequest::default()
+        };
+
+        let page = test_client(server_url)
+            .items("u1", &req)
+            .await
+            .expect("items request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+
+        assert!(
+            request_line.starts_with("GET /Users/u1/Items?"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("SortBy=DateCreated"), "{request_line}");
+        assert!(request_line.contains("SortOrder=Descending"), "{request_line}");
+        assert!(request_line.contains("Filters=IsUnplayed"), "{request_line}");
+        assert!(
+            request_line.contains("Genres=Animation%2CShort")
+                || request_line.contains("Genres=Animation,Short"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("Limit=24"), "{request_line}");
+        assert!(page.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn items_defaults_to_ascending_and_normalizes_case() {
+        const PAGE: &str = r#"{"Items":[],"TotalRecordCount":0,"StartIndex":0}"#;
+
+        let (server_url, server) = spawn_mock_server(PAGE);
+        test_client(server_url)
+            .items("u1", &EmbyItemsRequest::default())
+            .await
+            .expect("items request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(request_line.contains("SortOrder=Ascending"), "{request_line}");
+        assert!(!request_line.contains("Genres="), "{request_line}");
+
+        let (server_url, server) = spawn_mock_server(PAGE);
+        let req = EmbyItemsRequest {
+            sort_order: Some(" descending ".to_string()),
+            ..EmbyItemsRequest::default()
+        };
+        test_client(server_url)
+            .items("u1", &req)
+            .await
+            .expect("items request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(request_line.contains("SortOrder=Descending"), "{request_line}");
+    }
+
+    #[tokio::test]
+    async fn mark_played_uses_post_and_delete() {
+        const EMPTY: &str = "{}";
+
+        let (server_url, server) = spawn_mock_server(EMPTY);
+        test_client(server_url)
+            .set_played("u1", "i1", true)
+            .await
+            .expect("mark played");
+        let request = server.join().expect("mock server thread");
+        assert!(
+            request
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .starts_with("POST /Users/u1/PlayedItems/i1 "),
+            "{request}"
+        );
+
+        let (server_url, server) = spawn_mock_server(EMPTY);
+        test_client(server_url)
+            .set_played("u1", "i1", false)
+            .await
+            .expect("mark unplayed");
+        let request = server.join().expect("mock server thread");
+        assert!(
+            request
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .starts_with("DELETE /Users/u1/PlayedItems/i1 "),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorite_uses_post_and_delete() {
+        const EMPTY: &str = "{}";
+
+        let (server_url, server) = spawn_mock_server(EMPTY);
+        test_client(server_url)
+            .set_favorite("u1", "i1", true)
+            .await
+            .expect("add favorite");
+        let request = server.join().expect("mock server thread");
+        assert!(
+            request
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .starts_with("POST /Users/u1/FavoriteItems/i1 "),
+            "{request}"
+        );
+
+        let (server_url, server) = spawn_mock_server(EMPTY);
+        test_client(server_url)
+            .set_favorite("u1", "i1", false)
+            .await
+            .expect("remove favorite");
+        let request = server.join().expect("mock server thread");
+        assert!(
+            request
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .starts_with("DELETE /Users/u1/FavoriteItems/i1 "),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn person_items_uses_the_persons_endpoint_and_reuses_the_item_parser() {
+        const PAGE: &str = r#"{
+            "Items": [
+                {"Id": "m1", "Name": "First", "Type": "Movie", "Genres": ["Drama"],
+                 "UserData": {"Played": true, "PlaybackPositionTicks": 0}},
+                {"Id": "s1", "Name": "Show", "Type": "Series"}
+            ],
+            "TotalRecordCount": 2,
+            "StartIndex": 0
+        }"#;
+        let (server_url, server) = spawn_mock_server(PAGE);
+
+        let page = test_client(server_url)
+            .person_items("u1", "p1", 60)
+            .await
+            .expect("person items request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+
+        assert!(
+            request_line.starts_with("GET /Persons/p1/Items?"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("UserId=u1"), "{request_line}");
+        assert!(request_line.contains("Recursive=true"), "{request_line}");
+        assert!(request_line.contains("EnableUserData=true"), "{request_line}");
+        assert!(
+            request_line.contains("Fields=PrimaryImageAspectRatio"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("Limit=60"), "{request_line}");
+        assert_eq!(page.total_record_count, 2);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].id, "m1");
+        assert_eq!(page.items[0].genres, vec!["Drama"]);
+        assert!(page.items[0].user_data.played);
+        assert_eq!(page.items[1].r#type, "Series");
+    }
+
+    #[tokio::test]
+    async fn person_items_with_zero_limit_omits_limit_and_rejects_empty_id() {
+        const PAGE: &str = r#"{"Items":[],"TotalRecordCount":0,"StartIndex":0}"#;
+        let (server_url, server) = spawn_mock_server(PAGE);
+
+        test_client(server_url)
+            .person_items("u1", "p1", 0)
+            .await
+            .expect("person items request");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(!request_line.contains("Limit="), "{request_line}");
+
+        let client = test_client("http://127.0.0.1:1".to_string());
+        let error = client
+            .person_items("u1", "  ", 10)
+            .await
+            .expect_err("empty person id");
+        assert_eq!(error.kind(), ApiErrorKind::Config);
     }
 
     #[test]

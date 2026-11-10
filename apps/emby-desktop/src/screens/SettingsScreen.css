@@ -1,0 +1,226 @@
+/* Settings page: grouped preference cards in the Plex dark palette. */
+
+.settings-page {
+  max-width: 900px;
+  padding-top: 22px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0 0 30px;
+}
+
+.settings-header__back {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  place-items: center;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.06);
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.settings-header__back:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.settings-header__title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.settings-header__subtitle {
+  margin: 6px 0 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+
+.settings-section {
+  margin: 0 0 30px;
+}
+
+.settings-section__title {
+  margin: 0 0 10px 2px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.settings-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 20px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line);
+}
+
+.settings-row--stacked {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-row__text {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-row__label {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-row__hint {
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.settings-value {
+  flex: 0 0 auto;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-path {
+  display: block;
+  max-width: 100%;
+  padding: 8px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.35);
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", "Courier New", monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.settings-segmented {
+  display: flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-segmented__option {
+  min-width: 74px;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-2);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.settings-segmented__option:hover {
+  color: var(--text);
+}
+
+.settings-segmented__option--active {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.settings-segmented__option--active:hover {
+  color: var(--accent-ink);
+  background: var(--accent-hover);
+}
+
+.settings-toggle {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 0.15s ease;
+}
+
+.settings-toggle--on {
+  background: var(--accent);
+}
+
+.settings-toggle__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f7f7f7;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  transition: transform 0.15s ease;
+}
+
+.settings-toggle--on .settings-toggle__thumb {
+  transform: translateX(20px);
+}
+
+.settings-select {
+  min-width: 112px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+}
+
+.settings-select option {
+  color: var(--text);
+  background: var(--menu);
+}
+
+@media (max-width: 640px) {
+  .settings-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-header__back,
+  .settings-segmented__option,
+  .settings-toggle,
+  .settings-toggle__thumb {
+    transition: none;
+  }
+}

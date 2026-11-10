@@ -5,8 +5,13 @@ import type { EmbyLibraryItem } from "./emby/useEmby";
 import type { EmbyItem } from "./emby/contract";
 import { useEmbyLibrary, useEmbySession, usePlaybackLauncher } from "./emby/useEmby";
 import { embyItems } from "./emby/client";
+import { decorateItems } from "./emby/useSearch";
 import { episodePlaybackMeta, itemChapters, itemPlaybackMeta } from "./emby/format";
+import ActorScreen from "./screens/ActorScreen";
 import DetailScreen from "./screens/DetailScreen";
+import HomeScreen from "./screens/HomeScreen";
+import SearchScreen from "./screens/SearchScreen";
+import SettingsScreen from "./screens/SettingsScreen";
 import LibraryScreen from "./screens/LibraryScreen";
 import LoginScreen from "./screens/LoginScreen";
 import Sidebar from "./screens/Sidebar";
@@ -35,6 +40,10 @@ type DetailRoute = DetailLocation & { trail: DetailLocation[] };
 type Route =
   | { screen: "login" }
   | { screen: "library" }
+  | { screen: "home" }
+  | { screen: "search" }
+  | { screen: "settings" }
+  | { screen: "actor"; personId: string; personName: string; from: DetailRoute }
   | ({ screen: "detail" } & DetailRoute)
   | {
       screen: "player";
@@ -72,7 +81,7 @@ export default function App() {
 
   useEffect(() => {
     if (sessionController.session && route.screen === "login") {
-      setRoute({ screen: "library" });
+      setRoute({ screen: "home" });
     }
   }, [route.screen, sessionController.session]);
 
@@ -115,6 +124,48 @@ export default function App() {
     libraryScrollRef.current = contentRef.current?.scrollTop ?? 0;
     setRoute({ screen: "detail", itemId: item.id, seed: item, trail: [] });
   }, []);
+
+  // "Recently added" for the home screen (server-sorted, newest first).
+  const [recent, setRecent] = useState<EmbyLibraryItem[]>([]);
+  useEffect(() => {
+    if (!sessionController.session) return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await embyItems({
+          recursive: true,
+          sortBy: "DateCreated",
+          sortOrder: "Descending",
+          limit: 24,
+          includeItemTypes: "Movie,Series",
+        });
+        if (!cancelled) setRecent(await decorateItems(page.items));
+      } catch (reason) {
+        console.warn("[home] could not load recently added", reason);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionController.session]);
+
+  const openActor = useCallback(
+    (person: { id: string | null; name: string }) => {
+      const personId = person.id;
+      if (!personId) return;
+      setRoute((current) =>
+        current.screen === "detail"
+          ? {
+              screen: "actor",
+              personId,
+              personName: person.name,
+              from: { itemId: current.itemId, seed: current.seed, trail: current.trail },
+            }
+          : current,
+      );
+    },
+    [],
+  );
 
   /** "More like this": back returns to the current detail page. */
   const openRelated = useCallback((item: EmbyLibraryItem) => {
@@ -265,7 +316,13 @@ export default function App() {
   }
 
   const session = sessionController.session;
-  const browsing = route.screen === "library" || route.screen === "detail";
+  const browsing =
+    route.screen === "library" ||
+    route.screen === "detail" ||
+    route.screen === "home" ||
+    route.screen === "search" ||
+    route.screen === "settings" ||
+    route.screen === "actor";
   const account: TitleBarAccount | null = browsing
     ? {
         userName: session?.userName ?? null,
@@ -305,6 +362,18 @@ export default function App() {
             loading={sidebarLoading}
             status={sidebarStatus}
             onSelect={chooseView}
+            activeNav={
+              route.screen === "home"
+                ? "home"
+                : route.screen === "search"
+                  ? "search"
+                  : route.screen === "settings"
+                    ? "settings"
+                    : null
+            }
+            onHome={() => setRoute({ screen: "home" })}
+            onSearch={() => setRoute({ screen: "search" })}
+            onSettings={() => setRoute({ screen: "settings" })}
           />
         )}
         <div className="app-content" ref={contentRef}>
@@ -317,6 +386,33 @@ export default function App() {
               onLogin={sessionController.signIn}
               onPreview={goToLibrary}
               onClearError={sessionController.clearLoginError}
+            />
+          )}
+
+          {route.screen === "home" && (
+            <HomeScreen
+              resume={library.resumable}
+              recent={recent}
+              onOpen={openItem}
+              onPlay={resumeItem}
+              onSeeAll={goToLibrary}
+            />
+          )}
+
+          {route.screen === "search" && (
+            <SearchScreen onOpen={openItem} onPlay={resumeItem} />
+          )}
+
+          {route.screen === "settings" && (
+            <SettingsScreen onBack={() => setRoute({ screen: "home" })} />
+          )}
+
+          {route.screen === "actor" && (
+            <ActorScreen
+              personId={route.personId}
+              personName={route.personName}
+              onOpen={openItem}
+              onBack={() => setRoute({ screen: "detail", ...route.from })}
             />
           )}
 
@@ -349,6 +445,7 @@ export default function App() {
                 )
               }
               onBackdrop={setBackdrop}
+              onOpenPerson={openActor}
             />
           )}
         </div>

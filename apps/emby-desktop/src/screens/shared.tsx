@@ -15,7 +15,10 @@ export type IconName =
   | "chevron-left"
   | "chevron-right"
   | "check"
-  | "logout";
+  | "logout"
+  | "home"
+  | "search"
+  | "settings";
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const shared = {
@@ -26,6 +29,23 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     strokeLinejoin: "round" as const,
   };
   const paths: Record<IconName, ReactNode> = {
+    home: (
+      <>
+        <path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z" />
+      </>
+    ),
+    search: (
+      <>
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="M16 16l4 4" />
+      </>
+    ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" />
+      </>
+    ),
     "arrow-left": (
       <>
         <path d="m11 18-6-6 6-6" />
