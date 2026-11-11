@@ -27,6 +27,8 @@ import { ErrorNotice, Icon, MediaArtwork, ProgressBar } from "./shared";
 interface DetailScreenProps {
   itemId: string;
   seed: EmbyLibraryItem | null;
+  /** Episode to reveal after returning from the player (series pages only). */
+  focusEpisodeId?: string | null;
   session: EmbySession | null;
   desktop: boolean;
   onBack: () => void;
@@ -244,20 +246,57 @@ function defaultSeason(groups: SeasonGroup[]): string | null {
 function EpisodeSection({
   episodes,
   seriesName,
+  focusEpisodeId,
   pendingId,
   playbackPending,
   onPlay,
 }: {
   episodes: EmbyLibraryItem[];
   seriesName: string;
+  focusEpisodeId: string | null;
   pendingId: string | null;
   playbackPending: boolean;
   onPlay: (episode: EmbyLibraryItem) => void;
 }) {
   const groups = useMemo(() => groupSeasons(episodes), [episodes]);
   const [selected, setSelected] = useState<string | null>(null);
-  const activeKey = groups.some((group) => group.key === selected) ? selected : defaultSeason(groups);
+  const rowRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const scrolledRef = useRef<string | null>(null);
+
+  // Return from the player: open the season that holds the episode on screen.
+  const focusSeasonKey = useMemo(() => {
+    if (!focusEpisodeId) return null;
+    const group = groups.find((candidate) =>
+      candidate.episodes.some((episode) => episode.id === focusEpisodeId),
+    );
+    return group?.key ?? null;
+  }, [focusEpisodeId, groups]);
+
+  const activeKey = groups.some((group) => group.key === selected)
+    ? selected
+    : focusSeasonKey ?? defaultSeason(groups);
   const active = groups.find((group) => group.key === activeKey) ?? groups[0];
+
+  // Scroll the focused episode into view once, after its season has rendered.
+  useEffect(() => {
+    if (!focusEpisodeId || !active) return undefined;
+    const node = rowRefs.current[focusEpisodeId];
+    if (!node) return undefined;
+    const scrollKey = `${focusEpisodeId}:${active.key}`;
+    if (scrolledRef.current === scrollKey) return undefined;
+    const behavior: ScrollBehavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth";
+    const timer = window.setTimeout(() => {
+      if (!node.isConnected) return;
+      // Mark only after the timer fires: StrictMode's mount cleanup runs before
+      // 80ms and must not consume the one automatic scroll.
+      scrolledRef.current = scrollKey;
+      node.scrollIntoView({ block: "center", behavior });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [active, focusEpisodeId]);
+
   if (!active) return null;
 
   return (
@@ -282,16 +321,25 @@ function EpisodeSection({
         {active.episodes.map((episode) => {
           const progress = itemProgress(episode);
           const pending = pendingId === episode.id;
+          const focused = focusEpisodeId === episode.id;
           const label = itemEpisodeLabel(episode) ?? "";
           const meta = [label, formatRuntimeTicks(episode.runTimeTicks)].filter(
             (part) => part && part !== "时长未知",
           );
           return (
-            <li key={episode.id}>
+            <li
+              key={episode.id}
+              ref={(node) => {
+                if (node) rowRefs.current[episode.id] = node;
+                else delete rowRefs.current[episode.id];
+              }}
+              className={focused ? "episode-list__item episode-list__item--focused" : "episode-list__item"}
+            >
               <button
                 type="button"
                 className={`episode-row${pending ? " is-pending" : ""}`}
                 disabled={playbackPending}
+                aria-current={focused ? "true" : undefined}
                 aria-label={`播放《${seriesName}》${label} ${episode.name}`}
                 onClick={() => onPlay(episode)}
               >
@@ -331,6 +379,7 @@ function EpisodeSection({
 export default function DetailScreen({
   itemId,
   seed,
+  focusEpisodeId = null,
   session,
   desktop,
   onBack,
@@ -627,6 +676,7 @@ export default function DetailScreen({
             <EpisodeSection
               episodes={episodes.items}
               seriesName={item.name}
+              focusEpisodeId={focusEpisodeId ?? null}
               pendingId={pendingEpisodeId}
               playbackPending={playback.pending}
               onPlay={(next) => void playEpisode(next)}

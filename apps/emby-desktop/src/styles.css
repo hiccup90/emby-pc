@@ -1689,3 +1689,23 @@ button:disabled {
 .detail-action-toggle:disabled {
   opacity: 0.55;
 }
+
+/* ---- detail page: episode highlighted after returning from playback ----------- */
+
+.episode-list__item--focused {
+  border-bottom-color: rgba(229, 160, 13, 0.45);
+}
+
+.episode-list__item--focused .episode-row {
+  border-radius: var(--radius);
+  background: rgba(229, 160, 13, 0.12);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.episode-list__item--focused .episode-row:hover:not(:disabled) {
+  background: rgba(229, 160, 13, 0.18);
+}
+
+.episode-list__item--focused .episode-row__title {
+  color: var(--accent);
+}

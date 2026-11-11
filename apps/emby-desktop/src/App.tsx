@@ -33,6 +33,8 @@ if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]
 interface DetailLocation {
   itemId: string;
   seed: EmbyLibraryItem | null;
+  /** Episode to reveal (season + scroll + highlight) after returning from playback. */
+  focusEpisodeId?: string | null;
 }
 
 /** A detail page plus the detail pages it was opened from ("more like this"). */
@@ -326,6 +328,9 @@ export default function App() {
               itemId: route.returnTo.itemId,
               seed: route.returnTo.seed,
               trail: route.returnTo.trail,
+              // route.playback is the item actually on screen, so auto-play's
+              // next episode is the one revealed when the user goes back.
+              focusEpisodeId: route.playback.itemId,
             });
           }}
         />
@@ -452,6 +457,7 @@ export default function App() {
               key={route.itemId}
               itemId={route.itemId}
               seed={route.seed}
+              focusEpisodeId={route.focusEpisodeId ?? null}
               session={session}
               desktop={desktop}
               onBack={leaveDetail}
