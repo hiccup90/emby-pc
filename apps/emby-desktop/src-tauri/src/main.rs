@@ -10,6 +10,7 @@ mod overlay;
 mod player;
 mod settings;
 mod video_window;
+mod window_state;
 
 use player::PlayerService;
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -20,6 +21,28 @@ fn main() {
             let window = app
                 .get_webview_window("main")
                 .ok_or_else(|| "main window \"main\" is missing from tauri.conf.json".to_string())?;
+
+            // Restore the last normal window geometry before creating the
+            // native video host. Player fullscreen geometry is deliberately
+            // never persisted by window_state.
+            match window_state::WindowState::new(app.handle()) {
+                Ok(state) => {
+                    app.manage(state);
+                    if let Some(state) = app.try_state::<window_state::WindowState>() {
+                        let window_handle = window.as_ref().window();
+                        // Capture the configured default geometry before the
+                        // user can maximize, so a first-run maximize has a
+                        // normal rectangle to restore later.
+                        state.track(&window_handle);
+                        if let Err(err) = state.restore(&window_handle) {
+                            eprintln!("[desktop] window state restore skipped: {err}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[desktop] window state disabled: {err}");
+                }
+            }
 
             // Created once on the main thread; libmpv later embeds into it via
             // `--wid`. A failure must not abort the app: the library UI still
@@ -81,6 +104,9 @@ fn main() {
                 // `terminate_destroy` must run before the parent HWND is
                 // destroyed.
                 WindowEvent::CloseRequested { .. } => {
+                    if let Some(state) = app.try_state::<window_state::WindowState>() {
+                        state.save(window);
+                    }
                     if let Some(service) = app.try_state::<PlayerService>() {
                         service.shutdown();
                     }
@@ -95,6 +121,9 @@ fn main() {
                     }
                 }
                 WindowEvent::Destroyed => {
+                    if let Some(state) = app.try_state::<window_state::WindowState>() {
+                        state.save(window);
+                    }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.on_main_destroyed();
                     }
@@ -110,6 +139,9 @@ fn main() {
                 // overlay's own activation attempts.
                 WindowEvent::Focused(_) => {}
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                    if let Some(state) = app.try_state::<window_state::WindowState>() {
+                        state.track(window);
+                    }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.on_main_geometry(app, None);
                     }
@@ -132,6 +164,9 @@ fn main() {
                     }
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    if let Some(state) = app.try_state::<window_state::WindowState>() {
+                        state.track(window);
+                    }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
                         state.on_main_geometry(app, Some(*scale_factor));
                     }
@@ -184,6 +219,11 @@ fn main() {
         // Covers exits that do not go through the main window (menu quit,
         // `app.exit()`, last window destroyed by the OS).
         if let RunEvent::ExitRequested { .. } = event {
+            if let Some(state) = handle.try_state::<window_state::WindowState>() {
+                if let Some(window) = handle.get_webview_window("main") {
+                    state.save(&window.as_ref().window());
+                }
+            }
             if let Some(service) = handle.try_state::<PlayerService>() {
                 service.shutdown();
             }
