@@ -22,6 +22,7 @@ mod client;
 mod error;
 mod model;
 mod report;
+mod secret;
 mod session;
 mod ticks;
 pub mod url;
@@ -40,6 +41,6 @@ pub use model::{
     EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
 };
 pub use report::ReportEvent;
-pub use session::{generate_device_id, SessionStore, StoredSession};
+pub use session::{generate_device_id, SessionStore, StoredSession, SESSION_VERSION};
 pub use ticks::{seconds_to_ticks, ticks_to_seconds, TICKS_PER_SECOND};
 pub use url::{build_url, normalize_server_url, redact_url, with_api_key};
