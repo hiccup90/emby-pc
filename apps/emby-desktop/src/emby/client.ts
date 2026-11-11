@@ -63,18 +63,18 @@ function requireDesktop(): void {
   }
 }
 
-export function describeEmbyError(error: unknown, fallback: string): string {
-  let message = "";
-  if (typeof error === "string") {
-    message = error;
-  } else if (error instanceof Error) {
-    message = error.message;
-  } else if (typeof error === "object" && error !== null && "message" in error) {
+function rawEmbyErrorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) {
     const value = (error as { message?: unknown }).message;
-    if (typeof value === "string") message = value;
+    if (typeof value === "string") return value;
   }
+  return "";
+}
 
-  message = message.trim();
+export function describeEmbyError(error: unknown, fallback: string): string {
+  const message = rawEmbyErrorMessage(error).trim();
   if (!message) return fallback;
 
   const normalized = message.toLowerCase();
@@ -87,6 +87,9 @@ export function describeEmbyError(error: unknown, fallback: string): string {
   ) {
     return "该条目需要转码，当前不支持直接播放。";
   }
+  if (normalized.includes("登录已过期")) {
+    return "登录已过期，请重新登录。";
+  }
   if (
     normalized.includes("401") ||
     normalized.includes("unauthorized") ||
@@ -94,7 +97,8 @@ export function describeEmbyError(error: unknown, fallback: string): string {
     normalized.includes("invalid username") ||
     normalized.includes("authentication failed") ||
     normalized.includes("access denied") ||
-    normalized.includes("登录已失效")
+    normalized.includes("登录已失效") ||
+    normalized.includes("登录已过期")
   ) {
     return "用户名或密码不正确，或登录已失效。";
   }
@@ -130,45 +134,84 @@ export function describeEmbyError(error: unknown, fallback: string): string {
   return message;
 }
 
+export const EMBY_SESSION_EXPIRED_MESSAGE = "登录已过期，请重新登录";
+
+export type EmbySessionExpiredListener = (message: string) => void;
+
+const sessionExpiredListeners = new Set<EmbySessionExpiredListener>();
+
+/** Subscribes to commands that confirmed the saved token is no longer valid. */
+export function onEmbySessionExpired(listener: EmbySessionExpiredListener): () => void {
+  sessionExpiredListeners.add(listener);
+  return () => {
+    sessionExpiredListeners.delete(listener);
+  };
+}
+
+function notifySessionExpired(message: string): void {
+  for (const listener of sessionExpiredListeners) {
+    try {
+      listener(message);
+    } catch (reason) {
+      console.warn("[emby] session-expired listener failed", reason);
+    }
+  }
+}
+
+function isSessionExpiredMessage(message: string): boolean {
+  return message.includes("登录已过期") || message.includes("登录已失效");
+}
+
+async function invokeEmby<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    if (isSessionExpiredMessage(rawEmbyErrorMessage(error))) {
+      notifySessionExpired(EMBY_SESSION_EXPIRED_MESSAGE);
+    }
+    throw error;
+  }
+}
+
 export async function embyLogin(req: EmbyCredentials): Promise<EmbySession> {
   requireDesktop();
-  return invoke<EmbySession>("emby_login", { req });
+  return invokeEmby<EmbySession>("emby_login", { req });
 }
 
 export async function embyLogout(): Promise<void> {
   requireDesktop();
-  await invoke<void>("emby_logout");
+  await invokeEmby<void>("emby_logout");
 }
 
 export async function embySession(): Promise<EmbySession | null> {
   requireDesktop();
-  return invoke<EmbySession | null>("emby_session");
+  return invokeEmby<EmbySession | null>("emby_session");
 }
 
 export async function embyViews(): Promise<EmbyView[]> {
   requireDesktop();
-  return invoke<EmbyView[]>("emby_views");
+  return invokeEmby<EmbyView[]>("emby_views");
 }
 
 export async function embyItems(req: EmbyItemsRequest): Promise<EmbyItemsPage> {
   requireDesktop();
-  return invoke<EmbyItemsPage>("emby_items", { req });
+  return invokeEmby<EmbyItemsPage>("emby_items", { req });
 }
 
 export async function embyResume(req: EmbyResumeRequest = {}): Promise<EmbyItemsPage> {
   requireDesktop();
-  return invoke<EmbyItemsPage>("emby_resume", { req });
+  return invokeEmby<EmbyItemsPage>("emby_resume", { req });
 }
 
 export async function embyItem(id: string): Promise<EmbyItem> {
   requireDesktop();
-  return invoke<EmbyItem>("emby_item", { id });
+  return invokeEmby<EmbyItem>("emby_item", { id });
 }
 
 /** "More like this" for a movie or series. */
 export async function embySimilar(id: string, limit?: number): Promise<EmbyItemsPage> {
   requireDesktop();
-  return invoke<EmbyItemsPage>("emby_similar", { id, ...(limit ? { limit } : {}) });
+  return invokeEmby<EmbyItemsPage>("emby_similar", { id, ...(limit ? { limit } : {}) });
 }
 
 /** Works featuring a person (actor/director). */
@@ -183,7 +226,7 @@ export async function embyPersonItems(
     typeof personIdOrRequest === "string"
       ? { personId: personIdOrRequest, ...(limit ? { limit } : {}) }
       : personIdOrRequest;
-  return invoke<EmbyItemsPage>("emby_person_items", {
+  return invokeEmby<EmbyItemsPage>("emby_person_items", {
     personId: request.personId,
     ...(request.limit ? { limit: request.limit } : {}),
   });
@@ -201,7 +244,7 @@ export async function embySetPlayed(
     typeof itemIdOrRequest === "string"
       ? { itemId: itemIdOrRequest, played: played === true }
       : itemIdOrRequest;
-  await invoke<void>("emby_set_played", { id: request.itemId, played: request.played });
+  await invokeEmby<void>("emby_set_played", { id: request.itemId, played: request.played });
 }
 
 /** Adds or removes the signed-in user's favorite mark. */
@@ -216,7 +259,7 @@ export async function embySetFavorite(
     typeof itemIdOrRequest === "string"
       ? { itemId: itemIdOrRequest, favorite: favorite === true }
       : itemIdOrRequest;
-  await invoke<void>("emby_set_favorite", {
+  await invokeEmby<void>("emby_set_favorite", {
     id: request.itemId,
     favorite: request.favorite,
   });
@@ -224,15 +267,15 @@ export async function embySetFavorite(
 
 export async function embyPlaybackTarget(itemId: string): Promise<EmbyPlaybackTarget> {
   requireDesktop();
-  return invoke<EmbyPlaybackTarget>("emby_playback_target", { req: { itemId } });
+  return invokeEmby<EmbyPlaybackTarget>("emby_playback_target", { req: { itemId } });
 }
 
 export async function embyReportPlayback(req: EmbyPlaybackReportRequest): Promise<void> {
   requireDesktop();
-  await invoke<void>("emby_report_playback", { req });
+  await invokeEmby<void>("emby_report_playback", { req });
 }
 
 export async function embyImageUrl(req: EmbyImageRequest): Promise<string> {
   requireDesktop();
-  return invoke<string>("emby_image_url", { req });
+  return invokeEmby<string>("emby_image_url", { req });
 }

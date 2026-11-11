@@ -2,8 +2,9 @@
 //!
 //! Responsibilities:
 //! - own the one shared `emby_api::HttpClient`,
-//! - lazily restore `session.json` from the app config dir,
-//! - drop the in-memory *and* on-disk session on 401/403,
+//! - lazily restore `session.json` from the app config dir (retrying a
+//!   transient disk error instead of treating it as a logout),
+//! - re-check an auth failure once before dropping the persisted session,
 //! - expose the camelCase command contract consumed by the frontend.
 //!
 //! All commands are `async fn`: Tauri runs them on its tokio runtime, never on
@@ -15,6 +16,8 @@
 //! promise on error) so the frontend can decide whether to ignore a failed
 //! progress report. Success values match the TypeScript types exactly.
 
+use std::time::Duration;
+
 use emby_api::{
     ApiError, EmbyClient, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest,
     EmbyLoginRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest,
@@ -24,7 +27,7 @@ use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 /// Message shown when the server no longer accepts the stored token.
-const AUTH_EXPIRED: &str = "登录已失效，请重新登录";
+const AUTH_EXPIRED: &str = "登录已过期，请重新登录";
 
 /// Page size used when `emby_resume` does not receive a limit.
 const DEFAULT_RESUME_LIMIT: u32 = 16;
@@ -61,26 +64,54 @@ impl EmbyService {
         })
     }
 
-    /// Restores the session from disk exactly once.
-    async fn stored_session(&self) -> Option<StoredSession> {
-        let mut state = self.session.lock().await;
-        if !state.loaded {
-            state.session = match self.store.load() {
-                Ok(session) => session,
+    /// Restores the session from disk, retrying a transient I/O failure a few
+    /// times. A failure is *not* cached as "logged out": a slow/roaming
+    /// profile or antivirus lock during a Windows boot must not force the user
+    /// through the login page for the rest of the run.
+    async fn stored_session(&self) -> Result<Option<StoredSession>, String> {
+        {
+            let state = self.session.lock().await;
+            if state.loaded {
+                return Ok(state.session.clone());
+            }
+        }
+
+        const ATTEMPTS: usize = 3;
+        let mut last_error = String::new();
+        for attempt in 1..=ATTEMPTS {
+            match self.store.load() {
+                Ok(maybe_session) => {
+                    let mut state = self.session.lock().await;
+                    // Login can win the race while the disk read was in
+                    // flight; never overwrite the fresh in-memory session.
+                    if state.loaded {
+                        return Ok(state.session.clone());
+                    }
+                    if let Some(session) = maybe_session {
+                        state.loaded = true;
+                        state.session = Some(session.clone());
+                        return Ok(Some(session));
+                    }
+                    // Do not cache "file missing": after a Windows boot the
+                    // profile can become readable a moment later, and the
+                    // frontend retries `emby_session` once.
+                    return Ok(None);
+                }
                 Err(err) => {
                     // Messages never contain the token (see emby-api::session).
-                    eprintln!("[emby] session restore failed: {err}");
-                    None
+                    last_error = err.to_string();
+                    if attempt < ATTEMPTS {
+                        std::thread::sleep(Duration::from_millis(150));
+                    }
                 }
-            };
-            state.loaded = true;
+            }
         }
-        state.session.clone()
+        Err(format!("无法读取本地登录会话：{last_error}"))
     }
 
     async fn require_session(&self) -> Result<StoredSession, String> {
         self.stored_session()
-            .await
+            .await?
             .ok_or_else(|| "尚未登录 Emby 服务器".to_string())
     }
 
@@ -111,16 +142,35 @@ impl EmbyService {
         )
     }
 
-    /// Converts an API failure into a command error; 401/403 also drops the
-    /// session because the token is useless after that.
+    /// Converts an API failure into a command error. A 401/403 is re-checked
+    /// once with a cheap authenticated request before the persisted session is
+    /// removed: a transient auth failure while the Emby server/proxy is still
+    /// starting (typical right after a machine reboot) must not log the user
+    /// out. Only a second auth failure clears the session; a network failure
+    /// during the re-check keeps it.
     async fn fail(&self, err: ApiError) -> String {
-        if err.is_auth() {
-            if let Err(clear_err) = self.forget().await {
-                eprintln!("[emby] could not clear the expired session: {clear_err}");
+        if !err.is_auth() {
+            return err.to_string();
+        }
+
+        let session = match self.stored_session().await {
+            Ok(Some(session)) => session,
+            Ok(None) => return AUTH_EXPIRED.to_string(),
+            Err(load_err) => return load_err,
+        };
+
+        // Cheap, authenticated request that also works for restricted users.
+        let client = self.client(&session);
+        let retry = client.views(&session.user_id).await;
+        match retry {
+            Ok(_) => "Emby 暂时拒绝了请求，请稍后重试".to_string(),
+            Err(retry_err) if retry_err.is_auth() => {
+                if let Err(clear_err) = self.forget().await {
+                    eprintln!("[emby] could not clear the expired session: {clear_err}");
+                }
+                AUTH_EXPIRED.to_string()
             }
-            AUTH_EXPIRED.to_string()
-        } else {
-            err.to_string()
+            Err(_) => "无法确认 Emby 登录状态，请稍后重试".to_string(),
         }
     }
 }
@@ -175,7 +225,8 @@ pub async fn emby_logout(state: State<'_, EmbyService>) -> Result<(), String> {
 pub async fn emby_session(
     state: State<'_, EmbyService>,
 ) -> Result<Option<EmbySession>, String> {
-    Ok(state.stored_session().await.map(|session| session.public()))
+    let session = state.stored_session().await?;
+    Ok(session.map(|session| session.public()))
 }
 
 #[tauri::command]

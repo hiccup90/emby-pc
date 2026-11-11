@@ -1,15 +1,17 @@
 //! Session and device-id persistence.
 //!
-//! The app hands in the Tauri `app_config_dir()`; this module owns the two
-//! files inside it:
+//! The app hands in the Tauri app config dir; this module owns these files:
 //! - `session.json`: server URL, access token, user/server names, device id.
-//!   Removed by `emby_logout` and on 401/403.
+//!   Removed by `emby_logout` and after a confirmed 401/403.
+//! - `session.json.bak` / `session.json.tmp`: recovery copies. `load` falls
+//!   back to them if the primary file is missing, truncated or corrupt (for
+//!   example when Windows terminates the process during a write).
 //! - `device.json`: the Emby `DeviceId`. It survives logout so the server keeps
 //!   associating the client with the same device.
 //!
-//! Writes are atomic (temp file + rename) and, on Unix, `0600`. There is no
-//! OS-level encryption here: on Windows the token file lives under the user's
-//! roaming app-data directory, which is protected by the user profile ACL.
+//! Writes are atomic (temp file + sync + rename) and, on Unix, `0600`. There is
+//! no OS-level encryption here: on Windows the token file lives under the
+//! user's app-data directory, which is protected by the user profile ACL.
 //! A failure to write is reported, never silently ignored.
 
 use std::fmt;
@@ -24,6 +26,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::model::EmbySession;
 
 pub const SESSION_FILE: &str = "session.json";
+pub const SESSION_BACKUP_FILE: &str = "session.json.bak";
+pub const SESSION_TEMP_FILE: &str = "session.json.tmp";
 pub const DEVICE_FILE: &str = "device.json";
 
 /// Persisted login state. `Debug` is implemented manually so the token cannot
@@ -90,36 +94,59 @@ impl SessionStore {
         self.dir.join(SESSION_FILE)
     }
 
+    pub fn backup_path(&self) -> PathBuf {
+        self.dir.join(SESSION_BACKUP_FILE)
+    }
+
+    pub fn temp_path(&self) -> PathBuf {
+        self.dir.join(SESSION_TEMP_FILE)
+    }
+
     pub fn device_path(&self) -> PathBuf {
         self.dir.join(DEVICE_FILE)
     }
 
-    /// Reads the stored session. A missing file, a corrupt file or a file with
-    /// empty mandatory fields all mean "not logged in" (`Ok(None)`); real I/O
-    /// errors (permissions) are reported.
+    /// Reads the stored session, falling back to the backup and then to a
+    /// leftover temp file. A missing/corrupt file with no usable fallback
+    /// means "not logged in" (`Ok(None)`); a real I/O error on every
+    /// candidate is reported so the caller can retry or show it.
     pub fn load(&self) -> ApiResult<Option<StoredSession>> {
-        let path = self.session_path();
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => {
-                return Err(ApiError::config(format!(
-                    "无法读取会话文件 {}：{err}",
-                    path.display()
-                )))
+        let primary = self.session_path();
+        let candidates = [primary.clone(), self.backup_path(), self.temp_path()];
+        let mut read_error: Option<ApiError> = None;
+
+        for (index, path) in candidates.iter().enumerate() {
+            let bytes = match fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    if read_error.is_none() {
+                        read_error = Some(ApiError::config(format!(
+                            "无法读取会话文件 {}：{err}",
+                            path.display()
+                        )));
+                    }
+                    continue;
+                }
+            };
+            let Some(session) = parse_session(&bytes) else {
+                // Old, truncated or empty candidate: try the next one.
+                continue;
+            };
+            if index > 0 {
+                // Repair the primary file from the good fallback. Best effort:
+                // the session is still usable if the repair itself fails.
+                if write_private(&primary, &bytes).is_ok() && index == 2 {
+                    let _ = fs::remove_file(path);
+                }
             }
-        };
-        let Ok(session) = serde_json::from_slice::<StoredSession>(&bytes) else {
-            // Old or truncated file: treat as logged out; a fresh login rewrites it.
-            return Ok(None);
-        };
-        if session.access_token.trim().is_empty()
-            || session.server_url.trim().is_empty()
-            || session.user_id.trim().is_empty()
-        {
-            return Ok(None);
+            return Ok(Some(session));
         }
-        Ok(Some(session))
+
+        match read_error {
+            Some(err) => Err(err),
+            None => Ok(None),
+        }
     }
 
     pub fn save(&self, session: &StoredSession) -> ApiResult<()> {
@@ -129,19 +156,39 @@ impl SessionStore {
         let path = self.session_path();
         write_private(&path, &bytes).map_err(|err| {
             ApiError::config(format!("无法写入会话文件 {}：{err}", path.display()))
-        })
+        })?;
+
+        // Mirror the session into the recovery copy. A failure here must not
+        // fail login: the primary file is already durable.
+        let backup = self.backup_path();
+        if let Err(err) = write_private(&backup, &bytes) {
+            eprintln!("[emby] could not write session backup {}: {err}", backup.display());
+        }
+        Ok(())
     }
 
-    /// Removes `session.json`. Missing file is not an error.
+    /// Removes the session and both recovery copies. Missing files are not an
+    /// error; a real removal failure is reported so logout cannot pretend the
+    /// token is gone.
     pub fn clear(&self) -> ApiResult<()> {
-        let path = self.session_path();
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(ApiError::config(format!(
-                "无法删除会话文件 {}：{err}",
-                path.display()
-            ))),
+        let mut first_error: Option<ApiError> = None;
+        for path in [self.session_path(), self.backup_path(), self.temp_path()] {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(ApiError::config(format!(
+                            "无法删除会话文件 {}：{err}",
+                            path.display()
+                        )));
+                    }
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
         }
     }
 
@@ -247,8 +294,25 @@ pub fn generate_device_id() -> String {
     )
 }
 
+/// Parses one candidate JSON blob. Empty mandatory fields are treated as
+/// invalid so a half-written/legacy file cannot restore a broken session.
+fn parse_session(bytes: &[u8]) -> Option<StoredSession> {
+    let session = serde_json::from_slice::<StoredSession>(bytes).ok()?;
+    if session.access_token.trim().is_empty()
+        || session.server_url.trim().is_empty()
+        || session.user_id.trim().is_empty()
+    {
+        return None;
+    }
+    Some(session)
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!("{file_name}.tmp"));
     let result = (|| -> io::Result<()> {
         let mut options = OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -320,6 +384,8 @@ mod tests {
         assert!(raw.contains("\"accessToken\""), "{raw}");
         assert!(!raw.contains("Pw"), "{raw}");
         assert_eq!(store.load().unwrap(), Some(session()));
+        assert!(store.backup_path().exists(), "backup must exist after save");
+        assert!(!store.temp_path().exists(), "temp must not survive save");
 
         #[cfg(unix)]
         {
@@ -334,15 +400,18 @@ mod tests {
     }
 
     #[test]
-    fn clear_removes_only_the_session() {
+    fn clear_removes_the_session_and_recovery_copies() {
         let dir = TempDir::new("session-clear");
         let store = SessionStore::new(&dir.0);
         store.save(&session()).unwrap();
         let device_id = store.device_id().unwrap();
+        fs::write(store.temp_path(), b"leftover").unwrap();
 
         store.clear().unwrap();
         assert_eq!(store.load().unwrap(), None);
         assert!(!store.session_path().exists());
+        assert!(!store.backup_path().exists());
+        assert!(!store.temp_path().exists());
         // Idempotent.
         store.clear().unwrap();
         // Device id survives logout.
@@ -362,6 +431,49 @@ mod tests {
             br#"{"serverUrl":"http://h","accessToken":"","userId":"u"}"#,
         )
         .unwrap();
+        assert_eq!(store.load().unwrap(), None);
+    }
+
+    #[test]
+    fn recovers_from_backup_when_primary_is_corrupt() {
+        let dir = TempDir::new("session-backup");
+        let store = SessionStore::new(&dir.0);
+        store.save(&session()).unwrap();
+        fs::write(store.session_path(), b"{not json").unwrap();
+
+        assert_eq!(store.load().unwrap(), Some(session()));
+        let repaired = fs::read(store.session_path()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<StoredSession>(&repaired).unwrap(),
+            session()
+        );
+    }
+
+    #[test]
+    fn recovers_from_temp_when_primary_and_backup_are_missing() {
+        let dir = TempDir::new("session-temp");
+        let store = SessionStore::new(&dir.0);
+        store.save(&session()).unwrap();
+        fs::remove_file(store.session_path()).unwrap();
+        fs::remove_file(store.backup_path()).unwrap();
+        fs::write(
+            store.temp_path(),
+            serde_json::to_vec_pretty(&session()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(store.load().unwrap(), Some(session()));
+        assert!(store.session_path().exists(), "temp is promoted");
+        assert!(!store.temp_path().exists(), "promoted temp is removed");
+    }
+
+    #[test]
+    fn corrupt_recovery_copies_are_ignored() {
+        let dir = TempDir::new("session-all-corrupt");
+        let store = SessionStore::new(&dir.0);
+        fs::write(store.session_path(), b"{not json").unwrap();
+        fs::write(store.backup_path(), b"{not json either").unwrap();
+        fs::write(store.temp_path(), b"").unwrap();
         assert_eq!(store.load().unwrap(), None);
     }
 

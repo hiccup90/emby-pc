@@ -12,6 +12,7 @@ import {
   embySimilar,
   embyViews,
   hasTauriRuntime,
+  onEmbySessionExpired,
 } from "./client";
 import type { EmbyCredentials } from "./client";
 import type {
@@ -200,25 +201,62 @@ export function useEmbySession(): EmbySessionController {
 
     let cancelled = false;
     setChecking(true);
-    void embySession()
-      .then((existing) => {
-        if (!cancelled) setSession(existing);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setStartupError(
-            describeEmbyError(reason, "无法读取已有 Emby 会话，请重新登录。"),
-          );
+
+    const restore = async (): Promise<void> => {
+      let lastError: unknown = null;
+      // One retry: right after a Windows boot the config dir can briefly be
+      // unavailable (roaming profile / antivirus), which must not force a
+      // fresh login if the second read succeeds. A null result is retried
+      // too: the backend deliberately does not cache a missing file.
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (cancelled) return;
+        try {
+          const existing = await embySession();
+          if (cancelled) return;
+          if (existing) {
+            setSession(existing);
+            setStartupError(null);
+            return;
+          }
+          lastError = null;
+        } catch (reason) {
+          lastError = reason;
         }
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false);
-      });
+        if (attempt === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
+      if (!cancelled) {
+        setSession(null);
+        setStartupError(
+          lastError
+            ? describeEmbyError(lastError, "无法读取已有 Emby 会话，请重新登录。")
+            : null,
+        );
+      }
+    };
+
+    void restore().finally(() => {
+      if (!cancelled) setChecking(false);
+    });
 
     return () => {
       cancelled = true;
     };
   }, [desktop]);
+
+  // The backend only emits this after re-checking the token, so it is safe to
+  // drop the in-memory session; the persisted files have already been removed.
+  useEffect(() => {
+    return onEmbySessionExpired((message) => {
+      setSession(null);
+      setStartupError(message);
+      setLoginError(null);
+      setLoginPending(false);
+      setLogoutPending(false);
+      setChecking(false);
+    });
+  }, []);
 
   const signIn = useCallback(
     async (credentials: EmbyCredentials): Promise<boolean> => {
@@ -256,6 +294,7 @@ export function useEmbySession(): EmbySessionController {
       console.warn("[emby] logout failed; clearing the local session anyway", reason);
     } finally {
       setSession(null);
+      setStartupError(null);
       setLoginPending(false);
       setLoginError(null);
       setLogoutPending(false);

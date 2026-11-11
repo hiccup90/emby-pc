@@ -212,6 +212,21 @@ export default function App() {
   /** Episodes still to play: [0] is on screen, the rest auto-play in order. */
   const queueRef = useRef<EmbyItem[] | null>(null);
 
+  // A confirmed token expiry clears the session in useEmbySession; leave
+  // whatever screen is open (including the player) and show the login page
+  // with the expiry reason visible.
+  useEffect(() => {
+    if (
+      desktop &&
+      !sessionController.checking &&
+      !sessionController.session &&
+      route.screen !== "login"
+    ) {
+      queueRef.current = null;
+      setRoute({ screen: "login" });
+    }
+  }, [desktop, route.screen, sessionController.checking, sessionController.session]);
+
   const openPlayer = useCallback(
     (
       playback: EmbyPlaybackTarget,
