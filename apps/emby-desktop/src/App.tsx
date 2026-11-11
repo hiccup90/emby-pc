@@ -62,7 +62,7 @@ function BootScreen() {
     <main className="boot-screen" role="status" aria-live="polite">
       <BrandMark large />
       <span className="spinner" aria-hidden="true" />
-      <span className="boot-screen__status">正在读取 Emby 会话…</span>
+      <span className="boot-screen__status">正在恢复登录…</span>
     </main>
   );
 }
@@ -70,10 +70,9 @@ function BootScreen() {
 export default function App() {
   const desktop = hasTauriRuntime();
   const sessionController = useEmbySession();
-  const library = useEmbyLibrary(
-    sessionController.session,
-    Boolean(sessionController.session),
-  );
+  const sessionState = sessionController.state;
+  const session = sessionController.session;
+  const library = useEmbyLibrary(session, Boolean(session));
   const [route, setRoute] = useState<Route>({ screen: "login" });
   /** Persisted auto-play preference; false disables the player's next-episode hop. */
   const [autoPlay, setAutoPlay] = useState(true);
@@ -83,12 +82,6 @@ export default function App() {
   const libraryScrollRef = useRef(0);
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
-
-  useEffect(() => {
-    if (sessionController.session && route.screen === "login") {
-      setRoute({ screen: "home" });
-    }
-  }, [route.screen, sessionController.session]);
 
   // Keep the shell's auto-play flag in sync with the persisted settings.
   useEffect(() => {
@@ -148,7 +141,7 @@ export default function App() {
   // "Recently added" for the home screen (server-sorted, newest first).
   const [recent, setRecent] = useState<EmbyLibraryItem[]>([]);
   useEffect(() => {
-    if (!sessionController.session) return undefined;
+    if (!session) return undefined;
     let cancelled = false;
     void (async () => {
       try {
@@ -167,7 +160,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [sessionController.session]);
+  }, [session]);
 
   const openActor = useCallback(
     (person: { id: string | null; name: string }) => {
@@ -212,20 +205,17 @@ export default function App() {
   /** Episodes still to play: [0] is on screen, the rest auto-play in order. */
   const queueRef = useRef<EmbyItem[] | null>(null);
 
-  // A confirmed token expiry clears the session in useEmbySession; leave
-  // whatever screen is open (including the player) and show the login page
-  // with the expiry reason visible.
-  useEffect(() => {
-    if (
-      desktop &&
-      !sessionController.checking &&
-      !sessionController.session &&
-      route.screen !== "login"
-    ) {
+  // The single session-state transition: signed-in lands on home once the
+  // login page is no longer current; signed-out always returns to login and
+  // clears the episode queue (unmounting PlayerPage stops mpv).
+  useLayoutEffect(() => {
+    if (sessionState.status === "signedIn") {
+      setRoute((current) => (current.screen === "login" ? { screen: "home" } : current));
+    } else if (sessionState.status === "signedOut") {
       queueRef.current = null;
       setRoute({ screen: "login" });
     }
-  }, [desktop, route.screen, sessionController.checking, sessionController.session]);
+  }, [sessionState.status]);
 
   const openPlayer = useCallback(
     (
@@ -306,16 +296,10 @@ export default function App() {
     void (async () => {
       await sessionController.signOut();
       libraryScrollRef.current = 0;
-      setRoute({ screen: "login" });
     })();
   }, [sessionController]);
 
-  const booting =
-    desktop &&
-    (sessionController.checking ||
-      (sessionController.session && route.screen === "login"));
-
-  if (booting) {
+  if (sessionState.status === "booting") {
     return (
       <div className="app-shell app-shell--boot">
         <TitleBar />
@@ -353,7 +337,6 @@ export default function App() {
     );
   }
 
-  const session = sessionController.session;
   const browsing =
     route.screen === "library" ||
     route.screen === "detail" ||
@@ -420,7 +403,10 @@ export default function App() {
               desktop={desktop}
               pending={sessionController.loginPending}
               loginError={sessionController.loginError}
-              startupError={sessionController.startupError}
+              reason={sessionState.status === "signedOut" ? sessionState.reason : "none"}
+              lastServer={sessionState.status === "signedOut" ? sessionState.lastServer : null}
+              lastUserName={sessionState.status === "signedOut" ? sessionState.lastUserName : null}
+              onRetry={() => void sessionController.retryBoot()}
               onLogin={sessionController.signIn}
               onPreview={goToLibrary}
               onClearError={sessionController.clearLoginError}

@@ -7,14 +7,19 @@
  * Vite turns that check into a constant, so production builds drop it.
  *
  * Scenario switches (query string):
- *   ?session=none   start signed out (login screen); the password "wrong" fails
- *   ?state=loading  library requests never finish (skeletons)
- *   ?state=error    reading the library list fails
- *   ?state=empty    libraries exist but are empty
- *   ?resume=none    no "continue watching" row
- *   ?posters=none   no artwork anywhere (fallback tiles)
+ *   ?session=none     start signed out (login screen); the password "wrong" fails
+ *   ?session=expire   start signed in, then emit a token_rejected session event
+ *                     while a player reports playback (401 simulation)
+ *   ?boot=unreachable boot returns signedOut(unreachable) once; retry succeeds
+ *   ?boot=storage_error / ?boot=token_rejected  persistent boot failures
+ *   ?state=loading    library requests never finish (skeletons)
+ *   ?state=error      reading the library list fails
+ *   ?state=empty      libraries exist but are empty
+ *   ?resume=none      no "continue watching" row
+ *   ?posters=none     no artwork anywhere (fallback tiles)
  */
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
 import type {
   EmbyChapter,
   EmbyItem,
@@ -33,6 +38,10 @@ const TICKS = 10_000_000;
 const params = new URLSearchParams(window.location.search);
 const scenario = {
   signedOut: params.get("session") === "none",
+  /** Boot failure to demonstrate: unreachable / server_error / storage_error / token_rejected. */
+  boot: params.get("boot"),
+  /** Start signed in, then emit a token_rejected session event during playback. */
+  expire: params.get("session") === "expire",
   state: params.get("state"),
   noResume: params.get("resume") === "none",
   noArt: params.get("posters") === "none",
@@ -257,6 +266,28 @@ const SESSION: EmbySession = {
   deviceId: "mock-device",
 };
 let session: EmbySession | null = scenario.signedOut ? null : SESSION;
+let expired = false;
+
+function signedOutBoot(reason: string) {
+  return {
+    status: "signedOut",
+    reason,
+    lastServer: session?.serverUrl ?? null,
+    lastUserName: session?.userName ?? null,
+  };
+}
+
+function mockSessionBoot(force: boolean) {
+  const requested = scenario.boot;
+  if (requested && requested !== "none") {
+    // Retry only recovers connectivity problems; storage/token problems persist.
+    if (!force || requested === "storage_error" || requested === "token_rejected") {
+      return signedOutBoot(requested);
+    }
+  }
+  if (!session) return signedOutBoot("none");
+  return { status: "signedIn", reason: "none", session };
+}
 
 // ---- settings ---------------------------------------------------------------
 
@@ -539,22 +570,40 @@ function page(list: EmbyItem[], req: Record<string, unknown>): EmbyItemsPage {
 async function handle(cmd: string, args: Record<string, unknown>): Promise<unknown> {
   const req = (args.req ?? {}) as Record<string, unknown>;
   switch (cmd) {
+    case "emby_session_boot":
+      await wait(700);
+      return mockSessionBoot(args.force === true);
     case "emby_session":
       await wait(150);
       return session;
     case "emby_login":
       await wait(600);
-      if (req.password === "wrong") throw new Error("401 Unauthorized: invalid username or password");
+      if (req.password === "wrong") {
+        throw { reason: "invalid_credentials", message: "用户名或密码不正确。" };
+      }
       session = { ...SESSION, userName: String(req.username || SESSION.userName) };
+      expired = false;
       return session;
-    case "emby_logout":
+    case "emby_logout": {
       await wait(200);
+      const previous = session;
       session = null;
-      return null;
+      return {
+        status: "signedOut",
+        reason: "none",
+        lastServer: previous?.serverUrl ?? null,
+        lastUserName: previous?.userName ?? null,
+      };
+    }
     case "emby_views":
       if (scenario.state === "loading") return never();
       await wait(200);
-      if (scenario.state === "error") throw new Error("error sending request for url (http://emby.home:8096/Users/mock-user/Views)");
+      if (scenario.state === "error") {
+        throw {
+          reason: "server_error",
+          message: "error sending request for url (http://emby.home:8096/Users/mock-user/Views)",
+        };
+      }
       return VIEWS;
     case "emby_items": {
       if (scenario.state === "loading") return never();
@@ -624,7 +673,7 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
     case "emby_item": {
       await wait(180);
       const item = items.get(String(args.id));
-      if (!item) throw new Error("404 Not Found");
+      if (!item) throw { reason: "server_error", message: "404 Not Found" };
       return enrich(item);
     }
     case "emby_similar": {
@@ -656,6 +705,17 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       return target;
     }
     case "emby_report_playback":
+      await wait(120);
+      if (scenario.expire && !expired) {
+        expired = true;
+        session = null;
+        await emit("emby-session", {
+          status: "signedOut",
+          reason: "token_rejected",
+          message: "登录已过期，请重新登录",
+        });
+        throw { reason: "token_rejected", message: "登录已过期，请重新登录" };
+      }
       return null;
 
     case "player_subscribe": {

@@ -91,18 +91,13 @@ export function describeEmbyError(error: unknown, fallback: string): string {
   ) {
     return "该条目需要转码，当前不支持直接播放。";
   }
-  if (normalized.includes("登录已过期")) {
-    return "登录已过期，请重新登录。";
-  }
   if (
     normalized.includes("401") ||
     normalized.includes("unauthorized") ||
     normalized.includes("invalid credentials") ||
     normalized.includes("invalid username") ||
     normalized.includes("authentication failed") ||
-    normalized.includes("access denied") ||
-    normalized.includes("登录已失效") ||
-    normalized.includes("登录已过期")
+    normalized.includes("access denied")
   ) {
     return "用户名或密码不正确，或登录已失效。";
   }
@@ -138,47 +133,8 @@ export function describeEmbyError(error: unknown, fallback: string): string {
   return message;
 }
 
-export const EMBY_SESSION_EXPIRED_MESSAGE = "登录已过期，请重新登录";
-
-export type EmbySessionExpiredListener = (message: string) => void;
-
-const sessionExpiredListeners = new Set<EmbySessionExpiredListener>();
-
-/** Subscribes to commands that confirmed the saved token is no longer valid. */
-export function onEmbySessionExpired(listener: EmbySessionExpiredListener): () => void {
-  sessionExpiredListeners.add(listener);
-  return () => {
-    sessionExpiredListeners.delete(listener);
-  };
-}
-
-function notifySessionExpired(message: string): void {
-  for (const listener of sessionExpiredListeners) {
-    try {
-      listener(message);
-    } catch (reason) {
-      console.warn("[emby] session-expired listener failed", reason);
-    }
-  }
-}
-
-function embyErrorReason(error: unknown): string | null {
-  if (typeof error === "object" && error !== null && "reason" in error) {
-    const reason = (error as { reason?: unknown }).reason;
-    return typeof reason === "string" ? reason : null;
-  }
-  return null;
-}
-
 async function invokeEmby<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  try {
-    return await invoke<T>(command, args);
-  } catch (error) {
-    if (embyErrorReason(error) === "token_rejected") {
-      notifySessionExpired(EMBY_SESSION_EXPIRED_MESSAGE);
-    }
-    throw error;
-  }
+  return invoke<T>(command, args);
 }
 
 export async function embyLogin(req: EmbyCredentials): Promise<EmbySession> {

@@ -8,11 +8,11 @@ import {
   embyLogout,
   embyPlaybackTarget,
   embyResume,
-  embySession,
+  embySessionBoot,
   embySimilar,
   embyViews,
   hasTauriRuntime,
-  onEmbySessionExpired,
+  onEmbySessionEvent,
 } from "./client";
 import type { EmbyCredentials } from "./client";
 import type {
@@ -20,6 +20,8 @@ import type {
   EmbyPerson,
   EmbyPlaybackTarget,
   EmbySession,
+  EmbySessionBoot,
+  EmbySessionReason,
   EmbyView,
 } from "./contract";
 import {
@@ -56,15 +58,28 @@ export interface EmbyLibraryController extends EmbyLibraryState {
   refreshResume: () => void;
 }
 
+/** Single boot/session state machine shared by the shell and the login page. */
+export type EmbySessionState =
+  | { status: "booting" }
+  | { status: "signedIn"; session: EmbySession }
+  | {
+      status: "signedOut";
+      reason: EmbySessionReason;
+      lastServer: string | null;
+      lastUserName: string | null;
+    };
+
 export interface EmbySessionController {
+  state: EmbySessionState;
+  /** Convenience for screens that only render while signed in. */
   session: EmbySession | null;
-  checking: boolean;
   loginPending: boolean;
   logoutPending: boolean;
   loginError: string | null;
-  startupError: string | null;
   signIn: (credentials: EmbyCredentials) => Promise<boolean>;
   signOut: () => Promise<void>;
+  /** Retry the startup boot with force=true (bypasses the backend's cache). */
+  retryBoot: () => Promise<void>;
   clearLoginError: () => void;
 }
 
@@ -184,79 +199,139 @@ function plainLibraryItem(item: EmbyItem): EmbyLibraryItem {
   return { ...item, posterUrl: null, backdropUrl: null };
 }
 
+/** Map a structured command error to a session reason; unknown errors are server errors. */
+function sessionReasonFromError(error: unknown): EmbySessionReason {
+  if (typeof error === "object" && error !== null && "reason" in error) {
+    const reason = (error as { reason?: unknown }).reason;
+    if (
+      reason === "none" ||
+      reason === "token_rejected" ||
+      reason === "unreachable" ||
+      reason === "server_error" ||
+      reason === "storage_error" ||
+      reason === "invalid_credentials" ||
+      reason === "invalid_request"
+    ) {
+      return reason;
+    }
+  }
+  return "server_error";
+}
+
 export function useEmbySession(): EmbySessionController {
   const desktop = hasTauriRuntime();
-  const [session, setSession] = useState<EmbySession | null>(null);
-  const [checking, setChecking] = useState(desktop);
+  const [state, setState] = useState<EmbySessionState>(() =>
+    desktop
+      ? { status: "booting" }
+      : { status: "signedOut", reason: "none", lastServer: null, lastUserName: null },
+  );
   const [loginPending, setLoginPending] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
-  const [startupError, setStartupError] = useState<string | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
+  const applyBootResult = useCallback((result: EmbySessionBoot) => {
+    if (result.status === "signedIn" && result.session) {
+      setState({ status: "signedIn", session: result.session });
+      return;
+    }
+    setState({
+      status: "signedOut",
+      reason: result.reason,
+      lastServer: result.lastServer ?? null,
+      lastUserName: result.lastUserName ?? null,
+    });
+  }, []);
+
+  // One startup boot: the backend owns retry/backoff and single-flight; the UI
+  // shows BootScreen until it resolves.
   useEffect(() => {
     if (!desktop) {
-      setChecking(false);
-      return;
+      setState({
+        status: "signedOut",
+        reason: "none",
+        lastServer: null,
+        lastUserName: null,
+      });
+      return undefined;
     }
 
     let cancelled = false;
-    setChecking(true);
-
-    const restore = async (): Promise<void> => {
-      let lastError: unknown = null;
-      // One retry: right after a Windows boot the config dir can briefly be
-      // unavailable (roaming profile / antivirus), which must not force a
-      // fresh login if the second read succeeds. A null result is retried
-      // too: the backend deliberately does not cache a missing file.
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
+    setState({ status: "booting" });
+    void embySessionBoot()
+      .then((result) => {
+        if (!cancelled) applyBootResult(result);
+      })
+      .catch((reason: unknown) => {
         if (cancelled) return;
-        try {
-          const existing = await embySession();
-          if (cancelled) return;
-          if (existing) {
-            setSession(existing);
-            setStartupError(null);
-            return;
-          }
-          lastError = null;
-        } catch (reason) {
-          lastError = reason;
-        }
-        if (attempt === 1) {
-          await new Promise((resolve) => setTimeout(resolve, 400));
-        }
-      }
-      if (!cancelled) {
-        setSession(null);
-        setStartupError(
-          lastError
-            ? describeEmbyError(lastError, "无法读取已有 Emby 会话，请重新登录。")
-            : null,
-        );
-      }
-    };
-
-    void restore().finally(() => {
-      if (!cancelled) setChecking(false);
-    });
-
+        setState({
+          status: "signedOut",
+          reason: sessionReasonFromError(reason),
+          lastServer: null,
+          lastUserName: null,
+        });
+      });
     return () => {
       cancelled = true;
     };
-  }, [desktop]);
+  }, [applyBootResult, desktop]);
 
-  // The backend only emits this after re-checking the token, so it is safe to
-  // drop the in-memory session; the persisted files have already been removed.
+  // The backend emits this only after a running command confirmed the token is
+  // rejected. Keep prefill hints from the in-memory session before dropping it.
   useEffect(() => {
-    return onEmbySessionExpired((message) => {
-      setSession(null);
-      setStartupError(message);
+    if (!desktop) return undefined;
+    let disposed = false;
+    let stop: (() => void) | null = null;
+    void onEmbySessionEvent((event) => {
+      if (disposed) return;
+      const current = stateRef.current;
+      const session = current.status === "signedIn" ? current.session : null;
+      setState({
+        status: "signedOut",
+        reason: event.reason,
+        lastServer:
+          session?.serverUrl ??
+          (current.status === "signedOut" ? current.lastServer : null),
+        lastUserName:
+          session?.userName ??
+          (current.status === "signedOut" ? current.lastUserName : null),
+      });
       setLoginError(null);
       setLoginPending(false);
       setLogoutPending(false);
-      setChecking(false);
-    });
-  }, []);
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      })
+      .catch((reason: unknown) => {
+        console.warn("[emby] could not subscribe to session events", reason);
+      });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [desktop]);
+
+  const retryBoot = useCallback(async (): Promise<void> => {
+    if (!desktop) return;
+    const previous = stateRef.current;
+    const lastServer = previous.status === "signedOut" ? previous.lastServer : null;
+    const lastUserName = previous.status === "signedOut" ? previous.lastUserName : null;
+    setState({ status: "booting" });
+    setLoginError(null);
+    try {
+      applyBootResult(await embySessionBoot(true));
+    } catch (reason) {
+      setState({
+        status: "signedOut",
+        reason: sessionReasonFromError(reason),
+        lastServer,
+        lastUserName,
+      });
+    }
+  }, [applyBootResult, desktop]);
 
   const signIn = useCallback(
     async (credentials: EmbyCredentials): Promise<boolean> => {
@@ -269,8 +344,7 @@ export function useEmbySession(): EmbySessionController {
       setLoginPending(true);
       try {
         const next = await embyLogin(credentials);
-        setSession(next);
-        setStartupError(null);
+        setState({ status: "signedIn", session: next });
         return true;
       } catch (reason) {
         setLoginError(
@@ -286,15 +360,19 @@ export function useEmbySession(): EmbySessionController {
 
   const signOut = useCallback(async (): Promise<void> => {
     setLogoutPending(true);
+    const previous = stateRef.current;
+    const session = previous.status === "signedIn" ? previous.session : null;
     try {
-      if (hasTauriRuntime()) {
-        await embyLogout();
-      }
+      if (hasTauriRuntime()) await embyLogout();
     } catch (reason) {
       console.warn("[emby] logout failed; clearing the local session anyway", reason);
     } finally {
-      setSession(null);
-      setStartupError(null);
+      setState({
+        status: "signedOut",
+        reason: "none",
+        lastServer: session?.serverUrl ?? null,
+        lastUserName: session?.userName ?? null,
+      });
       setLoginPending(false);
       setLoginError(null);
       setLogoutPending(false);
@@ -304,14 +382,14 @@ export function useEmbySession(): EmbySessionController {
   const clearLoginError = useCallback(() => setLoginError(null), []);
 
   return {
-    session,
-    checking,
+    state,
+    session: state.status === "signedIn" ? state.session : null,
     loginPending,
     logoutPending,
     loginError,
-    startupError,
     signIn,
     signOut,
+    retryBoot,
     clearLoginError,
   };
 }

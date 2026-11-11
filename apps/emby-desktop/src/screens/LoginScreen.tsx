@@ -1,16 +1,40 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import type { EmbyCredentials } from "../emby/client";
+import type { EmbySessionReason } from "../emby/contract";
 import { BrandMark } from "./shared";
 
 interface LoginScreenProps {
   desktop: boolean;
   pending: boolean;
   loginError: string | null;
-  startupError: string | null;
+  /** Why the boot ended on the login page; "none" is a normal login. */
+  reason: EmbySessionReason | null;
+  lastServer: string | null;
+  lastUserName: string | null;
+  onRetry: () => void;
   onLogin: (credentials: EmbyCredentials) => Promise<boolean>;
   onPreview: () => void;
   onClearError: () => void;
+}
+
+interface ReasonNotice {
+  text: string;
+  retryable: boolean;
+}
+
+function reasonNotice(reason: EmbySessionReason | null): ReasonNotice | null {
+  switch (reason) {
+    case "token_rejected":
+      return { text: "登录已过期，请重新登录。", retryable: false };
+    case "unreachable":
+    case "server_error":
+      return { text: "无法连接服务器。", retryable: true };
+    case "storage_error":
+      return { text: "无法读取本地登录信息。", retryable: true };
+    default:
+      return null;
+  }
 }
 
 function normalizeServer(raw: string): string {
@@ -24,15 +48,26 @@ export default function LoginScreen({
   desktop,
   pending,
   loginError,
-  startupError,
+  reason,
+  lastServer,
+  lastUserName,
+  onRetry,
   onLogin,
   onPreview,
   onClearError,
 }: LoginScreenProps) {
-  const [server, setServer] = useState("");
-  const [username, setUsername] = useState("");
+  const [server, setServer] = useState(lastServer ?? "");
+  const [username, setUsername] = useState(lastUserName ?? "");
   const [password, setPassword] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (lastServer) setServer(lastServer);
+  }, [lastServer]);
+
+  useEffect(() => {
+    if (lastUserName) setUsername(lastUserName);
+  }, [lastUserName]);
 
   const clearErrors = () => {
     setValidationError(null);
@@ -66,6 +101,7 @@ export default function LoginScreen({
   };
 
   const visibleError = validationError ?? loginError;
+  const notice = reasonNotice(reason);
 
   return (
     <main className="login-page">
@@ -82,10 +118,20 @@ export default function LoginScreen({
           </div>
         )}
 
-        {startupError && (
+        {notice && (
           <div className="form-alert" role="alert">
-            {startupError}
+            {notice.text}
           </div>
+        )}
+
+        {notice?.retryable && (
+          <button
+            className="button button--secondary button--block"
+            type="button"
+            onClick={onRetry}
+          >
+            重试
+          </button>
         )}
 
         <form
