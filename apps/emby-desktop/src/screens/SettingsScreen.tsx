@@ -3,7 +3,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { describeEmbyError, hasTauriRuntime } from "../emby/client";
 import { DEFAULT_APP_SETTINGS, getSettings, saveSettings } from "../settings/tauri";
 import type { AppSettings, VideoQuality } from "../settings/tauri";
-import { ErrorNotice, Icon } from "./shared";
+import { useAsyncResource } from "../emby/useAsyncResource";
+import { ErrorNotice, Icon, useEscape } from "./shared";
 import "./SettingsScreen.css";
 
 interface SettingsScreenProps {
@@ -30,43 +31,31 @@ function pageSizeOptionsFor(pageSize: number): readonly number[] {
 
 export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScreenProps) {
   const [settings, setSettings] = useState<AppSettings>(() => ({ ...DEFAULT_APP_SETTINGS }));
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [version, setVersion] = useState("0.1.0");
-  const [reloadToken, setReloadToken] = useState(0);
   const savedTimerRef = useRef<number | null>(null);
   const onSettingsChangeRef = useRef(onSettingsChange);
+  const load = useAsyncResource<AppSettings>(() => getSettings(), "settings", {
+    fallbackError: "读取设置失败，已恢复默认值。",
+  });
 
   useEffect(() => {
     onSettingsChangeRef.current = onSettingsChange;
   }, [onSettingsChange]);
 
-  // Read the persisted settings once; a failure falls back to the defaults.
+  // Mirror the async resource into the editable form state; a failed read
+  // falls back to the defaults, matching the previous behaviour.
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
-    setSaved(false);
-    void getSettings()
-      .then((stored) => {
-        if (cancelled) return;
-        setSettings(stored);
-        setLoading(false);
-        onSettingsChangeRef.current?.(stored);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        setSettings({ ...DEFAULT_APP_SETTINGS });
-        setLoadError(describeEmbyError(reason, "读取设置失败，已恢复默认值。"));
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadToken]);
+    if (load.data) {
+      setSettings(load.data);
+      setSaved(false);
+      onSettingsChangeRef.current?.(load.data);
+    } else if (load.status === "error") {
+      setSettings({ ...DEFAULT_APP_SETTINGS });
+    }
+  }, [load.data, load.status]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) return undefined;
@@ -83,16 +72,7 @@ export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScr
     };
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented) {
-        event.preventDefault();
-        onBack();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onBack]);
+  useEscape(onBack);
 
   useEffect(
     () => () => {
@@ -108,7 +88,6 @@ export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScr
     try {
       const stored = await saveSettings(next);
       setSettings(stored);
-      setLoadError(null);
       setSaved(true);
       onSettingsChangeRef.current?.(stored);
       if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
@@ -123,15 +102,17 @@ export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScr
     }
   }, []);
 
+  const loading = load.status === "loading";
+  const loadError = load.error;
+  const busy = loading || saving;
+  const pageSizes = pageSizeOptionsFor(settings.pageSize);
+
   const update = (patch: Partial<AppSettings>) => {
-    if (loading || saving) return;
+    if (busy) return;
     const next = { ...settings, ...patch };
     setSettings(next);
     void persist(next);
   };
-
-  const busy = loading || saving;
-  const pageSizes = pageSizeOptionsFor(settings.pageSize);
 
   return (
     <main className="page settings-page">
@@ -166,7 +147,7 @@ export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScr
         <div className="settings-alert">
           <ErrorNotice
             message={loadError}
-            onRetry={() => setReloadToken((value) => value + 1)}
+            onRetry={load.reload}
             retryLabel="重新读取"
           />
         </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 export type IconName =
@@ -11,7 +11,6 @@ export type IconName =
   | "camera"
   | "music"
   | "folder"
-  | "server"
   | "chevron-left"
   | "chevron-right"
   | "check"
@@ -93,13 +92,6 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
       </>
     ),
     folder: <path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />,
-    server: (
-      <>
-        <rect x="4" y="4" width="16" height="7" rx="1.6" />
-        <rect x="4" y="13" width="16" height="7" rx="1.6" />
-        <path d="M8 7.5h.01M8 16.5h.01" />
-      </>
-    ),
     "chevron-left": <path d="m14.5 18-6-6 6-6" />,
     "chevron-right": <path d="m9.5 18 6-6-6-6" />,
     check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
@@ -117,6 +109,20 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
       {paths[name]}
     </svg>
   );
+}
+
+/** Close the current screen on Escape unless something else already handled it. */
+export function useEscape(handler: () => void): void {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault();
+        handler();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handler]);
 }
 
 /** App wordmark. `drag` keeps it part of the title bar drag region. */

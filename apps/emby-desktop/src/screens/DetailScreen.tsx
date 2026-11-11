@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { EmbyPerson, EmbyPlaybackTarget, EmbySession, EmbyUserData } from "../emby/contract";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
 import type { PlaybackMeta } from "../player/contract";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import { useEmbyDetail, useEmbyEpisodes, useEmbySimilar, usePlaybackLauncher } from "../emby/useEmby";
@@ -22,7 +22,7 @@ import {
 } from "../emby/format";
 import { isPlayableItemType } from "../emby/library";
 import { HubRow, PosterCard } from "./cards";
-import { ErrorNotice, Icon, MediaArtwork, ProgressBar } from "./shared";
+import { ErrorNotice, Icon, MediaArtwork, ProgressBar, useEscape } from "./shared";
 
 interface DetailScreenProps {
   itemId: string;
@@ -49,9 +49,6 @@ interface DetailScreenProps {
   /** A cast member: open their filmography. */
   onOpenPerson?: (person: EmbyPerson) => void;
 }
-
-/** `favorite` is not in the wire contract yet; reading it optionally keeps this forward-compatible. */
-type UserDataWithFavorite = EmbyUserData & { favorite?: boolean | null };
 
 const CREW_ORDER = ["Director", "Writer", "Producer", "Composer"];
 const ROLE_LABELS: Record<string, string> = {
@@ -260,7 +257,6 @@ function EpisodeSection({
 }) {
   const groups = useMemo(() => groupSeasons(episodes), [episodes]);
   const [selected, setSelected] = useState<string | null>(null);
-  const rowRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const scrolledRef = useRef<string | null>(null);
 
   // Return from the player: open the season that holds the episode on screen.
@@ -277,25 +273,22 @@ function EpisodeSection({
     : focusSeasonKey ?? defaultSeason(groups);
   const active = groups.find((group) => group.key === activeKey) ?? groups[0];
 
-  // Scroll the focused episode into view once, after its season has rendered.
-  useEffect(() => {
-    if (!focusEpisodeId || !active) return undefined;
-    const node = rowRefs.current[focusEpisodeId];
-    if (!node) return undefined;
-    const scrollKey = `${focusEpisodeId}:${active.key}`;
-    if (scrolledRef.current === scrollKey) return undefined;
-    const behavior: ScrollBehavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto"
-      : "smooth";
-    const timer = window.setTimeout(() => {
-      if (!node.isConnected) return;
-      // Mark only after the timer fires: StrictMode's mount cleanup runs before
-      // 80ms and must not consume the one automatic scroll.
+  // Scroll the focused row from its callback ref: the node exists by then, so
+  // no timer is needed to wait for the season switch to render.
+  const scrollKey = focusEpisodeId && active ? `${focusEpisodeId}:${active.key}` : null;
+  const scrollFocusedRow = useCallback(
+    (node: HTMLLIElement | null) => {
+      if (!node || !scrollKey || scrolledRef.current === scrollKey) return;
       scrolledRef.current = scrollKey;
-      node.scrollIntoView({ block: "center", behavior });
-    }, 80);
-    return () => window.clearTimeout(timer);
-  }, [active, focusEpisodeId]);
+      node.scrollIntoView({
+        block: "center",
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    },
+    [scrollKey],
+  );
 
   if (!active) return null;
 
@@ -329,10 +322,7 @@ function EpisodeSection({
           return (
             <li
               key={episode.id}
-              ref={(node) => {
-                if (node) rowRefs.current[episode.id] = node;
-                else delete rowRefs.current[episode.id];
-              }}
+              ref={focused ? scrollFocusedRow : undefined}
               className={focused ? "episode-list__item episode-list__item--focused" : "episode-list__item"}
             >
               <button
@@ -393,16 +383,13 @@ export default function DetailScreen({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const [pendingEpisodeId, setPendingEpisodeId] = useState<string | null>(null);
   const [watchedOverride, setWatchedOverride] = useState<boolean | null>(null);
-  const [favoriteOverride, setFavoriteOverride] = useState<boolean | null>(null);
   const [pendingAction, setPendingAction] = useState<"played" | "favorite" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const item = detail.item;
   const progress = item ? itemProgress(item) : 0;
   const effectiveWatched = watchedOverride ?? item?.userData.played ?? false;
-  const favoriteFromServer = (item?.userData as UserDataWithFavorite | undefined)?.favorite;
-  const favoriteState =
-    favoriteOverride ?? (typeof favoriteFromServer === "boolean" ? favoriteFromServer : null);
+  const favoriteState = item?.userData.favorite === true;
   const isSeries = item?.type === "Series";
   const episodes = useEmbyEpisodes(isSeries ? item.id : null, desktop && Boolean(session));
   const similar = useEmbySimilar(
@@ -424,21 +411,11 @@ export default function DetailScreen({
   // Local toggles belong to one detail item; drop them when the page changes.
   useEffect(() => {
     setWatchedOverride(null);
-    setFavoriteOverride(null);
     setPendingAction(null);
     setActionError(null);
   }, [itemId]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented) {
-        event.preventDefault();
-        onBack();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onBack]);
+  useEscape(onBack);
 
   const startPlayback = async () => {
     if (!item || playback.pending || !isPlayableItemType(item.type)) return;
@@ -537,8 +514,7 @@ export default function DetailScreen({
     setActionError(null);
     try {
       await embySetFavorite(item.id, next);
-      setFavoriteOverride(next);
-      // The contract has no favorite field yet; refetch in case the API adds it.
+      // Re-read the item so the button reflects the server's UserData.Favorite.
       detail.reload();
     } catch (reason) {
       setActionError(describeEmbyError(reason, "更新收藏状态失败，请稍后重试。"));

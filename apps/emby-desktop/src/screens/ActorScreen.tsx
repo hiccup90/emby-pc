@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
-import { describeEmbyError, embyImageUrl, embyPersonItems } from "../emby/client";
+import { useEffect, useState } from "react";
+import { embyImageUrl, embyPersonItems } from "../emby/client";
 import type { EmbyLibraryItem } from "../emby/useEmby";
-import { decorateItems } from "../emby/useSearch";
-import { ErrorNotice, Icon, MediaArtwork } from "./shared";
+import { decorateItems } from "../emby/artwork";
+import { useAsyncResource } from "../emby/useAsyncResource";
+import { ErrorNotice, Icon, MediaArtwork, useEscape } from "./shared";
 import { PosterCard } from "./cards";
 import "./ActorScreen.css";
 
@@ -36,13 +37,13 @@ function ActorSkeleton() {
   );
 }
 
+interface ActorWorks {
+  items: EmbyLibraryItem[];
+  totalItems: number;
+}
+
 export default function ActorScreen({ personId, personName, onOpen, onBack }: ActorScreenProps) {
-  const [items, setItems] = useState<EmbyLibraryItem[]>([]);
-  const [totalItems, setTotalItems] = useState(0);
-  const [status, setStatus] = useState<ActorStatus>("loading");
-  const [error, setError] = useState<string | null>(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,46 +60,22 @@ export default function ActorScreen({ personId, personName, onOpen, onBack }: Ac
     };
   }, [personId]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setItems([]);
-    setTotalItems(0);
-    setStatus("loading");
-    setError(null);
+  const works = useAsyncResource<ActorWorks>(
+    async () => {
+      const page = await embyPersonItems(personId, PERSON_ITEMS_LIMIT);
+      const items = await decorateItems(page.items);
+      return { items, totalItems: page.totalRecordCount };
+    },
+    `actor:${personId}`,
+    { fallbackError: "无法读取该演员的作品。" },
+  );
 
-    void (async () => {
-      try {
-        const page = await embyPersonItems(personId, PERSON_ITEMS_LIMIT);
-        if (cancelled) return;
-        const decorated = await decorateItems(page.items);
-        if (cancelled) return;
-        setItems(decorated);
-        setTotalItems(page.totalRecordCount);
-        setStatus(decorated.length === 0 ? "empty" : "ready");
-      } catch (reason) {
-        if (cancelled) return;
-        setError(describeEmbyError(reason, "无法读取该演员的作品。"));
-        setStatus("error");
-      }
-    })();
+  useEscape(onBack);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [personId, reloadToken]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented) {
-        event.preventDefault();
-        onBack();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onBack]);
-
-  const retry = useCallback(() => setReloadToken((value) => value + 1), []);
+  const items = works.data?.items ?? [];
+  const totalItems = works.data?.totalItems ?? 0;
+  const status: ActorStatus =
+    works.status === "ready" ? (items.length === 0 ? "empty" : "ready") : works.status === "error" ? "error" : "loading";
   const count = totalItems > 0 ? totalItems : items.length;
 
   return (
@@ -122,8 +99,8 @@ export default function ActorScreen({ personId, personName, onOpen, onBack }: Ac
       ) : status === "error" ? (
         <div className="page-message">
           <ErrorNotice
-            message={error ?? "无法读取该演员的作品。"}
-            onRetry={retry}
+            message={works.error ?? "无法读取该演员的作品。"}
+            onRetry={works.reload}
             retryLabel="重新读取"
           />
         </div>

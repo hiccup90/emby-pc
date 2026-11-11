@@ -52,6 +52,7 @@ export interface EmbyView {
 export interface EmbyUserData {
   playbackPositionTicks: number | null;
   played: boolean;
+  favorite: boolean;
   unplayedItemCount: number | null;
 }
 
@@ -66,7 +67,6 @@ export interface EmbyItem {
   runTimeTicks: number | null;
   imageTags: Record<string, string>;
   backdropImageTags: string[];
-  primaryImageAspectRatio: number | null;
   userData: EmbyUserData;
   seriesId: string | null;
   seriesName: string | null;
@@ -81,7 +81,6 @@ export interface EmbyItem {
   communityRating: number | null;
   tagline: string | null;
   premiereDate: string | null;
-  endDate: string | null;
   /** Series status: "Continuing" / "Ended". */
   status: string | null;
   mediaStreams: EmbyMediaStream[];

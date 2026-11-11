@@ -1,49 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
-import { describeEmbyError, embyImageUrl, embyItems } from "./client";
-import type { EmbyItem } from "./contract";
+import { useEffect, useRef, useState } from "react";
+import { embyItems } from "./client";
 import type { EmbyLibraryItem } from "./useEmby";
+import { decorateItems } from "./artwork";
+import { useAsyncResource } from "./useAsyncResource";
 
 /** Debounce used by the search box before a request is sent. */
-export const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_DEBOUNCE_MS = 250;
 /** The search screen shows one flat result page. */
-export const SEARCH_LIMIT = 60;
-export const SEARCH_ITEM_TYPES = "Movie,Series,Episode";
+const SEARCH_LIMIT = 60;
+const SEARCH_ITEM_TYPES = "Movie,Series,Episode";
 
 export type SearchStatus = "idle" | "loading" | "ready" | "error";
 
-async function safeImageUrl(
-  item: EmbyItem,
-  imageType: "Primary" | "Backdrop",
-  maxWidth: number,
-): Promise<string | null> {
-  const tag =
-    imageType === "Primary" ? item.imageTags.Primary : item.backdropImageTags[0];
-  if (!tag) return null;
+// Kept as a re-export for callers that still import it from this module;
+// the implementation lives in artwork.ts (single source of truth).
+export { decorateItems };
 
-  try {
-    const url = await embyImageUrl({ itemId: item.id, imageType, maxWidth, tag });
-    return url.trim() ? url : null;
-  } catch (reason) {
-    console.warn(`[emby] could not build ${imageType} image URL`, reason);
-    return null;
-  }
+interface SearchResults {
+  items: EmbyLibraryItem[];
+  totalItems: number;
 }
 
-/**
- * Convert raw Emby items into the shape `PosterCard` expects, resolving the
- * poster (and optionally backdrop) URLs through the Tauri image bridge.
- */
-export async function decorateItems(
-  items: EmbyItem[],
-  withBackdrop = false,
-): Promise<EmbyLibraryItem[]> {
-  return Promise.all(
-    items.map(async (item) => ({
-      ...item,
-      posterUrl: await safeImageUrl(item, "Primary", 400),
-      backdropUrl: withBackdrop ? await safeImageUrl(item, "Backdrop", 1280) : null,
-    })),
-  );
+export interface UseSearchOptions {
+  /** Debounce before a request is sent. Defaults to 250ms. */
+  debounceMs?: number;
+  /** Starting text; later changes to this value replace the current query. */
+  initialQuery?: string;
+  /** Called with every raw query change, so a parent can remember it. */
+  onQueryChange?: (query: string) => void;
 }
 
 export interface EmbySearchController {
@@ -64,74 +48,61 @@ export interface EmbySearchController {
 /**
  * Debounced full-library search over movies, series and episodes.
  * Empty queries stay idle; each non-empty query replaces the previous results.
+ * The query is uncontrolled by default; `initialQuery` + `onQueryChange` let a
+ * parent restore and remember it without taking over the field state.
  */
-export function useSearch(debounceMs: number = SEARCH_DEBOUNCE_MS): EmbySearchController {
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [items, setItems] = useState<EmbyLibraryItem[]>([]);
-  const [totalItems, setTotalItems] = useState(0);
-  const [status, setStatus] = useState<SearchStatus>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
+export function useSearch(options: UseSearchOptions = {}): EmbySearchController {
+  const { debounceMs = SEARCH_DEBOUNCE_MS, initialQuery = "", onQueryChange } = options;
+  const [query, setQueryState] = useState(initialQuery);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim());
+  const onQueryChangeRef = useRef(onQueryChange);
+  onQueryChangeRef.current = onQueryChange;
+  const initialRef = useRef(initialQuery);
+
+  // A new initial value (e.g. the shell restoring the field after a detour)
+  // replaces the current text; the first render already used it above.
+  useEffect(() => {
+    if (initialRef.current === initialQuery) return;
+    initialRef.current = initialQuery;
+    setQueryState(initialQuery);
+    setDebouncedQuery(initialQuery.trim());
+  }, [initialQuery]);
+
+  const setQuery = (next: string) => {
+    setQueryState(next);
+    onQueryChangeRef.current?.(next);
+  };
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), debounceMs);
     return () => window.clearTimeout(timer);
   }, [query, debounceMs]);
 
-  useEffect(() => {
-    if (!debouncedQuery) {
-      setItems([]);
-      setTotalItems(0);
-      setStatus("idle");
-      setError(null);
-      return undefined;
-    }
-
-    let cancelled = false;
-    setItems([]);
-    setTotalItems(0);
-    setStatus("loading");
-    setError(null);
-
-    void (async () => {
-      try {
-        const page = await embyItems({
-          searchTerm: debouncedQuery,
-          recursive: true,
-          includeItemTypes: SEARCH_ITEM_TYPES,
-          limit: SEARCH_LIMIT,
-        });
-        const decorated = await decorateItems(page.items);
-        if (cancelled) return;
-        setItems(decorated);
-        setTotalItems(page.totalRecordCount);
-        setStatus("ready");
-      } catch (reason) {
-        if (cancelled) return;
-        setItems([]);
-        setTotalItems(0);
-        setError(describeEmbyError(reason, "搜索失败，请稍后重试。"));
-        setStatus("error");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedQuery, reloadToken]);
-
-  const reload = useCallback(() => setReloadToken((value) => value + 1), []);
+  const resource = useAsyncResource<SearchResults>(
+    async (isCancelled) => {
+      const page = await embyItems({
+        searchTerm: debouncedQuery,
+        recursive: true,
+        includeItemTypes: SEARCH_ITEM_TYPES,
+        limit: SEARCH_LIMIT,
+      });
+      if (isCancelled()) return { items: [], totalItems: 0 };
+      const items = await decorateItems(page.items);
+      return { items, totalItems: page.totalRecordCount };
+    },
+    `search:${debouncedQuery}`,
+    { enabled: Boolean(debouncedQuery), fallbackError: "搜索失败，请稍后重试。" },
+  );
 
   return {
     query,
     setQuery,
     debouncedQuery,
-    items,
-    totalItems,
-    status,
-    error,
-    pending: status === "loading" || query.trim() !== debouncedQuery,
-    reload,
+    items: resource.data?.items ?? [],
+    totalItems: resource.data?.totalItems ?? 0,
+    status: resource.status,
+    error: resource.error,
+    pending: resource.status === "loading" || query.trim() !== debouncedQuery,
+    reload: resource.reload,
   };
 }

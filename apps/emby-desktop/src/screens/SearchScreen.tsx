@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import { isPlayableItemType } from "../emby/library";
 import { useSearch } from "../emby/useSearch";
@@ -11,28 +11,13 @@ interface SearchScreenProps {
   onOpen: (item: EmbyLibraryItem) => void;
   /** Start playback for a playable result (movie/episode/video). */
   onPlay: (item: EmbyLibraryItem) => void;
+  /** Starting keyword, used by the shell to restore the field after a detour. */
+  initialQuery?: string;
+  /** Reports every keyword change so the shell can remember it. */
+  onQueryChange?: (query: string) => void;
 }
 
 const SKELETON_COUNT = 14;
-
-function SearchIcon({ size = 18 }: { size?: number }) {
-  return (
-    <svg
-      aria-hidden="true"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="10.5" cy="10.5" r="6.5" />
-      <path d="m15.5 15.5 5 5" />
-    </svg>
-  );
-}
 
 function SearchSkeleton() {
   return (
@@ -51,14 +36,15 @@ function SearchSkeleton() {
   );
 }
 
-export default function SearchScreen({ onOpen, onPlay }: SearchScreenProps) {
+export default function SearchScreen({
+  onOpen,
+  onPlay,
+  initialQuery = "",
+  onQueryChange,
+}: SearchScreenProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const search = useSearch();
+  const search = useSearch({ initialQuery, onQueryChange });
   const trimmedQuery = search.query.trim();
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
 
   const clear = () => {
     search.setQuery("");
@@ -71,7 +57,7 @@ export default function SearchScreen({ onOpen, onPlay }: SearchScreenProps) {
         <h1 className="search-hero__title">搜索</h1>
         <div className="search-box">
           <span className="search-box__icon" aria-hidden="true">
-            <SearchIcon />
+            <Icon name="search" size={18} />
           </span>
           <input
             ref={inputRef}
@@ -106,7 +92,7 @@ export default function SearchScreen({ onOpen, onPlay }: SearchScreenProps) {
       {search.status === "idle" ? (
         <div className="search-hint">
           <span className="search-hint__icon" aria-hidden="true">
-            <SearchIcon size={30} />
+            <Icon name="search" size={30} />
           </span>
           <p className="search-hint__title">输入关键词开始搜索</p>
           <p className="search-hint__text">搜索整个 Emby 媒体库中的电影、剧集与单集。</p>
