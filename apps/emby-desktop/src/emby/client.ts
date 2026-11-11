@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { EMBY_SESSION_EVENT } from "./contract";
 import type {
   EmbyItem,
   EmbyItemsPage,
@@ -7,6 +9,8 @@ import type {
   EmbyPlaybackTarget,
   EmbyResumeRequest,
   EmbySession,
+  EmbySessionBoot,
+  EmbySessionEvent,
   EmbySetFavoriteRequest,
   EmbySetPlayedRequest,
   EmbyView,
@@ -158,15 +162,19 @@ function notifySessionExpired(message: string): void {
   }
 }
 
-function isSessionExpiredMessage(message: string): boolean {
-  return message.includes("登录已过期") || message.includes("登录已失效");
+function embyErrorReason(error: unknown): string | null {
+  if (typeof error === "object" && error !== null && "reason" in error) {
+    const reason = (error as { reason?: unknown }).reason;
+    return typeof reason === "string" ? reason : null;
+  }
+  return null;
 }
 
 async function invokeEmby<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try {
     return await invoke<T>(command, args);
   } catch (error) {
-    if (isSessionExpiredMessage(rawEmbyErrorMessage(error))) {
+    if (embyErrorReason(error) === "token_rejected") {
       notifySessionExpired(EMBY_SESSION_EXPIRED_MESSAGE);
     }
     throw error;
@@ -178,14 +186,27 @@ export async function embyLogin(req: EmbyCredentials): Promise<EmbySession> {
   return invokeEmby<EmbySession>("emby_login", { req });
 }
 
-export async function embyLogout(): Promise<void> {
+export async function embyLogout(): Promise<EmbySessionBoot> {
   requireDesktop();
-  await invokeEmby<void>("emby_logout");
+  return invokeEmby<EmbySessionBoot>("emby_logout");
 }
 
 export async function embySession(): Promise<EmbySession | null> {
   requireDesktop();
   return invokeEmby<EmbySession | null>("emby_session");
+}
+
+/** Single-flight startup restore; pass force=true only for a user retry. */
+export async function embySessionBoot(force = false): Promise<EmbySessionBoot> {
+  requireDesktop();
+  return invokeEmby<EmbySessionBoot>("emby_session_boot", force ? { force: true } : undefined);
+}
+
+/** Subscribe to the backend's signed-out event (running 401). */
+export function onEmbySessionEvent(
+  handler: (event: EmbySessionEvent) => void,
+): Promise<() => void> {
+  return listen<EmbySessionEvent>(EMBY_SESSION_EVENT, (event) => handler(event.payload));
 }
 
 export async function embyViews(): Promise<EmbyView[]> {

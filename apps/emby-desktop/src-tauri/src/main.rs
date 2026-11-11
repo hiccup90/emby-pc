@@ -144,6 +144,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             emby::emby_login,
+            emby::emby_session_boot,
             emby::emby_logout,
             emby::emby_session,
             emby::emby_views,

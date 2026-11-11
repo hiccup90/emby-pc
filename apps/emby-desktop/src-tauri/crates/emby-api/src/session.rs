@@ -147,7 +147,7 @@ impl SessionStore {
     /// successful login.
     pub fn load(&self) -> ApiResult<Option<StoredSession>> {
         if let Err(err) = self.cleanup_legacy_files() {
-            eprintln("[emby] could not remove legacy session copies: {err}");
+            eprintln!("[emby] could not remove legacy session copies: {err}");
         }
 
         let path = self.session_path();
@@ -219,7 +219,7 @@ impl SessionStore {
             }
             Ok(None) => json,
             Err(err) => {
-                eprintln("[emby] session protection failed ({err}); storing unencrypted session");
+                eprintln!("[emby] session protection failed ({err}); storing unencrypted session");
                 json
             }
         };
@@ -277,7 +277,7 @@ impl SessionStore {
             }
             Ok(None) => {}
             Err(err) => {
-                eprintln("[emby] could not read a legacy device id: {err}");
+                eprintln!("[emby] could not read a legacy device id: {err}");
             }
         }
         let device_id = generate_device_id();

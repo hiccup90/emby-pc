@@ -9,6 +9,40 @@ export interface EmbySession {
   deviceId: string;
 }
 
+export type EmbySessionStatus = "signedIn" | "signedOut";
+
+/** Machine-readable reasons shared by boot results and command errors. */
+export type EmbySessionReason =
+  | "none"
+  | "token_rejected"
+  | "unreachable"
+  | "server_error"
+  | "storage_error"
+  | "invalid_credentials"
+  | "invalid_request";
+
+export interface EmbySessionBoot {
+  status: EmbySessionStatus;
+  reason: EmbySessionReason;
+  session?: EmbySession | null;
+  lastServer?: string | null;
+  lastUserName?: string | null;
+}
+
+export interface EmbyCommandError {
+  reason: EmbySessionReason;
+  message: string;
+}
+
+export interface EmbySessionEvent {
+  status: EmbySessionStatus;
+  reason: EmbySessionReason;
+  message: string;
+}
+
+/** Event emitted when a running command gets a 401 (task-21 listens for it). */
+export const EMBY_SESSION_EVENT = "emby-session";
+
 export interface EmbyView {
   id: string;
   name: string;
