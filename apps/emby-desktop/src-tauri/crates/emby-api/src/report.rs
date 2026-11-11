@@ -30,7 +30,7 @@ impl ReportEvent {
             "seek" => Ok(Self::Seek),
             "stop" => Ok(Self::Stop),
             "ended" => Ok(Self::Ended),
-            other => Err(ApiError::unsupported(format!(
+            other => Err(ApiError::invalid_input(format!(
                 "未知的播放上报事件：{other}（支持 start/progress/pause/unpause/seek/stop/ended）"
             ))),
         }

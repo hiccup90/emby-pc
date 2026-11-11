@@ -13,7 +13,8 @@
 //! leave a truncated primary file; there is no backup copy and no checksum.
 //! A corrupt file is reported as a storage error and deliberately retained.
 //! Legacy `session.json.bak` / `session.json.tmp` files from older builds are
-//! removed once on the first load (boot).
+//! removed by an explicit [`SessionStore::migrate_legacy_files`] call from the
+//! startup boot; reading the session never mutates the directory.
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -44,9 +45,6 @@ fn default_version() -> u32 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSession {
-    /// Stable Emby server id, when the login response supplied one.
-    #[serde(default)]
-    pub server_id: Option<String>,
     pub server_url: String,
     pub server_name: String,
     pub user_id: String,
@@ -74,7 +72,6 @@ impl StoredSession {
 impl fmt::Debug for StoredSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoredSession")
-            .field("server_id", &self.server_id)
             .field("server_url", &self.server_url)
             .field("server_name", &self.server_name)
             .field("user_id", &self.user_id)
@@ -115,10 +112,12 @@ impl SessionStore {
         self.dir.join(DEVICE_FILE)
     }
 
-    /// Removes recovery files written by the previous implementation. This is
-    /// intentionally a deletion, not a fallback: they contain an old token and
-    /// the new design does not use multiple copies.
-    pub fn cleanup_legacy_files(&self) -> ApiResult<()> {
+    /// One-shot migration from the previous storage layout: removes the
+    /// recovery copies it wrote. This is intentionally a deletion, not a
+    /// fallback — they contain an old token and the new design keeps a single
+    /// file. Called once by the startup boot; `load`/`clear` never do this, so
+    /// reading a session stays side-effect free.
+    pub fn migrate_legacy_files(&self) -> ApiResult<()> {
         let mut first_error: Option<ApiError> = None;
         for name in [LEGACY_BACKUP_FILE, LEGACY_TEMP_FILE] {
             let path = self.dir.join(name);
@@ -146,10 +145,6 @@ impl SessionStore {
     /// file is left in place so it can be inspected or overwritten by a later
     /// successful login.
     pub fn load(&self) -> ApiResult<Option<StoredSession>> {
-        if let Err(err) = self.cleanup_legacy_files() {
-            eprintln!("[emby] could not remove legacy session copies: {err}");
-        }
-
         let path = self.session_path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -162,16 +157,8 @@ impl SessionStore {
             }
         };
 
-        let json = if bytes.starts_with(ENCRYPTED_MAGIC) {
-            secret::unprotect(&bytes[ENCRYPTED_MAGIC.len()..]).map_err(|err| {
-                storage_error(format!(
-                    "无法解密会话文件 {}：{err}",
-                    path.display()
-                ))
-            })?
-        } else {
-            bytes
-        };
+        let json = decrypt_session_bytes(bytes)
+            .map_err(|err| storage_error(format!("{err}：{}", path.display())))?;
 
         let session = serde_json::from_slice::<StoredSession>(&json).map_err(|_| {
             storage_error(format!(
@@ -208,7 +195,7 @@ impl SessionStore {
     pub fn save(&self, session: &StoredSession) -> ApiResult<()> {
         self.ensure_dir()?;
         let json = serde_json::to_vec_pretty(session)
-            .map_err(|_| ApiError::config("无法序列化会话数据"))?;
+            .map_err(|_| ApiError::storage("无法序列化会话数据"))?;
 
         let bytes = match secret::protect(&json) {
             Ok(Some(protected)) => {
@@ -230,59 +217,73 @@ impl SessionStore {
         })
     }
 
-    /// Removes the session and any legacy recovery copies. Missing files are
-    /// not an error; a real removal failure is reported so logout cannot
-    /// pretend the token is gone.
+    /// Removes the session file. A missing file is not an error; a real
+    /// removal failure is reported so logout cannot pretend the token is gone.
     pub fn clear(&self) -> ApiResult<()> {
         let path = self.session_path();
-        let mut first_error: Option<ApiError> = match fs::remove_file(&path) {
-            Ok(()) => None,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-            Err(err) => Some(storage_error(format!(
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(storage_error(format!(
                 "无法删除会话文件 {}：{err}",
                 path.display()
             ))),
-        };
-
-        if let Err(err) = self.cleanup_legacy_files() {
-            if first_error.is_none() {
-                first_error = Some(err);
-            }
-        }
-
-        match first_error {
-            Some(err) => Err(err),
-            None => Ok(()),
         }
     }
 
     /// Returns the persisted device id, creating it on first use.
     ///
-    /// Migration order: `device.json`, then an existing `session.json` (older
-    /// builds wrote the id there), then a freshly generated id.
+    /// Migration order: `device.json`, then the id embedded in an existing
+    /// `session.json` (older builds had no separate device file), then a
+    /// freshly generated id.
+    ///
+    /// Only a *missing* file or unreadable *content* counts as "no id yet". A
+    /// real I/O failure (locked, permission denied, disk error) is returned
+    /// instead of minting a new id: a new device id would register a second
+    /// device on the Emby server and orphan the existing playback state.
     pub fn device_id(&self) -> ApiResult<String> {
         if let Some(device_id) = self.read_device_id()? {
             return Ok(device_id);
         }
-        // A corrupt session must not block login: the user can overwrite it
-        // after a successful login. If device.json is also missing, a fresh
-        // device id is the only recoverable option.
-        match self.load() {
-            Ok(Some(session)) => {
-                let device_id = session.device_id.trim().to_string();
-                if !device_id.is_empty() {
-                    self.save_device_id(&device_id)?;
-                    return Ok(device_id);
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                eprintln!("[emby] could not read a legacy device id: {err}");
-            }
+        if let Some(device_id) = self.legacy_device_id()? {
+            self.save_device_id(&device_id)?;
+            return Ok(device_id);
         }
         let device_id = generate_device_id();
         self.save_device_id(&device_id)?;
         Ok(device_id)
+    }
+
+    /// Device id embedded in `session.json` by an older build.
+    ///
+    /// Content-level problems (missing, corrupt, undecryptable, future version)
+    /// mean "there is no legacy id"; an I/O error while reading the file is
+    /// propagated, for the same reason as in [`Self::device_id`].
+    fn legacy_device_id(&self) -> ApiResult<Option<String>> {
+        let path = self.session_path();
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(storage_error(format!(
+                    "无法读取会话文件 {}：{err}",
+                    path.display()
+                )))
+            }
+        };
+        let Ok(json) = decrypt_session_bytes(bytes) else {
+            eprintln!("[emby] legacy session file is unreadable; ignoring its device id");
+            return Ok(None);
+        };
+        let Ok(session) = serde_json::from_slice::<StoredSession>(&json) else {
+            return Ok(None);
+        };
+        let device_id = session.device_id.trim().to_string();
+        Ok(if device_id.is_empty() {
+            None
+        } else {
+            Some(device_id)
+        })
     }
 
     fn read_device_id(&self) -> ApiResult<Option<String>> {
@@ -291,7 +292,7 @@ impl SessionStore {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => {
-                return Err(ApiError::config(format!(
+                return Err(storage_error(format!(
                     "无法读取设备标识 {}：{err}",
                     path.display()
                 )))
@@ -313,16 +314,16 @@ impl SessionStore {
         let bytes = serde_json::to_vec_pretty(&DeviceFile {
             device_id: device_id.to_string(),
         })
-        .map_err(|_| ApiError::config("无法序列化设备标识"))?;
+        .map_err(|_| ApiError::storage("无法序列化设备标识"))?;
         let path = self.device_path();
         write_atomic(&path, &bytes).map_err(|err| {
-            ApiError::config(format!("无法写入设备标识 {}：{err}", path.display()))
+            storage_error(format!("无法写入设备标识 {}：{err}", path.display()))
         })
     }
 
     fn ensure_dir(&self) -> ApiResult<()> {
         fs::create_dir_all(&self.dir).map_err(|err| {
-            ApiError::config(format!(
+            storage_error(format!(
                 "无法创建配置目录 {}：{err}",
                 self.dir.display()
             ))
@@ -330,8 +331,19 @@ impl SessionStore {
     }
 }
 
+/// Strips the DPAPI envelope, if the file has one. The error carries no
+/// secrets, only the failure reason, so callers can add their own context.
+fn decrypt_session_bytes(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    if bytes.starts_with(ENCRYPTED_MAGIC) {
+        secret::unprotect(&bytes[ENCRYPTED_MAGIC.len()..])
+            .map_err(|err| format!("无法解密会话文件（{err}）"))
+    } else {
+        Ok(bytes)
+    }
+}
+
 fn storage_error(message: impl Into<String>) -> ApiError {
-    ApiError::config(format!("会话存储错误：{}", message.into()))
+    ApiError::storage(format!("会话存储错误：{}", message.into()))
 }
 
 /// Generates a stable-format (UUID-like) device id without extra dependencies.
@@ -434,7 +446,6 @@ mod tests {
 
     fn session() -> StoredSession {
         StoredSession {
-            server_id: Some("server-1".into()),
             server_url: "http://192.168.1.10:8096".into(),
             server_name: "Home Emby".into(),
             user_id: "user-1".into(),
@@ -488,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_session_without_version_or_server_id_loads() {
+    fn legacy_session_without_version_loads() {
         let dir = TempDir::new("session-legacy");
         let store = SessionStore::new(&dir.0);
         let legacy = serde_json::json!({
@@ -502,7 +513,6 @@ mod tests {
         fs::write(store.session_path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
 
         let loaded = store.load().unwrap().unwrap();
-        assert_eq!(loaded.server_id, None);
         assert_eq!(loaded.version, SESSION_VERSION);
         assert_eq!(loaded.device_id, "device-1");
     }
@@ -533,46 +543,50 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_legacy_recovery_files() {
-        let dir = TempDir::new("session-legacy-cleanup");
+    fn migrate_removes_legacy_recovery_files() {
+        let dir = TempDir::new("session-legacy-migrate");
         let store = SessionStore::new(&dir.0);
         let backup = store.dir().join(LEGACY_BACKUP_FILE);
         let temp = store.dir().join(LEGACY_TEMP_FILE);
         fs::write(&backup, b"old token").unwrap();
         fs::write(&temp, b"old temp").unwrap();
 
-        store.cleanup_legacy_files().unwrap();
+        store.migrate_legacy_files().unwrap();
         assert!(!backup.exists());
         assert!(!temp.exists());
         // Idempotent.
-        store.cleanup_legacy_files().unwrap();
+        store.migrate_legacy_files().unwrap();
     }
 
     #[test]
-    fn load_also_cleans_legacy_files() {
-        let dir = TempDir::new("session-load-cleanup");
+    fn reading_a_session_does_not_touch_the_directory() {
+        let dir = TempDir::new("session-read-only");
         let store = SessionStore::new(&dir.0);
         let backup = store.dir().join(LEGACY_BACKUP_FILE);
         fs::write(&backup, b"old token").unwrap();
 
+        // Migration is a boot-time action; `load`/`clear` stay pure so a
+        // failed boot cannot delete data behind the user's back.
         assert_eq!(store.load().unwrap(), None);
+        assert!(backup.exists(), "load must not delete legacy files");
+
+        store.clear().unwrap();
+        assert!(backup.exists(), "clear must not delete legacy files");
+
+        store.migrate_legacy_files().unwrap();
         assert!(!backup.exists());
     }
 
     #[test]
-    fn clear_removes_the_session_and_legacy_files_but_keeps_device_id() {
+    fn clear_removes_the_session_but_keeps_device_id() {
         let dir = TempDir::new("session-clear");
         let store = SessionStore::new(&dir.0);
         store.save(&session()).unwrap();
         let device_id = store.device_id().unwrap();
-        fs::write(store.dir().join(LEGACY_BACKUP_FILE), b"old").unwrap();
-        fs::write(store.dir().join(LEGACY_TEMP_FILE), b"old").unwrap();
 
         store.clear().unwrap();
         assert_eq!(store.load().unwrap(), None);
         assert!(!store.session_path().exists());
-        assert!(!store.dir().join(LEGACY_BACKUP_FILE).exists());
-        assert!(!store.dir().join(LEGACY_TEMP_FILE).exists());
         // Idempotent.
         store.clear().unwrap();
         // Device id survives logout.
@@ -618,6 +632,35 @@ mod tests {
         assert_eq!(store.device_id().unwrap(), "legacy-device");
     }
 
+    #[test]
+    fn device_id_is_not_replaced_after_an_io_error() {
+        let dir = TempDir::new("device-io-error");
+        let store = SessionStore::new(&dir.0);
+        // A directory where the session file should be makes `fs::read` fail
+        // with a real I/O error (EISDIR / access denied), not `NotFound`.
+        fs::create_dir(store.session_path()).unwrap();
+
+        let error = store.device_id().expect_err("I/O error must not mint a new id");
+        assert_eq!(error.kind(), crate::error::ApiErrorKind::Storage);
+        assert!(
+            !store.device_path().exists(),
+            "a failed read must not register a second device"
+        );
+    }
+
+    #[test]
+    fn corrupt_session_still_yields_a_usable_device_id() {
+        let dir = TempDir::new("device-corrupt-legacy");
+        let store = SessionStore::new(&dir.0);
+        fs::write(store.session_path(), b"{not json").unwrap();
+
+        // Content-level damage is recoverable: the id is generated once and
+        // then stays stable, even though the session itself remains corrupt.
+        let first = store.device_id().unwrap();
+        assert!(store.device_path().exists());
+        assert_eq!(store.device_id().unwrap(), first);
+        assert_eq!(store.load().unwrap_err().kind(), crate::error::ApiErrorKind::Storage);
+    }
     #[test]
     fn debug_redacts_access_token() {
         let text = format!("{:?}", session());

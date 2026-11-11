@@ -686,6 +686,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -694,8 +695,11 @@ version = "0.1.0"
 dependencies = [
  "emby-api",
  "emby-mpv",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 

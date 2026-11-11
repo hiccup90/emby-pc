@@ -166,9 +166,14 @@ pub fn headers_option_value(headers: Option<&[String]>) -> Option<String> {
     }
 }
 
-pub fn find_option<'a>(options: &'a [MpvOption], name: &str) -> Option<&'a str> {
+/// Test helper: the value mpv would end up with, i.e. the **last** occurrence
+/// of `name` (mpv applies later options over earlier ones, which is why the
+/// user's `mpv.conf` is appended after the built-ins).
+#[cfg(test)]
+pub(crate) fn find_option<'a>(options: &'a [MpvOption], name: &str) -> Option<&'a str> {
     options
         .iter()
+        .rev()
         .find(|option| option.name == name)
         .map(|option| option.value.as_str())
 }
@@ -341,6 +346,9 @@ mod tests {
         let idle = merged.iter().position(|o| o.name == "idle").unwrap();
         let last_hwdec = merged.iter().rposition(|o| o.name == "hwdec").unwrap();
         assert!(last_hwdec > idle, "user options come after every built-in");
+        // The helper must report what mpv would apply: the user's later value.
+        assert_eq!(find_option(&merged, "hwdec"), Some("d3d11va"));
+        assert_eq!(find_option(&merged, "keep-open"), Some("no"));
     }
 
     #[test]

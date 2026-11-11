@@ -21,13 +21,14 @@ use crate::ffi::*;
 /// A loaded libmpv plus the resolved symbol table.
 ///
 /// Field order matters for teardown: `api` only holds plain function pointers,
-/// and the `Library` is unloaded last (by `Drop` of `library` field).
+/// and the `Library` is unloaded last (by `Drop` of the `_library` field).
 pub struct MpvLibrary {
     pub api: MpvApi,
-    /// Kept alive until all mpv handles are gone.
-    #[allow(dead_code)]
-    library: libloading::Library,
-    pub path: PathBuf,
+    /// Kept alive until all mpv handles are gone. It is never read directly:
+    /// the value exists for its `Drop`, which unloads the DLL only after every
+    /// mpv handle died. The underscore silences `dead_code` without an `allow`
+    /// attribute (underscore-prefixed fields are still dropped normally).
+    _library: libloading::Library,
 }
 
 impl MpvLibrary {
@@ -90,7 +91,7 @@ impl MpvLibrary {
         ))
     }
 
-    #[allow(dead_code)]
+    #[cfg(windows)]
     unsafe fn from_library(library: libloading::Library, path: PathBuf) -> Result<Self, MpvError> {
         macro_rules! required {
             ($name:literal, $ty:ty) => {{
@@ -133,8 +134,7 @@ impl MpvLibrary {
 
         Ok(Self {
             api,
-            library,
-            path,
+            _library: library,
         })
     }
 
@@ -153,10 +153,6 @@ impl MpvLibrary {
             return Err(MpvError::IncompatibleApi { found });
         }
         Ok(())
-    }
-
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
     }
 
     /// `mpv_error_string`, copied into a Rust string immediately (the returned

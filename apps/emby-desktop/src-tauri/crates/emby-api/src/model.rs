@@ -39,6 +39,8 @@ pub struct EmbyView {
 pub struct EmbyUserData {
     pub playback_position_ticks: Option<i64>,
     pub played: bool,
+    /// The signed-in user's favorite mark (Emby's `UserData.IsFavorite`).
+    pub favorite: bool,
     pub unplayed_item_count: Option<i32>,
 }
 
@@ -340,6 +342,8 @@ where
 pub(crate) struct RawUserData {
     pub playback_position_ticks: Option<i64>,
     pub played: Option<bool>,
+    /// Emby serializes the favorite flag as `IsFavorite` (UserItemDataDto).
+    pub is_favorite: Option<bool>,
     pub unplayed_item_count: Option<i32>,
 }
 
@@ -355,7 +359,6 @@ pub(crate) struct RawItemsResponse {
 #[serde(rename_all = "PascalCase", default)]
 pub(crate) struct RawAuthResponse {
     pub access_token: Option<String>,
-    pub server_id: Option<String>,
     pub server_name: Option<String>,
     pub user: Option<RawAuthUser>,
 }
@@ -395,6 +398,9 @@ impl From<RawUserData> for EmbyUserData {
         Self {
             playback_position_ticks: raw.playback_position_ticks,
             played: raw.played.unwrap_or(false),
+            // Older servers and partial payloads omit IsFavorite; treat it as
+            // not favorited instead of failing the whole item.
+            favorite: raw.is_favorite.unwrap_or(false),
             unplayed_item_count: raw.unplayed_item_count,
         }
     }
@@ -607,7 +613,7 @@ mod tests {
                 "ImageTags": {"Primary": "tag-p"},
                 "BackdropImageTags": ["tag-b"],
                 "PrimaryImageAspectRatio": 1.7777778,
-                "UserData": {"PlaybackPositionTicks": 50000000, "Played": false, "UnplayedItemCount": 2}
+                "UserData": {"PlaybackPositionTicks": 50000000, "Played": false, "IsFavorite": true, "UnplayedItemCount": 2}
             },
             {
                 "Id": "episode2",
@@ -655,6 +661,7 @@ mod tests {
             Some(50_000_000)
         );
         assert!(!movie.user_data.played);
+        assert!(movie.user_data.favorite, "IsFavorite maps to favorite");
         assert_eq!(movie.user_data.unplayed_item_count, Some(2));
 
         let episode = &page.items[1];
@@ -667,6 +674,43 @@ mod tests {
         assert_eq!(episode.user_data, EmbyUserData::default());
         assert_eq!(episode.user_data.playback_position_ticks, None);
         assert!(!episode.user_data.played);
+    }
+
+    #[test]
+    fn user_data_favorite_is_parsed_leniently() {
+        let favorited = r#"{"Id":"m1","Name":"Fav","Type":"Movie","UserData":{"Played":false,"IsFavorite":true}}"#;
+        let item = serde_json::from_str::<RawItem>(favorited)
+            .unwrap()
+            .into_item();
+        assert!(item.user_data.favorite, "true IsFavorite must map to favorite");
+
+        let not_favorited = r#"{"Id":"m2","Name":"Plain","Type":"Movie","UserData":{"Played":true,"IsFavorite":false}}"#;
+        let item = serde_json::from_str::<RawItem>(not_favorited)
+            .unwrap()
+            .into_item();
+        assert!(item.user_data.played);
+        assert!(!item.user_data.favorite, "explicit false stays false");
+
+        let missing = r#"{"Id":"m3","Name":"Old","Type":"Movie","UserData":{"Played":false}}"#;
+        let item = serde_json::from_str::<RawItem>(missing).unwrap().into_item();
+        assert!(!item.user_data.favorite, "missing IsFavorite defaults to false");
+
+        let no_user_data = r#"{"Id":"m4","Name":"Bare","Type":"Movie","UserData":null}"#;
+        let item = serde_json::from_str::<RawItem>(no_user_data)
+            .unwrap()
+            .into_item();
+        assert_eq!(item.user_data, EmbyUserData::default());
+        assert!(!item.user_data.favorite);
+    }
+
+    #[test]
+    fn favorite_serializes_to_the_frontend_contract() {
+        let raw = r#"{"Id":"m5","Name":"Fav","Type":"Movie","UserData":{"IsFavorite":true}}"#;
+        let item = serde_json::from_str::<RawItem>(raw).unwrap().into_item();
+        let value = serde_json::to_value(&item).unwrap();
+        let user_data = &value["userData"];
+        assert_eq!(user_data["favorite"], serde_json::Value::Bool(true));
+        assert!(user_data.get("isFavorite").is_none(), "frontend uses favorite");
     }
 
     #[test]
@@ -705,6 +749,7 @@ mod tests {
         let user_data = &item["userData"];
         assert!(user_data.get("playbackPositionTicks").is_some());
         assert!(user_data.get("played").is_some());
+        assert!(user_data.get("favorite").is_some());
         assert!(user_data.get("unplayedItemCount").is_some());
     }
 

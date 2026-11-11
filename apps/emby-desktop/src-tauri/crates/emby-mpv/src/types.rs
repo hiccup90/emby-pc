@@ -157,17 +157,10 @@ impl TrackKind {
         }
     }
 
-    /// mpv exposes subtitles as type `"sub"`, the UI contract uses `"subtitle"`.
-    pub fn from_mpv(value: &str) -> Option<Self> {
-        match value {
-            "audio" => Some(TrackKind::Audio),
-            "sub" | "subtitle" => Some(TrackKind::Subtitle),
-            _ => None,
-        }
-    }
-
+    /// The one parser for both directions: the UI contract uses
+    /// `"audio"`/`"subtitle"`, mpv reports subtitles as `"sub"`.
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
+        match value.trim() {
             TRACK_AUDIO => Some(TrackKind::Audio),
             TRACK_SUBTITLE | "sub" => Some(TrackKind::Subtitle),
             _ => None,
@@ -323,9 +316,10 @@ mod tests {
 
     #[test]
     fn track_kind_maps_mpv_sub_type() {
-        assert_eq!(TrackKind::from_mpv("sub"), Some(TrackKind::Subtitle));
-        assert_eq!(TrackKind::from_mpv("audio"), Some(TrackKind::Audio));
-        assert_eq!(TrackKind::from_mpv("video"), None);
+        assert_eq!(TrackKind::parse("sub"), Some(TrackKind::Subtitle));
+        assert_eq!(TrackKind::parse("subtitle"), Some(TrackKind::Subtitle));
+        assert_eq!(TrackKind::parse("audio"), Some(TrackKind::Audio));
+        assert_eq!(TrackKind::parse(" video "), None);
         assert_eq!(TrackKind::Audio.property(), "aid");
         assert_eq!(TrackKind::Subtitle.property(), "sid");
         assert_eq!(TrackKind::Subtitle.as_str(), "subtitle");

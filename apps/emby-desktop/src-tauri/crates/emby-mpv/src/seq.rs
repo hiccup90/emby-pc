@@ -25,6 +25,7 @@ impl SeqLatch {
         }
     }
 
+    #[cfg(test)]
     pub fn last(&self) -> Option<u64> {
         self.last
     }

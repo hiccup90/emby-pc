@@ -27,8 +27,8 @@ mod session;
 mod ticks;
 pub mod url;
 
-pub use auth::{authorization_header, default_device_name, CLIENT_NAME, CLIENT_VERSION};
-pub use client::{default_http_client, EmbyClient, LoginOutcome, DEFAULT_TIMEOUT, LOGIN_TIMEOUT};
+pub use auth::default_device_name;
+pub use client::{default_http_client, EmbyClient, LoginOutcome};
 // The Tauri app names the shared client type through this alias instead of
 // depending on `reqwest` directly, so version/feature selection stays defined
 // in exactly one place (this crate's Cargo.toml).
@@ -36,11 +36,8 @@ pub use reqwest::Client as HttpClient;
 pub use error::{ApiError, ApiErrorKind, ApiResult};
 pub use model::{
     EmbyChapter, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest,
-    EmbyMediaStream, EmbyPerson,
-    EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbyResumeRequest, EmbySession,
-    EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
+    EmbyMediaStream, EmbyPerson, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest,
+    EmbyResumeRequest, EmbySession, EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
 };
-pub use report::ReportEvent;
-pub use session::{generate_device_id, SessionStore, StoredSession, SESSION_VERSION};
-pub use ticks::{seconds_to_ticks, ticks_to_seconds, TICKS_PER_SECOND};
-pub use url::{build_url, normalize_server_url, redact_url, with_api_key};
+pub use session::{SessionStore, StoredSession, SESSION_VERSION};
+pub use url::normalize_server_url;

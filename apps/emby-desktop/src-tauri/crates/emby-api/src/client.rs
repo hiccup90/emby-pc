@@ -1,7 +1,8 @@
 //! Async Emby client.
 //!
 //! One shared [`reqwest::Client`] is passed into [`EmbyClient::new`] so all
-//! commands reuse connections. Timeouts: 15 s for normal calls, 20 s for login.
+//! commands reuse connections. Timeouts: 15 s for normal calls, 20 s for login,
+//! 5 s for logout (a slow server must not delay a local sign-out).
 //! Errors never contain the request body or the access token.
 
 use std::fmt;
@@ -25,6 +26,10 @@ use crate::url::{absolutize, build_url, redact_url, with_api_key};
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Timeout for `POST /Users/AuthenticateByName`.
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// Timeout for `POST /Sessions/Logout`: revoking the token must never keep the
+/// UI waiting on a slow or unreachable server; the local session is dropped
+/// regardless.
+pub const LOGOUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Fields requested for item lists/details. The frontend contract depends on
 /// these (`userData`, `imageTags`, `primaryImageAspectRatio`, ...).
@@ -42,7 +47,7 @@ pub fn default_http_client() -> ApiResult<Client> {
         .timeout(DEFAULT_TIMEOUT)
         .user_agent(format!("{CLIENT_NAME}/{CLIENT_VERSION}"))
         .build()
-        .map_err(|_| ApiError::config("无法初始化 HTTP 客户端"))
+        .map_err(|_| ApiError::invalid_input("无法初始化 HTTP 客户端"))
 }
 
 /// Result of a successful `AuthenticateByName` plus the resolved server name.
@@ -51,7 +56,6 @@ pub struct LoginOutcome {
     pub access_token: String,
     pub user_id: String,
     pub user_name: String,
-    pub server_id: Option<String>,
     pub server_name: String,
 }
 
@@ -61,7 +65,6 @@ impl fmt::Debug for LoginOutcome {
             .field("access_token", &"<redacted>")
             .field("user_id", &self.user_id)
             .field("user_name", &self.user_name)
-            .field("server_id", &self.server_id)
             .field("server_name", &self.server_name)
             .finish()
     }
@@ -120,20 +123,12 @@ impl EmbyClient {
         }
     }
 
-    pub fn server_url(&self) -> &str {
-        &self.server_url
-    }
-
-    pub fn device_id(&self) -> &str {
-        &self.device_id
-    }
-
     /// Direct login. Username/password are only used for this request; the
     /// returned token is stored by the caller (never by this crate).
     pub async fn login(&self, username: &str, password: &str) -> ApiResult<LoginOutcome> {
         let username = username.trim();
         if username.is_empty() {
-            return Err(ApiError::config("请输入用户名"));
+            return Err(ApiError::invalid_input("请输入用户名"));
         }
 
         let url = self.endpoint(&["Users", "AuthenticateByName"], &[])?;
@@ -145,12 +140,11 @@ impl EmbyClient {
         let body = self
             .send(builder, LOGIN_TIMEOUT, &url)
             .await
-            .map_err(|err| match err.status() {
+            .map_err(|err| match err.kind() {
                 // Wrong credentials are a user error, not an expired session.
-                Some(401) | Some(403) => ApiError::new(
-                    ApiErrorKind::Unauthorized,
-                    "用户名或密码错误，或该用户没有登录权限",
-                ),
+                ApiErrorKind::TokenExpired | ApiErrorKind::Forbidden => {
+                    ApiError::invalid_credentials("用户名或密码错误，或该用户没有登录权限")
+                }
                 _ => err,
             })?;
 
@@ -203,9 +197,41 @@ impl EmbyClient {
             access_token,
             user_id,
             user_name,
-            server_id: auth.server_id.filter(|id| !id.trim().is_empty()),
             server_name,
         })
+    }
+
+    /// Checks that the stored token is still accepted for `user_id`.
+    ///
+    /// `GET /Users/{id}` is the only endpoint that both requires a valid token
+    /// and is available to a normal user (Emby has no `/Users/Me`). Errors keep
+    /// their semantic kind, so the caller can tell an expired token
+    /// ([`ApiErrorKind::TokenExpired`]) from a permission problem
+    /// ([`ApiErrorKind::Forbidden`]) or an unknown user
+    /// ([`ApiErrorKind::NotFound`]) without looking at HTTP statuses.
+    pub async fn current_user(&self, user_id: &str) -> ApiResult<()> {
+        let _token = self.token()?;
+        let user_id = required_user_id(user_id)?;
+        let url = self.endpoint(&["Users", user_id], &[])?;
+        self.send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
+            .await
+            .map(|_body| ())
+    }
+
+    /// Revokes the access token server-side (`POST /Sessions/Logout`).
+    ///
+    /// Uses a short timeout: the local session is dropped by the caller no
+    /// matter what this returns, so a slow server must not block signing out.
+    pub async fn logout(&self) -> ApiResult<()> {
+        let _token = self.token()?;
+        let url = self.endpoint(&["Sessions", "Logout"], &[])?;
+        self.send(
+            self.request(Method::POST, &url),
+            LOGOUT_TIMEOUT,
+            &url,
+        )
+        .await
+        .map(|_body| ())
     }
 
     pub async fn views(&self, user_id: &str) -> ApiResult<Vec<EmbyView>> {
@@ -565,7 +591,7 @@ impl EmbyClient {
             .as_deref()
             .map(str::trim)
             .filter(|token| !token.is_empty())
-            .ok_or_else(|| ApiError::config("尚未登录 Emby 服务器"))
+            .ok_or_else(|| ApiError::invalid_input("尚未登录 Emby 服务器"))
     }
 
     fn endpoint(&self, segments: &[&str], query: &[(&str, &str)]) -> ApiResult<String> {
@@ -620,10 +646,18 @@ impl EmbyClient {
     }
 }
 
+fn required_user_id(user_id: &str) -> ApiResult<&str> {
+    let user_id = user_id.trim();
+    if user_id.is_empty() {
+        return Err(ApiError::invalid_input("缺少用户 id"));
+    }
+    Ok(user_id)
+}
+
 fn required_item_id(item_id: &str) -> ApiResult<&str> {
     let item_id = item_id.trim();
     if item_id.is_empty() {
-        return Err(ApiError::config("缺少条目 id"));
+        return Err(ApiError::invalid_input("缺少条目 id"));
     }
     Ok(item_id)
 }
@@ -631,7 +665,7 @@ fn required_item_id(item_id: &str) -> ApiResult<&str> {
 fn required_person_id(person_id: &str) -> ApiResult<&str> {
     let person_id = person_id.trim();
     if person_id.is_empty() {
-        return Err(ApiError::config("缺少演员 id"));
+        return Err(ApiError::invalid_input("缺少演员 id"));
     }
     Ok(person_id)
 }
@@ -674,18 +708,18 @@ fn parse_json<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> ApiRes
 fn transport_error(err: reqwest::Error, timeout: Duration, url: &str) -> ApiError {
     let target = redact_url(url);
     if err.is_timeout() {
-        ApiError::transport(format!(
+        ApiError::network(format!(
             "连接 Emby 服务器超时（{} 秒）：{target}",
             timeout.as_secs()
         ))
     } else if err.is_connect() {
-        ApiError::transport(format!(
+        ApiError::network(format!(
             "无法连接 Emby 服务器，请检查地址与网络：{target}"
         ))
     } else if err.is_decode() {
         ApiError::decode(format!("Emby 响应无法解析：{target}"))
     } else {
-        ApiError::transport(format!("Emby 网络请求失败：{target}"))
+        ApiError::network(format!("Emby 网络请求失败：{target}"))
     }
 }
 
@@ -1142,7 +1176,7 @@ mod tests {
             .person_items("u1", "  ", 10)
             .await
             .expect_err("empty person id");
-        assert_eq!(error.kind(), ApiErrorKind::Config);
+        assert_eq!(error.kind(), ApiErrorKind::InvalidInput);
     }
 
     #[test]

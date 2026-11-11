@@ -1,5 +1,5 @@
-//! Snapshot fan-out: keeps the newest snapshot, assigns `seq`, and pushes to
-//! every registered sink (Tauri `Channel`s in the app layer).
+//! Snapshot fan-out: keeps the newest snapshot, assigns `seq`, and pushes it to
+//! the single registered sink (the Tauri `Channel` in the app layer).
 //!
 //! This is the only place `seq` is assigned, so `seq` is monotonic across
 //! opens/stops/subscriptions and a stale snapshot can never overwrite a newer
@@ -15,8 +15,7 @@ pub trait SnapshotSink: Send + Sync + 'static {
     fn publish(&self, snapshot: PlayerSnapshot);
 
     /// Returning `false` makes the hub drop this sink on the next publish.
-    /// Used when a webview channel died (page reload / window closed), so a
-    /// long session does not accumulate dead sinks.
+    /// Used when a webview channel died (page reload / window closed).
     fn is_alive(&self) -> bool {
         true
     }
@@ -25,8 +24,11 @@ pub trait SnapshotSink: Send + Sync + 'static {
 struct HubInner {
     latest: PlayerSnapshot,
     seq: u64,
-    sinks: Vec<(u64, Arc<dyn SnapshotSink>)>,
-    next_sink_id: u64,
+    /// The single `player_subscribe` channel. `player_subscribe` has no
+    /// unsubscribe counterpart: a new subscription replaces the old one, so
+    /// there is exactly one sink at a time (a dead channel is dropped on the
+    /// next publish).
+    sink: Option<Arc<dyn SnapshotSink>>,
 }
 
 pub struct SnapshotHub {
@@ -45,8 +47,7 @@ impl SnapshotHub {
             inner: Mutex::new(HubInner {
                 latest: PlayerSnapshot::default(),
                 seq: 0,
-                sinks: Vec::new(),
-                next_sink_id: 1,
+                sink: None,
             }),
         }
     }
@@ -60,14 +61,14 @@ impl SnapshotHub {
         self.lock().latest.clone()
     }
 
-    /// Assign a fresh `seq`, store, and fan out. Sinks are invoked after the
+    /// Assign a fresh `seq`, store, and fan out. The sink is invoked after the
     /// lock is released so a slow channel cannot block `player_snapshot`.
     pub fn publish(&self, snapshot: PlayerSnapshot) -> PlayerSnapshot {
-        let (snapshot, sinks) = {
+        let (snapshot, sink) = {
             let mut inner = self.lock();
             Self::commit(&mut inner, snapshot)
         };
-        self.fan_out(&snapshot, &sinks);
+        self.fan_out(&snapshot, sink.as_ref());
         snapshot
     }
 
@@ -78,82 +79,50 @@ impl SnapshotHub {
     /// (e.g. a volume change resurrecting `playing` right after `ended`).
     /// `mutate` must not call back into the hub: the lock is not reentrant.
     pub fn update(&self, mutate: impl FnOnce(&mut PlayerSnapshot)) -> PlayerSnapshot {
-        let (snapshot, sinks) = {
+        let (snapshot, sink) = {
             let mut inner = self.lock();
             let mut snapshot = inner.latest.clone();
             mutate(&mut snapshot);
             Self::commit(&mut inner, snapshot)
         };
-        self.fan_out(&snapshot, &sinks);
+        self.fan_out(&snapshot, sink.as_ref());
         snapshot
     }
 
-    /// Assign `seq`, store as latest and return the sinks to notify. Caller
-    /// holds the lock.
+    /// Assign `seq`, store as latest, and hand back the sink to notify. The
+    /// caller holds the lock; delivery happens after it is released.
     fn commit(
         inner: &mut HubInner,
         mut snapshot: PlayerSnapshot,
-    ) -> (PlayerSnapshot, Vec<Arc<dyn SnapshotSink>>) {
+    ) -> (PlayerSnapshot, Option<Arc<dyn SnapshotSink>>) {
         inner.seq = inner.seq.wrapping_add(1);
         snapshot.seq = inner.seq;
         inner.latest = snapshot.clone();
-        let sinks: Vec<Arc<dyn SnapshotSink>> =
-            inner.sinks.iter().map(|(_, sink)| sink.clone()).collect();
-        (snapshot, sinks)
+        (snapshot, inner.sink.clone())
     }
 
-    /// Deliver outside the lock, then prune sinks that reported a failed send
-    /// (dead channels).
-    fn fan_out(&self, snapshot: &PlayerSnapshot, sinks: &[Arc<dyn SnapshotSink>]) {
-        for sink in sinks {
-            sink.publish(snapshot.clone());
-        }
-        if sinks.iter().any(|sink| !sink.is_alive()) {
-            self.lock().sinks.retain(|(_, sink)| sink.is_alive());
+    /// Deliver outside the lock, then drop a sink that reported a failed send
+    /// (the webview went away).
+    fn fan_out(&self, snapshot: &PlayerSnapshot, sink: Option<&Arc<dyn SnapshotSink>>) {
+        let Some(sink) = sink else {
+            return;
+        };
+        sink.publish(snapshot.clone());
+        if !sink.is_alive() {
+            self.lock().sink = None;
         }
     }
 
-    /// Register a sink and immediately push the current snapshot to it
-    /// (`player_subscribe` contract: first message arrives without waiting).
-    pub fn add_sink(&self, sink: Arc<dyn SnapshotSink>) -> u64 {
-        let (id, latest) = {
+    /// Replaces the current subscription and immediately pushes the current
+    /// snapshot (`player_subscribe` contract: the first message arrives without
+    /// waiting).
+    pub fn set_sink(&self, sink: Arc<dyn SnapshotSink>) {
+        let latest = {
             let mut inner = self.lock();
-            let id = inner.next_sink_id;
-            inner.next_sink_id = inner.next_sink_id.wrapping_add(1).max(1);
-            let latest = inner.latest.clone();
-            inner.sinks.push((id, sink.clone()));
-            (id, latest)
+            inner.sink = Some(sink.clone());
+            inner.latest.clone()
         };
         sink.publish(latest);
-        id
-    }
-
-    /// Replace the registered sink with `sink` and push the current snapshot.
-    ///
-    /// `player_subscribe` has no unsubscribe counterpart: the UI subscribes
-    /// again on every visit to the player page. Keeping the old channels would
-    /// fan every snapshot out N times and keep dead webviews alive, so the new
-    /// subscription is the only one that survives.
-    pub fn set_sink(&self, sink: Arc<dyn SnapshotSink>) -> u64 {
-        let (id, latest) = {
-            let mut inner = self.lock();
-            let id = inner.next_sink_id;
-            inner.next_sink_id = inner.next_sink_id.wrapping_add(1).max(1);
-            inner.sinks.clear();
-            let latest = inner.latest.clone();
-            inner.sinks.push((id, sink.clone()));
-            (id, latest)
-        };
-        sink.publish(latest);
-        id
-    }
-
-    pub fn remove_sink(&self, id: u64) {
-        self.lock().sinks.retain(|(sink_id, _)| *sink_id != id);
-    }
-
-    pub fn sink_count(&self) -> usize {
-        self.lock().sinks.len()
     }
 }
 
@@ -271,33 +240,26 @@ mod tests {
         let hub = SnapshotHub::new();
         hub.update(|s| s.status = STATUS_PAUSED.to_string());
         let (sink, count, status) = CountingSink::new();
-        let id = hub.add_sink(Arc::new(sink));
+        hub.set_sink(Arc::new(sink));
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(status.lock().unwrap().as_str(), STATUS_PAUSED);
-        assert_eq!(hub.sink_count(), 1);
 
         hub.update(|s| s.status = STATUS_PLAYING.to_string());
         assert_eq!(count.load(Ordering::SeqCst), 2);
-
-        hub.remove_sink(id);
-        hub.update(|s| s.status = STATUS_PAUSED.to_string());
-        assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert_eq!(hub.sink_count(), 0);
     }
 
     #[test]
-    fn dead_sinks_are_pruned_after_a_failed_publish() {
+    fn a_dead_sink_is_dropped_after_a_failed_publish() {
         let hub = SnapshotHub::new();
         let sink = Arc::new(MortalSink::new());
-        hub.add_sink(sink.clone());
-        assert_eq!(hub.sink_count(), 1);
+        hub.set_sink(sink.clone());
 
-        // First publish reaches the sink, which then reports itself dead.
+        // The first publish reaches the sink, which then reports itself dead.
         hub.publish(PlayerSnapshot::default());
-        assert_eq!(hub.sink_count(), 0);
+        assert!(hub.lock().sink.is_none(), "dead channel must be dropped");
         let delivered = sink.delivered.load(Ordering::SeqCst);
 
-        // No further deliveries once pruned.
+        // No further deliveries once dropped.
         hub.publish(PlayerSnapshot::default());
         assert_eq!(sink.delivered.load(Ordering::SeqCst), delivered);
     }
@@ -308,11 +270,9 @@ mod tests {
         let (old, old_count, _) = CountingSink::new();
         let (new, new_count, _) = CountingSink::new();
         hub.set_sink(Arc::new(old));
-        assert_eq!(hub.sink_count(), 1);
         assert_eq!(old_count.load(Ordering::SeqCst), 1); // current snapshot
 
         hub.set_sink(Arc::new(new));
-        assert_eq!(hub.sink_count(), 1);
         assert_eq!(new_count.load(Ordering::SeqCst), 1);
 
         hub.publish(PlayerSnapshot::default());
@@ -334,14 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn all_sinks_see_every_snapshot() {
+    fn a_hub_without_a_subscriber_still_tracks_the_latest_snapshot() {
         let hub = SnapshotHub::new();
-        let (a, count_a, _) = CountingSink::new();
-        let (b, count_b, _) = CountingSink::new();
-        hub.add_sink(Arc::new(a));
-        hub.add_sink(Arc::new(b));
         hub.publish(PlayerSnapshot::default());
-        assert_eq!(count_a.load(Ordering::SeqCst), 2); // initial + publish
-        assert_eq!(count_b.load(Ordering::SeqCst), 2);
+        hub.update(|s| s.status = STATUS_PLAYING.to_string());
+        assert_eq!(hub.latest().seq, 2);
+        assert_eq!(hub.latest().status, STATUS_PLAYING);
     }
 }

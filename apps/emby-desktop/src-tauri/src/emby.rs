@@ -17,10 +17,9 @@ use std::fmt;
 use std::time::Duration;
 
 use emby_api::{
-    authorization_header, build_url, ApiError, ApiErrorKind, EmbyClient, EmbyImageRequest,
-    EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest, EmbyPlaybackRequest,
-    EmbyPlaybackTarget, EmbyReportRequest, EmbyResumeRequest, EmbySession, EmbyView,
-    SessionStore, StoredSession, SESSION_VERSION,
+    ApiError, ApiErrorKind, EmbyClient, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest,
+    EmbyLoginRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbyResumeRequest,
+    EmbySession, EmbyView, SessionStore, StoredSession, SESSION_VERSION,
 };
 use serde::Serialize;
 use tauri::async_runtime::Mutex;
@@ -28,8 +27,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Message shown when the server no longer accepts the stored token.
 const AUTH_EXPIRED: &str = "登录已过期，请重新登录";
-const TOKEN_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-const LOGOUT_TIMEOUT: Duration = Duration::from_secs(5);
 const BOOT_ATTEMPTS: usize = 3;
 #[cfg(not(test))]
 const BOOT_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(7)];
@@ -135,10 +132,14 @@ impl SessionBoot {
     }
 }
 
+/// Result of one token probe during boot, derived only from
+/// `ApiErrorKind` — the app never inspects an HTTP status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenProbe {
+enum ProbeOutcome {
     Valid,
     TokenRejected,
+    /// Server-side or network trouble: worth retrying, and the stored session
+    /// must be kept so a later launch can sign in without the password.
     Transient(SessionReason),
 }
 
@@ -230,49 +231,35 @@ impl EmbyService {
         )
     }
 
-    /// Maps a non-auth API error to the shared structured error.
-    fn command_error(&self, err: ApiError) -> EmbyCommandError {
+    /// The only error mapping in the app layer: an [`ApiErrorKind`] is already
+    /// semantic, so no HTTP status or message text is inspected here.
+    ///
+    /// `Forbidden` (403) is a permission problem, never an expired session;
+    /// only `TokenExpired` (401) clears the session, and it is handled once in
+    /// [`Self::fail`] so concurrent commands cannot emit twice.
+    fn command_error(err: ApiError) -> EmbyCommandError {
         let reason = match err.kind() {
-            ApiErrorKind::Transport => SessionReason::Unreachable,
-            ApiErrorKind::Config => SessionReason::StorageError,
-            ApiErrorKind::Unauthorized => SessionReason::TokenRejected,
-            ApiErrorKind::Server | ApiErrorKind::Decode | ApiErrorKind::NotFound => {
-                SessionReason::ServerError
-            }
-            ApiErrorKind::NoPlayableSource | ApiErrorKind::Unsupported => {
-                SessionReason::ServerError
-            }
+            ApiErrorKind::TokenExpired => SessionReason::TokenRejected,
+            ApiErrorKind::InvalidCredentials => SessionReason::InvalidCredentials,
+            ApiErrorKind::InvalidInput => SessionReason::InvalidRequest,
+            ApiErrorKind::Storage => SessionReason::StorageError,
+            ApiErrorKind::Network => SessionReason::Unreachable,
+            ApiErrorKind::Forbidden
+            | ApiErrorKind::NotFound
+            | ApiErrorKind::Server
+            | ApiErrorKind::Decode
+            | ApiErrorKind::NoPlayableSource => SessionReason::ServerError,
         };
         EmbyCommandError::new(reason, err.to_string())
     }
 
-    fn login_error(err: ApiError) -> EmbyCommandError {
-        let reason = match err.kind() {
-            ApiErrorKind::Unauthorized => SessionReason::InvalidCredentials,
-            ApiErrorKind::Transport => SessionReason::Unreachable,
-            ApiErrorKind::Config => SessionReason::InvalidRequest,
-            ApiErrorKind::Server | ApiErrorKind::Decode | ApiErrorKind::NotFound => {
-                SessionReason::ServerError
-            }
-            ApiErrorKind::NoPlayableSource | ApiErrorKind::Unsupported => {
-                SessionReason::ServerError
-            }
-        };
-        EmbyCommandError::new(reason, err.to_string())
-    }
-
-    /// A 403 is a permission problem, not an expired token. A 401 is handled
-    /// once: the first command that observes it clears the session and emits
-    /// the signed-out event; concurrent commands see no session and do not
-    /// emit again.
+    /// Drops the in-memory session and emits the signed-out event on the first
+    /// 401; concurrent commands see no session and do not emit again.
     async fn fail(&self, err: ApiError) -> EmbyCommandError {
-        if err.status() == Some(403) {
-            return EmbyCommandError::new(SessionReason::ServerError, "没有权限执行该操作");
-        }
-        if err.status() == Some(401) || err.kind() == ApiErrorKind::Unauthorized {
+        if err.kind() == ApiErrorKind::TokenExpired {
             return self.handle_token_rejected().await;
         }
-        self.command_error(err)
+        Self::command_error(err)
     }
 
     async fn handle_token_rejected(&self) -> EmbyCommandError {
@@ -298,7 +285,11 @@ impl EmbyService {
     async fn logout(&self) -> SessionBoot {
         let previous = self.current_session().await;
         if let Some(session) = previous.as_ref() {
-            logout_request(&self.http, &self.device_name, session).await;
+            // Best effort: an unreachable server must not keep the local
+            // session (or the UI) signed in.
+            if let Err(err) = self.client(session).logout().await {
+                eprintln!("[emby] logout request failed: {err}");
+            }
         }
         self.forget_local().await;
         let result = SessionBoot::signed_out(SessionReason::NoSession, previous.as_ref());
@@ -314,6 +305,12 @@ async fn boot_session(
     http: &emby_api::HttpClient,
     device_name: &str,
 ) -> (SessionBoot, Option<StoredSession>) {
+    // One-shot migration from the previous storage layout: reading the session
+    // is side-effect free, so deleting the legacy copies is an explicit
+    // boot-time action.
+    if let Err(err) = store.migrate_legacy_files() {
+        eprintln!("[emby] could not remove legacy session copies: {err}");
+    }
     let session = match store.load() {
         Ok(session) => session,
         Err(err) => {
@@ -325,11 +322,18 @@ async fn boot_session(
         return (SessionBoot::signed_out(SessionReason::NoSession, None), None);
     };
 
+    let client = EmbyClient::with_token(
+        http.clone(),
+        session.server_url.clone(),
+        session.device_id.clone(),
+        device_name.to_string(),
+        session.access_token.clone(),
+    );
     let mut final_reason = SessionReason::Unreachable;
     for attempt in 0..BOOT_ATTEMPTS {
-        match probe_token(http, device_name, &session).await {
-            TokenProbe::Valid => return (SessionBoot::signed_in(&session), Some(session)),
-            TokenProbe::TokenRejected => {
+        match probe_token(&client, &session).await {
+            ProbeOutcome::Valid => return (SessionBoot::signed_in(&session), Some(session)),
+            ProbeOutcome::TokenRejected => {
                 if let Err(err) = store.clear() {
                     eprintln!("[emby] could not clear a rejected session: {err}");
                 }
@@ -338,10 +342,13 @@ async fn boot_session(
                     None,
                 );
             }
-            TokenProbe::Transient(reason) => {
+            ProbeOutcome::Transient(reason) => {
                 final_reason = reason;
                 if attempt + 1 < BOOT_ATTEMPTS {
-                    std::thread::sleep(BOOT_RETRY_DELAYS[attempt]);
+                    // Async sleep: boot is an async command, so a blocking
+                    // sleep would freeze a Tauri runtime worker for the whole
+                    // backoff.
+                    tokio::time::sleep(BOOT_RETRY_DELAYS[attempt]).await;
                 }
             }
         }
@@ -350,59 +357,28 @@ async fn boot_session(
     (SessionBoot::signed_out(final_reason, Some(&session)), None)
 }
 
-async fn probe_token(
-    http: &emby_api::HttpClient,
-    device_name: &str,
-    session: &StoredSession,
-) -> TokenProbe {
-    let Ok(url) = build_url(&session.server_url, &["Users", session.user_id.as_str()], &[]) else {
-        return TokenProbe::Transient(SessionReason::ServerError);
-    };
-    let authorization = authorization_header(
-        device_name,
-        &session.device_id,
-        Some(session.access_token.as_str()),
-    );
-    let response = http
-        .get(url.as_str())
-        .timeout(TOKEN_CHECK_TIMEOUT)
-        .header("X-Emby-Authorization", authorization.as_str())
-        .header("X-Emby-Token", session.access_token.as_str())
-        .header("Accept", "application/json")
-        .send()
-        .await;
-    let Ok(response) = response else {
-        return TokenProbe::Transient(SessionReason::Unreachable);
-    };
-    match response.status().as_u16() {
-        200..=299 => TokenProbe::Valid,
-        401 => TokenProbe::TokenRejected,
-        403 => TokenProbe::Valid,
-        500..=599 => TokenProbe::Transient(SessionReason::ServerError),
-        _ => TokenProbe::Transient(SessionReason::ServerError),
+/// Validates the stored token through the shared client.
+///
+/// Every outcome comes from [`ApiErrorKind`]; the app never inspects an HTTP
+/// status. `Forbidden` means the token works but this user may not read the
+/// user record, so it still counts as valid. `NotFound` means the stored user
+/// id no longer exists on that server: a definite verdict, handled like an
+/// expired token (the session is cleared instead of being retried forever).
+async fn probe_token(client: &EmbyClient, session: &StoredSession) -> ProbeOutcome {
+    match client.current_user(&session.user_id).await {
+        Ok(()) => ProbeOutcome::Valid,
+        Err(err) => match err.kind() {
+            ApiErrorKind::TokenExpired | ApiErrorKind::NotFound => ProbeOutcome::TokenRejected,
+            ApiErrorKind::Forbidden => ProbeOutcome::Valid,
+            ApiErrorKind::Network => ProbeOutcome::Transient(SessionReason::Unreachable),
+            ApiErrorKind::InvalidCredentials
+            | ApiErrorKind::InvalidInput
+            | ApiErrorKind::Storage
+            | ApiErrorKind::Server
+            | ApiErrorKind::Decode
+            | ApiErrorKind::NoPlayableSource => ProbeOutcome::Transient(SessionReason::ServerError),
+        },
     }
-}
-
-async fn logout_request(
-    http: &emby_api::HttpClient,
-    device_name: &str,
-    session: &StoredSession,
-) {
-    let Ok(url) = build_url(&session.server_url, &["Sessions", "Logout"], &[]) else {
-        return;
-    };
-    let authorization = authorization_header(
-        device_name,
-        &session.device_id,
-        Some(session.access_token.as_str()),
-    );
-    let _ = http
-        .post(url.as_str())
-        .timeout(LOGOUT_TIMEOUT)
-        .header("X-Emby-Authorization", authorization.as_str())
-        .header("X-Emby-Token", session.access_token.as_str())
-        .send()
-        .await;
 }
 
 #[tauri::command]
@@ -432,10 +408,9 @@ pub async fn emby_login(
     let outcome = client
         .login(&req.username, &req.password)
         .await
-        .map_err(EmbyService::login_error)?;
+        .map_err(EmbyService::command_error)?;
 
     let session = StoredSession {
-        server_id: outcome.server_id,
         server_url,
         server_name: outcome.server_name,
         user_id: outcome.user_id,
@@ -462,13 +437,6 @@ pub async fn emby_session_boot(
     state: State<'_, EmbyService>,
 ) -> Result<SessionBoot, EmbyCommandError> {
     Ok(state.boot(force.unwrap_or(false)).await)
-}
-
-/// Compatibility command for the pre-state-machine frontend; task-21 replaces
-/// it with `emby_session_boot`.
-#[tauri::command]
-pub async fn emby_session(state: State<'_, EmbyService>) -> Result<Option<EmbySession>, EmbyCommandError> {
-    Ok(state.boot(false).await.session)
 }
 
 #[tauri::command]
@@ -617,7 +585,7 @@ pub async fn emby_image_url(
 ) -> Result<String, EmbyCommandError> {
     let session = state.require_session().await?;
     let client = state.client(&session);
-    client.image_url(&req).map_err(|err| state.command_error(err))
+    client.image_url(&req).map_err(EmbyService::command_error)
 }
 
 #[cfg(test)]
@@ -628,7 +596,6 @@ mod tests {
 
     fn test_session(server_url: &str) -> StoredSession {
         StoredSession {
-            server_id: Some("server-1".into()),
             server_url: server_url.into(),
             server_name: "Test Emby".into(),
             user_id: "user-1".into(),
@@ -637,6 +604,17 @@ mod tests {
             access_token: vec!["test", "access", "token"].join("-"),
             version: SESSION_VERSION,
         }
+    }
+
+    fn test_client(server_url: &str) -> EmbyClient {
+        let session = test_session(server_url);
+        EmbyClient::with_token(
+            emby_api::default_http_client().unwrap(),
+            session.server_url,
+            session.device_id,
+            "test".to_string(),
+            session.access_token,
+        )
     }
 
     fn spawn_status_server(status: &'static str) -> (String, std::thread::JoinHandle<String>) {
@@ -689,19 +667,42 @@ mod tests {
     #[test]
     fn probe_401_is_token_rejected() {
         let (url, server) = spawn_status_server("401 Unauthorized");
-        let http = emby_api::default_http_client().unwrap();
+        let client = test_client(&url);
         let session = test_session(&url);
-        let result = tauri::async_runtime::block_on(probe_token(&http, "test", &session));
-        assert_eq!(result, TokenProbe::TokenRejected);
+        let result = tauri::async_runtime::block_on(probe_token(&client, &session));
+        assert_eq!(result, ProbeOutcome::TokenRejected);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn probe_403_is_not_an_expired_token() {
+        // A permission problem must keep the user signed in; treating 403 as
+        // "session expired" used to drop a perfectly valid login.
+        let (url, server) = spawn_status_server("403 Forbidden");
+        let client = test_client(&url);
+        let session = test_session(&url);
+        let result = tauri::async_runtime::block_on(probe_token(&client, &session));
+        assert_eq!(result, ProbeOutcome::Valid);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn probe_404_means_the_stored_user_is_gone() {
+        // A definite verdict (clear the session), not a transient retry.
+        let (url, server) = spawn_status_server("404 Not Found");
+        let client = test_client(&url);
+        let session = test_session(&url);
+        let result = tauri::async_runtime::block_on(probe_token(&client, &session));
+        assert_eq!(result, ProbeOutcome::TokenRejected);
         let _ = server.join();
     }
 
     #[test]
     fn probe_unreachable_is_transient_and_does_not_require_a_server() {
-        let http = emby_api::default_http_client().unwrap();
+        let client = test_client("http://127.0.0.1:1");
         let session = test_session("http://127.0.0.1:1");
-        let result = tauri::async_runtime::block_on(probe_token(&http, "test", &session));
-        assert_eq!(result, TokenProbe::Transient(SessionReason::Unreachable));
+        let result = tauri::async_runtime::block_on(probe_token(&client, &session));
+        assert_eq!(result, ProbeOutcome::Transient(SessionReason::Unreachable));
     }
 
     #[test]
@@ -754,12 +755,24 @@ mod tests {
     }
 
     #[test]
-    fn logout_request_uses_the_logout_endpoint() {
+    fn logout_uses_the_logout_endpoint_with_the_stored_token() {
         let (url, server) = spawn_status_server("200 OK");
-        let http = emby_api::default_http_client().unwrap();
+        let client = test_client(&url);
         let session = test_session(&url);
-        tauri::async_runtime::block_on(logout_request(&http, "test", &session));
+        tauri::async_runtime::block_on(client.logout()).expect("logout request");
         let request = server.join().unwrap();
         assert!(request.starts_with("POST /Sessions/Logout "), "{request}");
+        // Header *names* are case-insensitive on the wire and hyper writes them
+        // lowercased, so compare the header block case-insensitively instead of
+        // pinning our own capitalisation.
+        let lowered = request.to_ascii_lowercase();
+        assert!(
+            lowered.contains(&format!("x-emby-token: {}", session.access_token)),
+            "{request}"
+        );
+        assert!(
+            lowered.contains("x-emby-authorization: mediabrowser client="),
+            "{request}"
+        );
     }
 }

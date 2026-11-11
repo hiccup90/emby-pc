@@ -21,7 +21,7 @@ use crate::error::{ApiError, ApiResult};
 pub fn normalize_server_url(input: &str) -> ApiResult<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(ApiError::config("请输入 Emby 服务器地址"));
+        return Err(ApiError::invalid_input("请输入 Emby 服务器地址"));
     }
 
     let with_scheme = if has_scheme(trimmed) {
@@ -31,19 +31,19 @@ pub fn normalize_server_url(input: &str) -> ApiResult<String> {
     };
 
     let mut url = Url::parse(&with_scheme).map_err(|_| {
-        ApiError::config("Emby 服务器地址无效，请填写类似 http://192.168.1.10:8096 的地址")
+        ApiError::invalid_input("Emby 服务器地址无效，请填写类似 http://192.168.1.10:8096 的地址")
     })?;
 
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(ApiError::config(
+        return Err(ApiError::invalid_input(
             "Emby 服务器地址必须以 http:// 或 https:// 开头",
         ));
     }
     if url.host_str().map(str::is_empty).unwrap_or(true) {
-        return Err(ApiError::config("Emby 服务器地址缺少主机名"));
+        return Err(ApiError::invalid_input("Emby 服务器地址缺少主机名"));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(ApiError::config("服务器地址不能包含用户名或密码"));
+        return Err(ApiError::invalid_input("服务器地址不能包含用户名或密码"));
     }
 
     url.set_query(None);
@@ -63,7 +63,7 @@ pub fn normalize_server_url(input: &str) -> ApiResult<String> {
 /// query pairs. Path segments are percent-encoded by the `url` crate, so item
 /// ids and image types cannot break out of their segment.
 pub fn build_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> ApiResult<String> {
-    let server_error = || ApiError::config("Emby 服务器地址无效");
+    let server_error = || ApiError::invalid_input("Emby 服务器地址无效");
     let mut url = Url::parse(base).map_err(|_| server_error())?;
     {
         let mut path = url.path_segments_mut().map_err(|_| server_error())?;
