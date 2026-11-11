@@ -146,6 +146,12 @@
   background: rgba(255, 255, 255, 0.07);
 }
 
+/* A new query is in flight: the controls stay clickable but read as pending. */
+.library-toolbar.is-busy .library-toolbar__segment,
+.library-toolbar.is-busy .library-toolbar__label {
+  opacity: 0.6;
+}
+
 @media (max-width: 900px) {
   .library-toolbar {
     gap: 8px 12px;

@@ -524,6 +524,12 @@ button:disabled {
   font-weight: 700;
 }
 
+.hub__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .hub__nav {
   display: flex;
   gap: 6px;

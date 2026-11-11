@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { EmbyLibraryItem } from "../emby/useEmby";
-import { itemKindLabel, itemProgress, itemYearLabel } from "../emby/format";
+import {
+  formatRemainingTicks,
+  itemEpisodeLabel,
+  itemKindLabel,
+  itemProgress,
+  itemYearLabel,
+} from "../emby/format";
 import { Icon, MediaArtwork, ProgressBar } from "./shared";
 
 /** 2:3 (or 16:9) poster with Plex-style badges; used by the library and detail rows. */
@@ -43,6 +49,39 @@ export function PosterCard({
   );
 }
 
+/**
+ * 16:9 continue-watching card: backdrop with the amber progress bar, the series
+ * name for episodes and the resume point underneath. Clicking resumes playback.
+ */
+export function ContinueCard({
+  item,
+  onPlay,
+}: {
+  item: EmbyLibraryItem;
+  onPlay: (item: EmbyLibraryItem) => void;
+}) {
+  const progress = itemProgress(item);
+  const episode = item.type === "Episode";
+  const title = episode && item.seriesName ? item.seriesName : item.name;
+  const lead = episode ? itemEpisodeLabel(item) : itemYearLabel(item);
+  const remaining = formatRemainingTicks(item);
+  const meta = [lead, remaining].filter(Boolean).join(" · ");
+  const label = episode
+    ? `继续观看《${title}》${lead ? ` ${lead}` : ""} ${item.name}`
+    : `继续观看《${title}》`;
+
+  return (
+    <button type="button" className="continue-card" onClick={() => onPlay(item)} aria-label={label}>
+      <span className="continue-card__frame">
+        <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
+        <ProgressBar value={progress} className="continue-card__progress" />
+      </span>
+      <span className="continue-card__title">{title}</span>
+      <span className="continue-card__meta">{meta || "继续观看"}</span>
+    </button>
+  );
+}
+
 /** Horizontal hub row with Plex-style paging arrows. */
 type HubVariant = "landscape" | "poster" | "person";
 
@@ -50,12 +89,15 @@ export function HubRow({
   title,
   count,
   variant = "landscape",
+  action,
   children,
 }: {
   title: string;
   count: number;
   /** Card shape, sets the column width: 16:9 cards, 2:3 posters or people. */
   variant?: HubVariant;
+  /** Optional trailing control next to the paging arrows ("查看全部"). */
+  action?: ReactNode;
   children: ReactNode;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -88,14 +130,19 @@ export function HubRow({
     <section className="hub" aria-label={title}>
       <div className="hub__header">
         <h2 className="hub__title">{title}</h2>
-        {!(edges.start && edges.end) && (
-          <div className="hub__nav">
-            <button type="button" className="icon-button" onClick={() => page(-1)} disabled={edges.start} aria-label="向左滚动">
-              <Icon name="chevron-left" size={18} />
-            </button>
-            <button type="button" className="icon-button" onClick={() => page(1)} disabled={edges.end} aria-label="向右滚动">
-              <Icon name="chevron-right" size={18} />
-            </button>
+        {(action || !(edges.start && edges.end)) && (
+          <div className="hub__actions">
+            {action}
+            {!(edges.start && edges.end) && (
+              <div className="hub__nav">
+                <button type="button" className="icon-button" onClick={() => page(-1)} disabled={edges.start} aria-label="向左滚动">
+                  <Icon name="chevron-left" size={18} />
+                </button>
+                <button type="button" className="icon-button" onClick={() => page(1)} disabled={edges.end} aria-label="向右滚动">
+                  <Icon name="chevron-right" size={18} />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

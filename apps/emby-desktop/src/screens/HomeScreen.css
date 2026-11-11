@@ -1,4 +1,7 @@
-/* Home screen: two horizontal hubs (continue watching + recently added). */
+/* Home screen: header plus the "继续观看" / "最近添加" hub rows.
+   The rows themselves reuse HubRow/ContinueCard from cards.tsx and take their
+   layout from styles.css (.hub, .hub__track, .continue-card); only the shell
+   and the loading/error/empty states live here. */
 
 .home-page__header {
   display: flex;
@@ -15,46 +18,34 @@
   font-size: 13px;
 }
 
-.home-hub {
-  margin: 0 0 42px;
+/* Placeholder row while the first request is in flight. */
+.home-skeleton {
+  pointer-events: none;
 }
 
-.home-hub__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 0 0 12px;
-}
-
-.home-hub__heading {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.home-hub__title {
+.home-hub__empty,
+.home-hub__error {
   margin: 0;
-  font-size: 21px;
-  font-weight: 700;
-}
-
-.home-hub__count {
   color: var(--text-3);
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
 }
 
-.home-hub__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.home-hub__error {
+  color: var(--danger);
 }
 
-.home-hub__nav {
-  display: flex;
-  gap: 6px;
+.home-hub__retry {
+  margin-left: 10px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.home-hub__retry:hover {
+  color: var(--text);
 }
 
 .home-hub__see-all {
@@ -76,103 +67,21 @@
   background: rgba(229, 160, 13, 0.1);
 }
 
-.home-hub__track {
-  display: grid;
-  grid-auto-flow: column;
-  gap: 18px;
-  margin: -6px calc(var(--page-x) * -1) 0;
-  padding: 6px var(--page-x) 8px;
-  overflow-x: auto;
-  scroll-padding: 0 var(--page-x);
-  scroll-snap-type: x proximity;
-  scrollbar-width: none;
-  /* Same faded card edges as the library hub rows. */
-  -webkit-mask-image: linear-gradient(
-    90deg,
-    transparent 0,
-    #000 var(--page-x),
-    #000 calc(100% - var(--page-x)),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    90deg,
-    transparent 0,
-    #000 var(--page-x),
-    #000 calc(100% - var(--page-x)),
-    transparent 100%
-  );
+.home-page__empty {
+  margin: 4px 0 0;
 }
 
-.home-hub__track > * {
-  scroll-snap-align: start;
-}
-
-.home-hub__track--landscape {
-  grid-auto-columns: clamp(220px, 21vw, 300px);
-}
-
-.home-hub__track--poster {
-  grid-auto-columns: clamp(132px, 11vw, 168px);
-  gap: 24px;
-}
-
-/* ---- simplified continue-watching card -------------------------------------- */
-
-.home-resume-card {
-  display: grid;
-  min-width: 0;
-  align-content: start;
-  padding: 0;
+.home-page__link {
+  padding: 0 2px;
   border: 0;
-  color: inherit;
-  background: none;
-  text-align: left;
+  color: var(--accent);
+  background: transparent;
+  font-size: inherit;
 }
 
-.home-resume-card:focus-visible {
-  outline: none;
-}
-
-.home-resume-card__frame {
-  position: relative;
-  display: block;
-  aspect-ratio: 16 / 9;
-  margin-bottom: 8px;
-  overflow: hidden;
-  border-radius: var(--radius-poster);
-  background: var(--surface);
-  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
-  transition: box-shadow 0.15s ease;
-}
-
-.home-resume-card:hover .home-resume-card__frame,
-.home-resume-card:focus-visible .home-resume-card__frame {
-  box-shadow: 0 0 0 2px var(--accent), 0 0 4px rgba(0, 0, 0, 0.3);
-}
-
-.home-resume-card__title {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 24px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.home-resume-card__meta {
-  overflow: hidden;
-  color: var(--text-3);
-  font-size: 13px;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.home-resume-card__progress {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
+.home-page__link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
 }
 
 @media (max-width: 700px) {

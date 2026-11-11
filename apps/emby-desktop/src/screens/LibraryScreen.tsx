@@ -1,17 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { EmbySession } from "../emby/contract";
-import type { EmbyLibraryController, EmbyLibraryItem } from "../emby/useEmby";
-import {
-  formatRemainingTicks,
-  itemEpisodeLabel,
-  itemProgress,
-  itemYearLabel,
-} from "../emby/format";
+import type {
+  EmbyLibraryController,
+  EmbyLibraryItem,
+  EmbyLibraryQuery,
+} from "../emby/useEmby";
 import { collectionTypeOf } from "../emby/library";
-import { ErrorNotice, MediaArtwork, ProgressBar } from "./shared";
-import { HubRow, PosterCard } from "./cards";
-import LibraryToolbar, { DEFAULT_LIBRARY_QUERY, isDefaultLibraryQuery } from "./LibraryToolbar";
-import type { LibraryQuery } from "./LibraryToolbar";
+import { ErrorNotice } from "./shared";
+import { ContinueCard, HubRow, PosterCard } from "./cards";
+import LibraryToolbar from "./LibraryToolbar";
 
 export interface LibraryScreenProps {
   session: EmbySession | null;
@@ -20,106 +17,12 @@ export interface LibraryScreenProps {
   onOpen: (item: EmbyLibraryItem) => void;
   /** Continue-watching cards start playback directly instead of opening details. */
   onPlay: (item: EmbyLibraryItem) => void;
-  /**
-   * Controlled toolbar query. Optional: when omitted LibraryScreen keeps the
-   * selection in local state and sorts/filters the loaded page itself until
-   * the library data layer accepts query parameters.
-   */
-  query?: LibraryQuery;
-  /** Called whenever the toolbar selection changes. */
-  onQueryChange?: (query: LibraryQuery) => void;
+  /** Toolbar value; the query itself lives in the library data layer. */
+  query: EmbyLibraryQuery;
+  onQueryChange: (query: EmbyLibraryQuery) => void;
 }
 
 const SKELETON_COUNT = 14;
-
-const NAME_COLLATOR = new Intl.Collator("zh-Hans-CN", {
-  numeric: true,
-  sensitivity: "base",
-});
-
-function compareNullableNumbers(
-  a: number | null,
-  b: number | null,
-  direction: number,
-): number {
-  if (a === null && b === null) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  return (a - b) * direction;
-}
-
-/**
- * Client-side fallback while useEmby does not take sort/filter parameters yet.
- * The server will eventually return the right page; until then the loaded page
- * is ordered/filtered locally so the toolbar is not dead UI.
- */
-function applyLocalLibraryQuery(
-  items: EmbyLibraryItem[],
-  query: LibraryQuery,
-): EmbyLibraryItem[] {
-  const direction = query.sortOrder === "Ascending" ? 1 : -1;
-  let next = items;
-  if (query.itemType !== "all") {
-    next = next.filter((item) => item.type === query.itemType);
-  }
-  if (query.unplayedOnly) {
-    next = next.filter((item) => !item.userData.played);
-  }
-
-  switch (query.sortBy) {
-    case "SortName":
-      return [...next].sort((a, b) => {
-        const byName = NAME_COLLATOR.compare(a.name, b.name);
-        if (byName !== 0) return byName * direction;
-        return compareNullableNumbers(a.productionYear, b.productionYear, direction);
-      });
-    case "ProductionYear":
-      return [...next].sort(
-        (a, b) =>
-          compareNullableNumbers(a.productionYear, b.productionYear, direction) ||
-          NAME_COLLATOR.compare(a.name, b.name),
-      );
-    case "CommunityRating":
-      return [...next].sort(
-        (a, b) =>
-          compareNullableNumbers(a.communityRating, b.communityRating, direction) ||
-          NAME_COLLATOR.compare(a.name, b.name),
-      );
-    case "DateCreated":
-      // EmbyItem does not carry DateCreated yet: keep the server order until
-      // useEmby/contract expose the field and sort server-side.
-      return next;
-  }
-}
-
-function ContinueCard({
-  item,
-  onPlay,
-}: {
-  item: EmbyLibraryItem;
-  onPlay: (item: EmbyLibraryItem) => void;
-}) {
-  const progress = itemProgress(item);
-  const episode = item.type === "Episode";
-  const title = episode && item.seriesName ? item.seriesName : item.name;
-  const lead = episode ? itemEpisodeLabel(item) : itemYearLabel(item);
-  const remaining = formatRemainingTicks(item);
-  const meta = [lead, remaining].filter(Boolean).join(" · ");
-  const label = episode
-    ? `继续观看《${title}》${lead ? ` ${lead}` : ""} ${item.name}`
-    : `继续观看《${title}》`;
-
-  return (
-    <button type="button" className="continue-card" onClick={() => onPlay(item)} aria-label={label}>
-      <span className="continue-card__frame">
-        <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
-        <ProgressBar value={progress} className="continue-card__progress" />
-      </span>
-      <span className="continue-card__title">{title}</span>
-      <span className="continue-card__meta">{meta || "继续观看"}</span>
-    </button>
-  );
-}
 
 function LibrarySkeleton({ label, landscape }: { label: string; landscape: boolean }) {
   return (
@@ -144,45 +47,13 @@ export default function LibraryScreen({
   library,
   onOpen,
   onPlay,
-  query: controlledQuery,
+  query,
   onQueryChange,
 }: LibraryScreenProps) {
   const previewMode = !session || !desktop;
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const [localQuery, setLocalQuery] = useState<LibraryQuery>(DEFAULT_LIBRARY_QUERY);
   const { hasMore, loadMore, loadingMore, status, view } = library;
-  const collection = collectionTypeOf(view);
-  const landscape = collection === "homevideos";
-
-  const query = controlledQuery ?? localQuery;
-  // Movies/tv views are already restricted by includeItemTypes, so a type
-  // filter only makes sense for mixed (unknown collection type) libraries.
-  const availableTypes: Array<"Movie" | "Series"> =
-    collection === "unknown" ? ["Movie", "Series"] : [];
-  const typeFilterSupported = availableTypes.length > 1;
-  const effectiveQuery: LibraryQuery =
-    typeFilterSupported || query.itemType === "all"
-      ? query
-      : { ...query, itemType: "all" };
-
-  // The server already returns SortName/Ascending by default, so leave that
-  // order untouched; any explicit sort/filter is applied to the loaded page
-  // until useEmby takes over the query server-side.
-  const displayedItems = useMemo(
-    () =>
-      isDefaultLibraryQuery(effectiveQuery)
-        ? library.items
-        : applyLocalLibraryQuery(library.items, effectiveQuery),
-    [library.items, effectiveQuery],
-  );
-
-  const handleQueryChange = (next: LibraryQuery) => {
-    if (controlledQuery === undefined) setLocalQuery(next);
-    onQueryChange?.(next);
-  };
-
-  const filtersActive = effectiveQuery.unplayedOnly || effectiveQuery.itemType !== "all";
-  const localFilterCount = filtersActive && onQueryChange === undefined;
+  const landscape = collectionTypeOf(view) === "homevideos";
 
   useEffect(() => {
     const node = sentinelRef.current;
@@ -210,6 +81,17 @@ export default function LibraryScreen({
 
   const blockingError = status === "error" ? library.error : null;
   const appendError = status === "ready" ? library.error : null;
+  /** First paint: no view is known yet, so the whole page is a skeleton. */
+  const booting = status === "loading" && library.views.length === 0;
+  /** A new sort/filter is being fetched; the toolbar and title stay usable. */
+  const refetching = status === "loading" && library.views.length > 0;
+  /** "Nothing here" and "nothing matched" are different messages. */
+  const filtering = query.itemType !== "all" || query.unplayedOnly;
+  const emptyLabel = filtering
+    ? "没有符合当前筛选条件的内容。"
+    : view
+      ? `「${view.name}」中暂无内容。`
+      : "当前媒体库暂无内容。";
 
   return (
     <main className="page">
@@ -221,7 +103,7 @@ export default function LibraryScreen({
         </HubRow>
       )}
 
-      {status === "loading" && library.items.length === 0 ? (
+      {booting ? (
         <>
           <div className="page-header">
             <h1 className="page-title">{view?.name ?? "媒体库"}</h1>
@@ -241,25 +123,24 @@ export default function LibraryScreen({
               {view?.name ?? "媒体库"}
             </h1>
             {library.totalItems > 0 && (
-              <span className="page-count">
-                {localFilterCount ? `${displayedItems.length} 项` : `${library.totalItems} 项`}
-              </span>
+              <span className="page-count">{library.totalItems} 项</span>
             )}
           </div>
 
           <LibraryToolbar
-            value={effectiveQuery}
-            onChange={handleQueryChange}
-            availableTypes={availableTypes}
+            value={query}
+            onChange={onQueryChange}
+            showTypeFilter={library.supportsTypeFilter}
+            busy={refetching}
           />
 
-          {library.items.length === 0 ? (
-            <p className="empty-state">{view ? `「${view.name}」中暂无内容。` : "当前媒体库暂无内容。"}</p>
-          ) : displayedItems.length === 0 ? (
-            <p className="empty-state">没有符合当前筛选条件的内容。</p>
+          {refetching && library.items.length === 0 ? (
+            <LibrarySkeleton label="正在按新的排序与筛选重新读取…" landscape={landscape} />
+          ) : library.items.length === 0 ? (
+            <p className="empty-state">{emptyLabel}</p>
           ) : (
             <div className={`poster-grid${landscape ? " poster-grid--landscape" : ""}`}>
-              {displayedItems.map((item) => (
+              {library.items.map((item) => (
                 <PosterCard key={item.id} item={item} landscape={landscape} onSelect={onOpen} />
               ))}
             </div>

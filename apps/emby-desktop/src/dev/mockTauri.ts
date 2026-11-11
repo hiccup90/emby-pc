@@ -17,6 +17,9 @@
  *   ?state=empty      libraries exist but are empty
  *   ?resume=none      no "continue watching" row
  *   ?posters=none     no artwork anywhere (fallback tiles)
+ *   ?home=loading     the home screen's "recently added" request never finishes
+ *   ?home=error       the home screen's "recently added" request fails
+ *   ?settings=slow    settings arrive after boot (pageSize lands mid-session)
  */
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
@@ -45,6 +48,10 @@ const scenario = {
   state: params.get("state"),
   noResume: params.get("resume") === "none",
   noArt: params.get("posters") === "none",
+  /** Home screen only: "loading" stalls the recent row, "error" fails it. */
+  home: params.get("home"),
+  /** "slow" resolves `settings_get` after the session boot has finished. */
+  settings: params.get("settings"),
 };
 
 // ---- fictional catalogue ----------------------------------------------------
@@ -140,6 +147,12 @@ const VIEWS: EmbyView[] = [
   { id: "v-tv", name: "剧集", collectionType: "tvshows" },
   { id: "v-docs", name: "纪录片", collectionType: "movies" },
   { id: "v-home", name: "家庭视频", collectionType: "homevideos" },
+  // Emby's "mixed content" library: movies and series in one view. Emby marks
+  // it with a null collection type, and only that view may show the toolbar's
+  // Movie/Series filter.
+  { id: "v-mixed", name: "混合内容", collectionType: null },
+  // An unrecognised collection type must never be treated as mixed.
+  { id: "v-books", name: "有声书", collectionType: "books" },
 ];
 
 const items = new Map<string, EmbyItem>();
@@ -147,9 +160,15 @@ const children = new Map<string, EmbyItem[]>();
 const pad = (value: number) => String(value).padStart(2, "0");
 
 function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "type">): EmbyItem {
+  // Emby list responses always carry DateCreated (see ITEM_FIELDS in the Rust
+  // client); the fake catalogue derives a stable date from insertion order.
+  const createdIndex = items.size;
   const item: EmbyItem = {
     mediaType: fields.type === "Series" ? null : "Video",
     productionYear: null,
+    dateCreated: new Date(Date.UTC(2019, 0, 1) + createdIndex * 3 * 86_400_000)
+      .toISOString()
+      .replace(".000Z", ".0000000Z"),
     runTimeTicks: null,
     imageTags: scenario.noArt ? {} : { Primary: "p" },
     backdropImageTags: scenario.noArt || fields.type === "Episode" ? [] : ["b"],
@@ -252,6 +271,19 @@ children.set(
     });
   }),
 );
+
+// The mixed library holds movies and series together, which is the only case
+// where the toolbar's Movie/Series filter has something to do.
+children.set("v-mixed", [
+  ...(children.get("v-movies") ?? []).slice(0, 20),
+  ...(children.get("v-tv") ?? []).slice(0, 6),
+]);
+children.set("v-books", [
+  makeItem({ id: "b01", name: "山海经 · 全本", type: "Book", productionYear: 2019 }),
+  makeItem({ id: "b02", name: "长夜行记", type: "Book", productionYear: 2021 }),
+  makeItem({ id: "b03", name: "北方档案", type: "Book", productionYear: 2020 }),
+  makeItem({ id: "b04", name: "The Quiet Year", type: "Book", productionYear: 2022 }),
+]);
 
 const RESUME: EmbyItem[] = [
   ...resumeEpisodes,
@@ -559,12 +591,73 @@ function openPlayer(req: OpenRequest): PlayerSnapshot {
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const never = () => new Promise<never>(() => undefined);
 
+/**
+ * Value the real server sorts on for one `SortBy` key. `CommunityRating` is
+ * not part of ITEM_FIELDS, so the item is enriched first: the server sorts on
+ * it fine, it just does not echo the rating back in the response.
+ */
+function sortValue(item: EmbyItem, sortBy: string): string | number {
+  switch (sortBy) {
+    case "ProductionYear":
+      return item.productionYear ?? 0;
+    case "DateCreated":
+      return item.dateCreated ? Date.parse(item.dateCreated) : 0;
+    case "CommunityRating":
+      return enrich(item).communityRating ?? 0;
+    case "ParentIndexNumber":
+      return item.parentIndexNumber ?? 0;
+    case "IndexNumber":
+      return item.indexNumber ?? 0;
+    case "SortName":
+      return item.name;
+    default:
+      return item.name;
+  }
+}
+
+/** `SortBy` is a comma-separated key list, e.g. "ParentIndexNumber,IndexNumber". */
+function compareItems(a: EmbyItem, b: EmbyItem, sortBy: string): number {
+  for (const key of sortBy.split(",").map((part) => part.trim())) {
+    if (!key) continue;
+    const left = sortValue(a, key);
+    const right = sortValue(b, key);
+    const delta =
+      typeof left === "number" && typeof right === "number"
+        ? left - right
+        : String(left).localeCompare(String(right), "zh-Hans-CN");
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+/**
+ * Emby's `/Users/{id}/Items` slice: filter (types, unplayed, genres), sort on
+ * the server, then cut one page out of the *whole* filtered list so the page
+ * boundaries stay correct once the client sorts or filters.
+ */
 function page(list: EmbyItem[], req: Record<string, unknown>): EmbyItemsPage {
   const types = typeof req.includeItemTypes === "string" ? req.includeItemTypes.split(",") : null;
-  const filtered = types ? list.filter((item) => types.includes(item.type)) : list;
+  const genres =
+    typeof req.genres === "string" && req.genres.trim()
+      ? req.genres.split(",").map((genre) => genre.trim())
+      : null;
+  const unplayedOnly = typeof req.filters === "string" && req.filters.includes("IsUnplayed");
+
+  let filtered = types ? list.filter((item) => types.includes(item.type)) : list;
+  if (unplayedOnly) filtered = filtered.filter((item) => !item.userData.played);
+  if (genres) filtered = filtered.filter((item) => item.genres.some((genre) => genres.includes(genre)));
+
+  const sortBy = typeof req.sortBy === "string" && req.sortBy ? req.sortBy : "SortName";
+  const sorted = [...filtered].sort((a, b) => compareItems(a, b, sortBy));
+  if (req.sortOrder === "Descending") sorted.reverse();
+
   const start = typeof req.startIndex === "number" ? req.startIndex : 0;
-  const limit = typeof req.limit === "number" ? req.limit : filtered.length;
-  return { items: filtered.slice(start, start + limit), totalRecordCount: filtered.length, startIndex: start };
+  const limit = typeof req.limit === "number" ? req.limit : sorted.length;
+  return {
+    items: sorted.slice(start, start + limit),
+    totalRecordCount: sorted.length,
+    startIndex: start,
+  };
 }
 
 async function handle(cmd: string, args: Record<string, unknown>): Promise<unknown> {
@@ -607,7 +700,15 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       return VIEWS;
     case "emby_items": {
       if (scenario.state === "loading") return never();
+      // The home screen's "recently added" request is the one without a parent.
+      if (!req.parentId && scenario.home === "loading") return never();
       await wait(250);
+      if (!req.parentId && scenario.home === "error") {
+        throw {
+          reason: "server_error",
+          message: "error sending request for url (http://emby.home:8096/Users/mock-user/Items)",
+        };
+      }
       if (scenario.state === "empty") return { items: [], totalRecordCount: 0, startIndex: 0 };
       const term = String(req.searchTerm ?? "").trim().toLowerCase();
       if (term) {
@@ -620,12 +721,9 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       }
       if (!req.parentId) {
         const all = [...items.values()].filter((item) => item.type !== "Season");
-        const ordered = req.sortOrder === "Descending" ? [...all].reverse() : all;
-        return page(ordered, req);
+        return page(all, req);
       }
-      const list = children.get(String(req.parentId)) ?? [];
-      const ordered = req.sortOrder === "Descending" ? [...list].reverse() : list;
-      return page(ordered, req);
+      return page(children.get(String(req.parentId)) ?? [], req);
     }
     case "emby_person_items": {
       await wait(200);
@@ -639,7 +737,9 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       return page(featured.length > 0 ? featured : all, req);
     }
     case "settings_get":
-      await wait(120);
+      // ?settings=slow delivers the stored pageSize after the library has begun
+      // loading, which exercises the "page size changes mid-session" path.
+      await wait(scenario.settings === "slow" ? 2500 : 120);
       return { ...appSettings };
     case "settings_set": {
       await wait(160);
@@ -651,7 +751,26 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       }
       return { ...appSettings };
     }
-    case "emby_set_played":
+    case "emby_set_played": {
+      await wait(80);
+      // Mark it in the catalogue *and* in the per-view lists, so an "unplayed
+      // only" refresh actually sees the change.
+      const id = String(args.id ?? "");
+      const played = args.played === true;
+      const target = items.get(id);
+      if (target) {
+        const next = { ...target, userData: { ...target.userData, played } };
+        items.set(id, next);
+        for (const [viewId, list] of children) {
+          const index = list.findIndex((item) => item.id === id);
+          if (index < 0) continue;
+          const nextList = [...list];
+          nextList[index] = next;
+          children.set(viewId, nextList);
+        }
+      }
+      return null;
+    }
     case "emby_set_favorite":
       await wait(80);
       return null;
@@ -666,10 +785,18 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
         droppedFrames: 0,
         bitrate: 18400000,
       };
-    case "emby_resume":
+    case "emby_resume": {
       await wait(200);
-      if (scenario.noResume || scenario.state === "empty") return { items: [], totalRecordCount: 0, startIndex: 0 };
-      return { items: RESUME, totalRecordCount: RESUME.length, startIndex: 0 };
+      if (scenario.noResume || scenario.state === "empty") {
+        return { items: [], totalRecordCount: 0, startIndex: 0 };
+      }
+      const limit = typeof req.limit === "number" ? req.limit : RESUME.length;
+      return {
+        items: RESUME.slice(0, limit),
+        totalRecordCount: RESUME.length,
+        startIndex: 0,
+      };
+    }
     case "emby_item": {
       await wait(180);
       const item = items.get(String(args.id));

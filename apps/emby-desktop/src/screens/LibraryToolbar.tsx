@@ -1,52 +1,20 @@
+import type {
+  EmbyLibraryItemType,
+  EmbyLibraryQuery,
+  EmbyLibrarySortBy,
+} from "../emby/useEmby";
+import { DEFAULT_LIBRARY_QUERY, isDefaultLibraryQuery } from "../emby/useEmby";
 import { Icon } from "./shared";
 import "./LibraryToolbar.css";
 
-/** Emby SortBy values used by the library toolbar. */
-export type LibrarySortKey =
-  | "SortName"
-  | "ProductionYear"
-  | "DateCreated"
-  | "CommunityRating";
-
-export type LibrarySortOrder = "Ascending" | "Descending";
-
-export type LibraryItemType = "all" | "Movie" | "Series";
-
-/** Everything the library toolbar controls (sort + filters). */
-export interface LibraryQuery {
-  sortBy: LibrarySortKey;
-  sortOrder: LibrarySortOrder;
-  /** Hide items the user has already played. */
-  unplayedOnly: boolean;
-  /** Restrict a mixed library to movies or series; "all" keeps everything. */
-  itemType: LibraryItemType;
-}
-
-export const DEFAULT_LIBRARY_QUERY: LibraryQuery = {
-  sortBy: "SortName",
-  sortOrder: "Ascending",
-  unplayedOnly: false,
-  itemType: "all",
-};
-
-export function isDefaultLibraryQuery(query: LibraryQuery): boolean {
-  return (
-    query.sortBy === DEFAULT_LIBRARY_QUERY.sortBy &&
-    query.sortOrder === DEFAULT_LIBRARY_QUERY.sortOrder &&
-    query.unplayedOnly === DEFAULT_LIBRARY_QUERY.unplayedOnly &&
-    query.itemType === DEFAULT_LIBRARY_QUERY.itemType
-  );
-}
-
-const SORT_OPTIONS: ReadonlyArray<{ value: LibrarySortKey; label: string }> = [
+const SORT_OPTIONS: ReadonlyArray<{ value: EmbyLibrarySortBy; label: string }> = [
   { value: "SortName", label: "名称" },
   { value: "ProductionYear", label: "年份" },
   { value: "DateCreated", label: "添加时间" },
   { value: "CommunityRating", label: "评分" },
 ];
 
-const TYPE_OPTIONS: ReadonlyArray<{ value: LibraryItemType; label: string }> = [
-  { value: "all", label: "全部" },
+const TYPE_OPTIONS: ReadonlyArray<{ value: EmbyLibraryItemType; label: string }> = [
   { value: "Movie", label: "电影" },
   { value: "Series", label: "剧集" },
 ];
@@ -70,27 +38,38 @@ function SortArrow({ ascending }: { ascending: boolean }) {
 }
 
 export interface LibraryToolbarProps {
-  value: LibraryQuery;
-  onChange: (next: LibraryQuery) => void;
+  value: EmbyLibraryQuery;
+  onChange: (next: EmbyLibraryQuery) => void;
   /**
-   * Item types the current view can contain. The type filter is hidden when
-   * the library is already limited to a single type.
+   * Only mixed libraries (movies + series in one view) can be narrowed by
+   * item type; for every other view the filter stays hidden.
    */
-  availableTypes: ReadonlyArray<"Movie" | "Series">;
+  showTypeFilter: boolean;
+  /** Query results are loading; the toolbar stays usable but is marked busy. */
+  busy?: boolean;
 }
 
 /**
  * Plex-style library toolbar: sort key + direction, an "unplayed only" switch
- * and (for mixed libraries) a movie/series type filter. Presentational only;
- * the parent owns the query state and forwards it to the data layer.
+ * and, for mixed libraries, a movie/series type filter. Presentational only;
+ * every change goes straight to the library data layer.
  */
-export default function LibraryToolbar({ value, onChange, availableTypes }: LibraryToolbarProps) {
-  const showTypeFilter = availableTypes.length > 1;
+export default function LibraryToolbar({
+  value,
+  onChange,
+  showTypeFilter,
+  busy = false,
+}: LibraryToolbarProps) {
   const descending = value.sortOrder === "Descending";
-  const patch = (next: Partial<LibraryQuery>) => onChange({ ...value, ...next });
+  const patch = (next: Partial<EmbyLibraryQuery>) => onChange({ ...value, ...next });
 
   return (
-    <div className="library-toolbar" role="toolbar" aria-label="媒体库筛选与排序">
+    <div
+      className={`library-toolbar${busy ? " is-busy" : ""}`}
+      role="toolbar"
+      aria-label="媒体库筛选与排序"
+      aria-busy={busy}
+    >
       <div className="library-toolbar__group">
         <span className="library-toolbar__label">排序</span>
         <div className="library-toolbar__segments" role="group" aria-label="排序方式">
@@ -108,18 +87,16 @@ export default function LibraryToolbar({ value, onChange, availableTypes }: Libr
         </div>
       </div>
 
-      <div className="library-toolbar__group">
-        <button
-          type="button"
-          className="library-toolbar__direction"
-          aria-label={`排序方向：${descending ? "降序" : "升序"}，点击切换`}
-          title="切换排序方向"
-          onClick={() => patch({ sortOrder: descending ? "Ascending" : "Descending" })}
-        >
-          <SortArrow ascending={!descending} />
-          <span>{descending ? "降序" : "升序"}</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        className="library-toolbar__direction"
+        aria-label={`排序方向：${descending ? "降序" : "升序"}，点击切换`}
+        title="切换排序方向"
+        onClick={() => patch({ sortOrder: descending ? "Ascending" : "Descending" })}
+      >
+        <SortArrow ascending={!descending} />
+        <span>{descending ? "降序" : "升序"}</span>
+      </button>
 
       <button
         type="button"
@@ -138,9 +115,15 @@ export default function LibraryToolbar({ value, onChange, availableTypes }: Libr
         <div className="library-toolbar__group">
           <span className="library-toolbar__label">类型</span>
           <div className="library-toolbar__segments" role="group" aria-label="类型筛选">
-            {TYPE_OPTIONS.filter(
-              (option) => option.value === "all" || availableTypes.includes(option.value),
-            ).map((option) => (
+            <button
+              type="button"
+              className={`library-toolbar__segment${value.itemType === "all" ? " is-active" : ""}`}
+              aria-pressed={value.itemType === "all"}
+              onClick={() => patch({ itemType: "all" })}
+            >
+              全部
+            </button>
+            {TYPE_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"

@@ -22,6 +22,7 @@ import type {
   EmbySession,
   EmbySessionBoot,
   EmbySessionReason,
+  EmbySortOrder,
   EmbyView,
 } from "./contract";
 import {
@@ -52,10 +53,114 @@ export interface EmbyLibraryState {
 }
 
 export interface EmbyLibraryController extends EmbyLibraryState {
+  /** True only for views the server marks as mixed content (movies + series). */
+  supportsTypeFilter: boolean;
+  /** Continue-watching load state; the row is best-effort and may stay empty. */
+  resumeStatus: EmbyLoadStatus;
+  /** Why the continue-watching row is empty, when it is a failure, not a fact. */
+  resumeError: string | null;
   selectView: (viewId: string) => void;
   loadMore: () => void;
   reload: () => void;
+  /** Re-read the continue-watching row after its request failed. */
+  retryResume: () => void;
   refreshResume: () => void;
+}
+
+/** Emby `SortBy` values offered by the library toolbar. */
+export type EmbyLibrarySortBy =
+  | "SortName"
+  | "ProductionYear"
+  | "DateCreated"
+  | "CommunityRating";
+
+/** Item type restriction; `"all"` keeps whatever the view contains. */
+export type EmbyLibraryItemType = "all" | "Movie" | "Series";
+
+/**
+ * Everything the toolbar controls. The hook sends it to the server and keys
+ * its page cache by it, so two different queries never share loaded items.
+ */
+export interface EmbyLibraryQuery {
+  sortBy: EmbyLibrarySortBy;
+  sortOrder: EmbySortOrder;
+  /** Server-side `Filters=IsUnplayed`. */
+  unplayedOnly: boolean;
+  /** Only applied to genuinely mixed views (see `supportsTypeFilter`). */
+  itemType: EmbyLibraryItemType;
+}
+
+export const DEFAULT_LIBRARY_QUERY: EmbyLibraryQuery = {
+  sortBy: "SortName",
+  sortOrder: "Ascending",
+  unplayedOnly: false,
+  itemType: "all",
+};
+
+export function isDefaultLibraryQuery(query: EmbyLibraryQuery): boolean {
+  return (
+    query.sortBy === DEFAULT_LIBRARY_QUERY.sortBy &&
+    query.sortOrder === DEFAULT_LIBRARY_QUERY.sortOrder &&
+    query.unplayedOnly === DEFAULT_LIBRARY_QUERY.unplayedOnly &&
+    query.itemType === DEFAULT_LIBRARY_QUERY.itemType
+  );
+}
+
+export interface EmbyLibraryOptions {
+  query?: EmbyLibraryQuery;
+  /** Items per page; comes from `AppSettings.pageSize`. */
+  pageSize?: number;
+}
+
+/**
+ * Emby's "mixed content" library. Emby (and Jellyfin) represent it as a view
+ * *without* a collection type — the library picker's "Mixed content" entry —
+ * while a few servers echo "mixed". Those are the only views whose item types
+ * are unknown, which is exactly why the Movie/Series filter exists.
+ *
+ * An unrecognised collection type (books, photos, musicvideos, boxsets, plugin
+ * libraries) is NOT mixed: those views have a known content type of their own.
+ */
+function isMixedCollection(view: Pick<EmbyView, "collectionType"> | null | undefined): boolean {
+  const value = view?.collectionType?.trim().toLowerCase();
+  return !value || value === "mixed";
+}
+
+/** Only the mixed-content library can be narrowed by item type. */
+function viewSupportsTypeFilter(view: EmbyView | null): boolean {
+  return isMixedCollection(view);
+}
+
+/** `IncludeItemTypes` for one page request, honouring the mixed-view filter. */
+function includeItemTypesForQuery(
+  view: EmbyView,
+  itemType: EmbyLibraryItemType,
+): string | undefined {
+  if (itemType !== "all" && viewSupportsTypeFilter(view)) return itemType;
+  // "All" always means "whatever the view holds": a mixed library may contain
+  // more than movies and series, and fixed-type views ignore the filter.
+  return includeItemTypesForView(view);
+}
+
+function normalizePageSize(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return LIBRARY_PAGE_SIZE;
+  const size = Math.floor(value);
+  return size > 0 ? size : LIBRARY_PAGE_SIZE;
+}
+
+/** Stable string for one query + page size; used as the cache key prefix. */
+function libraryQuerySignature(query: EmbyLibraryQuery, pageSize: number): string {
+  return [
+    query.sortBy,
+    query.sortOrder,
+    query.unplayedOnly ? "unplayed" : "all",
+    query.itemType,
+    pageSize,
+  ].join("|");
+}
+
+function cacheKeyFor(viewId: string, signature: string): string {
+  return `${viewId}::${signature}`;
 }
 
 /** Single boot/session state machine shared by the shell and the login page. */
@@ -119,9 +224,13 @@ interface LibraryStore {
   viewsStatus: EmbyLoadStatus;
   viewsError: string | null;
   viewId: string | null;
+  /** Cache is keyed by view id + query signature (see `cacheKeyFor`). */
   cache: Record<string, ViewCache>;
+  /** Signature of the query the cached pages belong to. */
+  queryKey: string;
   resumable: EmbyLibraryItem[];
   resumeStatus: EmbyLoadStatus;
+  resumeError: string | null;
 }
 
 function emptyStore(): LibraryStore {
@@ -131,8 +240,10 @@ function emptyStore(): LibraryStore {
     viewsError: null,
     viewId: null,
     cache: {},
+    queryKey: "",
     resumable: [],
     resumeStatus: "idle",
+    resumeError: null,
   };
 }
 
@@ -397,6 +508,7 @@ export function useEmbySession(): EmbySessionController {
 export function useEmbyLibrary(
   session: EmbySession | null,
   enabled: boolean,
+  options: EmbyLibraryOptions = {},
 ): EmbyLibraryController {
   const desktop = hasTauriRuntime();
   const [store, setStore] = useState<LibraryStore>(emptyStore);
@@ -405,6 +517,14 @@ export function useEmbyLibrary(
   const requestsRef = useRef<Set<string>>(new Set());
   const resumeRefreshRef = useRef(false);
   const [reloadToken, setReloadToken] = useState(0);
+
+  const query = options.query ?? DEFAULT_LIBRARY_QUERY;
+  const pageSize = normalizePageSize(options.pageSize);
+  const querySignature = libraryQuerySignature(query, pageSize);
+  const queryRef = useRef({ query, pageSize });
+  queryRef.current = { query, pageSize };
+  const querySignatureRef = useRef(querySignature);
+  querySignatureRef.current = querySignature;
 
   const updateStore = useCallback(
     (updater: (current: LibraryStore) => LibraryStore) => {
@@ -419,7 +539,8 @@ export function useEmbyLibrary(
 
   const fetchViewPage = useCallback(
     async (view: EmbyView, mode: "replace" | "append") => {
-      const key = view.id;
+      const { query: activeQuery, pageSize: activePageSize } = queryRef.current;
+      const key = cacheKeyFor(view.id, libraryQuerySignature(activeQuery, activePageSize));
       const generation = generationRef.current;
       const requestKey = `${generation}:${key}`;
       if (requestsRef.current.has(requestKey)) return;
@@ -450,14 +571,16 @@ export function useEmbyLibrary(
       });
 
       try {
-        const includeItemTypes = includeItemTypesForView(view);
+        const includeItemTypes = includeItemTypesForQuery(view, activeQuery.itemType);
         const page = await embyItems({
           parentId: view.id,
           recursive: true,
-          sortBy: "SortName",
-          limit: LIBRARY_PAGE_SIZE,
+          sortBy: activeQuery.sortBy,
+          sortOrder: activeQuery.sortOrder,
+          limit: activePageSize,
           startIndex,
           ...(includeItemTypes ? { includeItemTypes } : {}),
+          ...(activeQuery.unplayedOnly ? { filters: "IsUnplayed" } : {}),
         });
         const decorated = await Promise.all(
           page.items.map((item) => decorateItem(item, false)),
@@ -542,7 +665,12 @@ export function useEmbyLibrary(
 
     const generation = ++generationRef.current;
     requestsRef.current.clear();
-    const loading = { ...emptyStore(), viewsStatus: "loading" as const, resumeStatus: "loading" as const };
+    const loading = {
+      ...emptyStore(),
+      viewsStatus: "loading" as const,
+      resumeStatus: "loading" as const,
+      queryKey: querySignatureRef.current,
+    };
     storeRef.current = loading;
     setStore(loading);
 
@@ -556,6 +684,7 @@ export function useEmbyLibrary(
         if (viewsResult.status === "rejected") throw viewsResult.reason;
 
         let resumable: EmbyLibraryItem[] = [];
+        let resumeFailure: string | null = null;
         if (resumeResult.status === "fulfilled") {
           resumable = await Promise.all(
             resumeResult.value.items.map((item) => decorateItem(item, true, 640)),
@@ -563,6 +692,10 @@ export function useEmbyLibrary(
           if (generation !== generationRef.current) return;
         } else {
           console.warn("[emby] continue-watching request failed", resumeResult.reason);
+          resumeFailure = describeEmbyError(
+            resumeResult.reason,
+            "无法读取继续观看列表。",
+          );
         }
 
         const views = viewsResult.value;
@@ -574,7 +707,8 @@ export function useEmbyLibrary(
           viewsError: null,
           viewId: view?.id ?? null,
           resumable,
-          resumeStatus: "ready",
+          resumeStatus: resumeFailure ? "error" : "ready",
+          resumeError: resumeFailure,
         }));
 
         if (view) await fetchViewPage(view, "replace");
@@ -595,6 +729,39 @@ export function useEmbyLibrary(
     };
   }, [desktop, enabled, fetchViewPage, reloadToken, session, updateStore]);
 
+  // A sort/filter/pageSize change is a new server query: drop the pages that
+  // were loaded under the old signature and fetch page 0 again. Views are
+  // untouched, so the sidebar and the selected tab survive.
+  useEffect(() => {
+    const current = storeRef.current;
+    if (current.queryKey === querySignature) return;
+    const view = current.views.find((candidate) => candidate.id === current.viewId) ?? null;
+    if (current.viewsStatus !== "ready" || !view) {
+      // Boot/reload is still running (settings arrive asynchronously, so a new
+      // page size can land mid-boot). Do not touch the in-flight generation —
+      // just record the signature: the running boot reads the newest query from
+      // the ref when it eventually fetches page 0.
+      updateStore((state) => ({ ...state, queryKey: querySignature }));
+      return;
+    }
+    requestsRef.current.clear();
+    generationRef.current += 1;
+    updateStore((state) => ({
+      ...state,
+      cache: {
+        [cacheKeyFor(view.id, querySignature)]: {
+          items: [],
+          total: 0,
+          status: "loading",
+          error: null,
+          loadingMore: false,
+        },
+      },
+      queryKey: querySignature,
+    }));
+    void fetchViewPage(view, "replace");
+  }, [fetchViewPage, querySignature, updateStore]);
+
   const selectView = useCallback(
     (viewId: string) => {
       const current = storeRef.current;
@@ -603,7 +770,8 @@ export function useEmbyLibrary(
       if (current.viewId !== viewId) {
         updateStore((state) => ({ ...state, viewId }));
       }
-      const cache = current.cache[viewId];
+      const key = cacheKeyFor(viewId, querySignatureRef.current);
+      const cache = current.cache[key];
       if (!cache || cache.status === "error") {
         void fetchViewPage(view, "replace");
       }
@@ -614,7 +782,9 @@ export function useEmbyLibrary(
   const loadMore = useCallback(() => {
     const current = storeRef.current;
     const view = current.views.find((candidate) => candidate.id === current.viewId);
-    const cache = current.viewId ? current.cache[current.viewId] : undefined;
+    const cache = current.viewId
+      ? current.cache[cacheKeyFor(current.viewId, querySignatureRef.current)]
+      : undefined;
     if (!view || !cache || cache.status !== "ready" || cache.loadingMore) return;
     if (cache.error) return;
     if (cache.items.length >= cache.total) return;
@@ -633,6 +803,10 @@ export function useEmbyLibrary(
     );
     if (currentView) void fetchViewPage(currentView, "replace");
   }, [fetchViewPage]);
+
+  // A failed continue-watching request is retried through the boot effect, so
+  // the row, the views and the current page are re-read together.
+  const retryResume = useCallback(() => setReloadToken((value) => value + 1), []);
 
   const refreshResume = useCallback(() => {
     if (!enabled || !session || !desktop || resumeRefreshRef.current) return;
@@ -660,7 +834,9 @@ export function useEmbyLibrary(
   }, [desktop, enabled, session, updateStore]);
 
   const view = store.views.find((candidate) => candidate.id === store.viewId) ?? null;
-  const cache = store.viewId ? store.cache[store.viewId] : undefined;
+  const cache = store.viewId
+    ? store.cache[cacheKeyFor(store.viewId, querySignature)]
+    : undefined;
   const status: EmbyLoadStatus =
     store.viewsStatus === "loading"
       ? "loading"
@@ -688,9 +864,13 @@ export function useEmbyLibrary(
         cache.items.length < LIBRARY_MAX_ITEMS,
     ),
     error,
+    supportsTypeFilter: viewSupportsTypeFilter(view),
+    resumeStatus: store.resumeStatus,
+    resumeError: store.resumeError,
     selectView,
     loadMore,
     reload,
+    retryResume,
     refreshResume,
   };
 }

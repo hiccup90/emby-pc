@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { EmbyPlaybackTarget } from "./emby/contract";
+import type { EmbyItem, EmbyPlaybackTarget } from "./emby/contract";
 import { hasTauriRuntime } from "./emby/client";
-import type { EmbyLibraryItem } from "./emby/useEmby";
-import type { EmbyItem } from "./emby/contract";
-import { useEmbyLibrary, useEmbySession, usePlaybackLauncher } from "./emby/useEmby";
-import { embyItems } from "./emby/client";
+import type {
+  EmbyLibraryItem,
+  EmbyLibraryQuery,
+  EmbyLoadStatus,
+} from "./emby/useEmby";
+import {
+  DEFAULT_LIBRARY_QUERY,
+  useEmbyLibrary,
+  useEmbySession,
+  usePlaybackLauncher,
+} from "./emby/useEmby";
+import { describeEmbyError, embyItems } from "./emby/client";
 import { decorateItems } from "./emby/useSearch";
 import { episodePlaybackMeta, itemChapters, itemPlaybackMeta } from "./emby/format";
 import ActorScreen from "./screens/ActorScreen";
@@ -20,7 +28,8 @@ import type { TitleBarAccount } from "./screens/TitleBar";
 import { BrandMark, PageBackdrop } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import type { PlaybackMeta } from "./player/contract";
-import { getSettings } from "./settings/tauri";
+import { DEFAULT_APP_SETTINGS, getSettings } from "./settings/tauri";
+import type { AppSettings } from "./settings/tauri";
 import "./styles.css";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
@@ -72,10 +81,15 @@ export default function App() {
   const sessionController = useEmbySession();
   const sessionState = sessionController.state;
   const session = sessionController.session;
-  const library = useEmbyLibrary(session, Boolean(session));
+  /** Persisted settings; pageSize drives the library page size, autoPlay the queue. */
+  const [settings, setSettings] = useState<AppSettings>(() => ({ ...DEFAULT_APP_SETTINGS }));
+  const [query, setQuery] = useState<EmbyLibraryQuery>(DEFAULT_LIBRARY_QUERY);
+  const library = useEmbyLibrary(session, Boolean(session), {
+    query,
+    pageSize: settings.pageSize,
+  });
   const [route, setRoute] = useState<Route>({ screen: "login" });
-  /** Persisted auto-play preference; false disables the player's next-episode hop. */
-  const [autoPlay, setAutoPlay] = useState(true);
+  const autoPlay = settings.autoPlay;
   const previousScreenRef = useRef<Route["screen"] | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   /** Library scroll offset to restore when coming back from a detail page. */
@@ -83,15 +97,15 @@ export default function App() {
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
 
-  // Keep the shell's auto-play flag in sync with the persisted settings.
+  // Read the persisted settings once; a failure keeps the defaults.
   useEffect(() => {
     let cancelled = false;
     void getSettings()
       .then((stored) => {
-        if (!cancelled) setAutoPlay(stored.autoPlay);
+        if (!cancelled) setSettings(stored);
       })
       .catch((reason: unknown) => {
-        console.warn("[settings] could not read the auto-play preference", reason);
+        console.warn("[settings] could not read the persisted settings", reason);
       });
     return () => {
       cancelled = true;
@@ -121,7 +135,19 @@ export default function App() {
     }
   }, [route]);
 
+  // A new page size refetches page 0; the old scroll offset would land in the
+  // middle of a differently-sized grid, so keep the user near the top.
+  useEffect(() => {
+    libraryScrollRef.current = 0;
+  }, [settings.pageSize]);
+
   const goToLibrary = useCallback(() => setRoute({ screen: "library" }), []);
+
+  const changeQuery = useCallback((next: EmbyLibraryQuery) => {
+    libraryScrollRef.current = 0;
+    contentRef.current?.scrollTo({ top: 0 });
+    setQuery(next);
+  }, []);
 
   const chooseView = useCallback(
     (viewId: string) => {
@@ -138,11 +164,23 @@ export default function App() {
     setRoute({ screen: "detail", itemId: item.id, seed: item, trail: [] });
   }, []);
 
-  // "Recently added" for the home screen (server-sorted, newest first).
+  // "Recently added" for the home screen (server-sorted, newest first). The row
+  // publishes its own load state so a pending/failed request never looks empty.
   const [recent, setRecent] = useState<EmbyLibraryItem[]>([]);
+  const [recentStatus, setRecentStatus] = useState<EmbyLoadStatus>("idle");
+  const [recentError, setRecentError] = useState<string | null>(null);
+  const [recentReloadToken, setRecentReloadToken] = useState(0);
+
   useEffect(() => {
-    if (!session) return undefined;
+    if (!session) {
+      setRecent([]);
+      setRecentStatus("idle");
+      setRecentError(null);
+      return undefined;
+    }
     let cancelled = false;
+    setRecentStatus("loading");
+    setRecentError(null);
     void (async () => {
       try {
         const page = await embyItems({
@@ -152,15 +190,24 @@ export default function App() {
           limit: 24,
           includeItemTypes: "Movie,Series",
         });
-        if (!cancelled) setRecent(await decorateItems(page.items));
+        const decorated = await decorateItems(page.items);
+        if (cancelled) return;
+        setRecent(decorated);
+        setRecentStatus("ready");
       } catch (reason) {
+        if (cancelled) return;
         console.warn("[home] could not load recently added", reason);
+        setRecent([]);
+        setRecentError(describeEmbyError(reason, "无法读取最近添加的内容。"));
+        setRecentStatus("error");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [session]);
+  }, [recentReloadToken, session]);
+
+  const retryRecent = useCallback(() => setRecentReloadToken((value) => value + 1), []);
 
   const openActor = useCallback(
     (person: { id: string | null; name: string }) => {
@@ -416,10 +463,16 @@ export default function App() {
           {route.screen === "home" && (
             <HomeScreen
               resume={library.resumable}
+              resumeStatus={library.resumeStatus}
+              resumeError={library.resumeError}
               recent={recent}
+              recentStatus={recentStatus}
+              recentError={recentError}
               onOpen={openItem}
               onPlay={resumeItem}
               onSeeAll={goToLibrary}
+              onRetryRecent={retryRecent}
+              onRetryResume={library.retryResume}
             />
           )}
 
@@ -430,7 +483,7 @@ export default function App() {
           {route.screen === "settings" && (
             <SettingsScreen
               onBack={() => setRoute({ screen: "home" })}
-              onSettingsChange={(next) => setAutoPlay(next.autoPlay)}
+              onSettingsChange={setSettings}
             />
           )}
 
@@ -448,6 +501,8 @@ export default function App() {
               session={session}
               desktop={desktop}
               library={library}
+              query={query}
+              onQueryChange={changeQuery}
               onOpen={openItem}
               onPlay={resumeItem}
             />
