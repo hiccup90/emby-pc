@@ -128,13 +128,53 @@ impl SettingsStore {
 }
 
 /// Reads the persisted settings (defaults when the file is missing/corrupt).
+///
+/// Deliberately **not** an async command: the work is one `fs::read` of a ~100
+/// byte JSON file (page-cached after the first call, so microseconds) plus a
+/// `serde_json` parse, and nothing hidden behind it waits on mpv or on I/O
+/// that can block. It is called when a page mounts (`App` and `SettingsScreen`
+/// each read it once) and from `player_open`, not per frame — moving it to the
+/// thread pool would add a dispatch hop to protect against a stall that cannot
+/// happen here.
+///
+/// (`player_stats` and `player_open` are async for the opposite reason: both
+/// wait on mpv with a bounded timeout, and a timeout that expires on the main
+/// thread freezes the window for its whole duration.)
 #[tauri::command]
 pub fn settings_get(state: State<'_, PlayerService>) -> Result<AppSettings, String> {
     Ok(state.current_settings())
 }
 
 /// Persists settings and returns the normalized value the app now uses.
-#[tauri::command]
+///
+/// Async on purpose: changing the quality preset retires the running mpv
+/// session, and `PlayerService::rebuild_session` waits up to `SHUTDOWN_TIMEOUT`
+/// (2 s) for the worker to quit. On the main thread that wait would freeze the
+/// whole window — including the settings page that issued the call — for as
+/// long as mpv takes to terminate.
+///
+/// Why `(async)` and not `(async)` + `spawn_blocking` (verified in the
+/// dependency sources, not assumed): `#[tauri::command(async)]` on a
+/// *synchronous* fn makes the macro wrap the call in
+/// `respond_async_serialized(async move { path(...) })`, and that future is
+/// handed to `tauri::async_runtime::spawn` -> tokio `Runtime::new()` =
+/// `new_multi_thread()` with one worker per core. The shutdown therefore
+/// already runs off the UI thread, which is the actual defect being fixed.
+///
+/// A `spawn_blocking` wrapper would be *marginally* better for tokio (a blocked
+/// multi-thread worker is unavailable to other commands until it finishes), but
+/// it needs a `'static` closure: the command would have to take `AppHandle` and
+/// re-acquire `State` inside, so the argument type and the state plumbing both
+/// change. For a path a single user triggers at most once per settings change,
+/// occupying one of (cores-1) spare workers for tens of milliseconds is not a
+/// problem worth that indirection. Revisit if this ever becomes a per-frame or
+/// long-running call, or if the wait grows past a few hundred milliseconds.
+///
+/// Lock discipline: `save_settings` contains no `.await` at all, so a guard
+/// cannot be held across a suspension point by construction. The one wait it
+/// performs, `rebuild_session`, takes the session out of the map under the
+/// mutex, **releases the mutex**, and only then shuts the worker down.
+#[tauri::command(async)]
 pub fn settings_set(
     settings: AppSettings,
     state: State<'_, PlayerService>,

@@ -172,14 +172,15 @@ impl PlayerService {
 
         // Only the session-level part of the settings matters here. Page size
         // and autoplay are read per request and must not interrupt playback.
-        let live = self.lock_session_key().clone();
-        if let Some(live) = live {
-            if live.quality != settings.video_quality {
-                self.rebuild_session(&format!(
-                    "quality changed from {:?} to {:?}",
-                    live.quality, settings.video_quality
-                ));
-            }
+        //
+        // Explicit scope instead of leaning on temporary-drop order: this runs
+        // on an `(async)` command path, and "the guard happens to be a temporary
+        // that dies at the end of the statement" is too subtle a reason for a
+        // lock to be free before the blocking `rebuild_session` below.
+        let live = { self.lock_session_key().clone() };
+        let quality_changed = live.is_some_and(|live| live.quality != settings.video_quality);
+        if quality_changed {
+            self.rebuild_session(&format!("quality changed to {:?}", settings.video_quality));
         }
         Ok(settings)
     }
