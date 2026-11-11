@@ -29,7 +29,7 @@ pub use hub::{SnapshotHub, SnapshotSink};
 pub use loader::MpvLibrary;
 pub use options::{build_initial_options, parse_user_options, MpvOption};
 pub use seq::SeqLatch;
-pub use session::{PlayerSession, SessionConfig, EVENT_TIMEOUT_SECS, SHUTDOWN_TIMEOUT, SNAPSHOT_INTERVAL};
+pub use session::{PlayerSession, SessionConfig, SHUTDOWN_TIMEOUT};
 pub use state::SnapshotAssembler;
 pub use types::{
     OpenRequest, PlayerCommand, PlayerSnapshot, PlayerStats, PlayerStatus, PlayerTrack, TrackKind,

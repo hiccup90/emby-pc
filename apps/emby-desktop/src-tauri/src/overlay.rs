@@ -11,7 +11,8 @@
 //! it with the owner, so no topmost flag or focus-driven show/hide is needed. It never takes focus (`focused(false)` + `focusable(false)`) and is
 //! click-through while the controls are faded out (`overlay_set_interactive`).
 //! Geometry is kept in physical pixels and re-applied on main-window move,
-//! resize and DPI changes.
+//! resize and DPI changes, which arrive as Tauri window events (see `main.rs`);
+//! nothing here polls the window rectangle.
 //!
 //! Visibility is driven only by `player_ui_mode` and `video_sync.visible`. While
 //! the video is visible the overlay is shown once and then only moved/resized;
@@ -31,11 +32,24 @@
 //!
 //! Click routing: the surface is click-through while it is faded out, but the
 //! page hides itself on a timer (`overlay_set_interactive(false)`). That call is
-//! therefore deferred by [`CLICK_THROUGH_GRACE`]: a press that started while the
-//! bar was still interactive must not be turned into `WS_EX_TRANSPARENT`
-//! mid-gesture, otherwise Win32 never delivers the matching button-up and the
-//! button's `click` is never synthesized. Turning interaction *on* is immediate
+//! a state change applied immediately, with one guard: while a mouse button is
+//! physically down the switch waits for the release (bounded, see
+//! [`CLICK_THROUGH_MAX_PRESS`]). A press that started while the bar was still
+//! interactive must not be turned into `WS_EX_TRANSPARENT` mid-gesture,
+//! otherwise Win32 never delivers the matching button-up and the button's
+//! `click` is never synthesized. Turning interaction *on* is always immediate
 //! and cancels any pending click-through.
+//!
+//! Timing model — there are no fixed sleeps left on the interaction path. Every
+//! transition is caused by an event (a command from the page, a window
+//! message, a button state), and the two remaining timers are bounded
+//! fallbacks whose only job is to recover from a page that stopped talking:
+//!
+//! | transition | before | now |
+//! |---|---|---|
+//! | click-through on | always wait 450 ms, then poll up to 4 s | apply now; wait only while a button is down |
+//! | first-show collapse | sleep 220 ms unconditionally | page's own state change settles it; 400 ms fallback |
+//! | cursor wake | 50 ms fixed poll | 16 ms while over the video, 250 ms elsewhere |
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -83,18 +97,34 @@ pub fn resume(app: &AppHandle) {
 const COLLAPSED_HEIGHT: f64 = 96.0;
 const EXPANDED_HEIGHT: f64 = 352.0;
 
-const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Cursor poll interval while the pointer is over the video.
+///
+/// A `WH_MOUSE_LL` hook would be the fully event-driven answer, but it needs a
+/// dedicated message-pumping thread and, more importantly, it sits in the
+/// system-wide input path: one slow callback there stalls the mouse for every
+/// application on the machine. The poll below is two cheap reads
+/// (`GetCursorPos` + `GetAsyncKeyState`) and is only ever active while the
+/// overlay is in player mode, so it is kept — with the interval split by what
+/// the tick is actually for (see the two constants below).
+const WAKE_POLL_ACTIVE: Duration = Duration::from_millis(16);
+/// Interval while the pointer is outside the video rect. Nothing can happen
+/// there, so this only has to notice the pointer coming back: 4 Hz instead of
+/// the old fixed 20 Hz.
+const WAKE_POLL_IDLE: Duration = Duration::from_millis(250);
 /// Squared movement threshold in physical pixels (3 px).
 const WAKE_MIN_MOVE_SQUARED: i64 = 9;
-/// How long `overlay_set_interactive(false)` waits before the window really
-/// becomes click-through. A single mouse gesture (down .. up .. click) is far
-/// shorter; the delay only has to cover the gap between the page's auto-hide
-/// timer and the button-up of a press that was already in flight.
-const CLICK_THROUGH_GRACE: Duration = Duration::from_millis(450);
-/// Hard cap for the "wait until the mouse button is released" extension in
-/// `set_interactive(false)`. A stuck/dragged button must not pin the surface
-/// interactive forever.
+/// Fallback bound for `overlay_set_interactive(false)` while a mouse button is
+/// physically down. The normal path applies click-through immediately; this
+/// only covers the case where the page's auto-hide timer fires between
+/// `pointerdown` and `pointerup`, where switching to `WS_EX_TRANSPARENT`
+/// mid-gesture would drop the button-up and the button's `click` would never be
+/// synthesized (the reported "play/pause does nothing" bug). A stuck or dragged
+/// button must not pin the surface interactive, hence the cap.
 const CLICK_THROUGH_MAX_PRESS: Duration = Duration::from_millis(4000);
+/// Fallback bound for the first-show warm-up. Normally the collapse is driven
+/// by the page's first `overlay_set_interactive`/`overlay_set_expanded` after
+/// the controls window is shown; this only fires when the page stays silent.
+const WARMUP_FALLBACK: Duration = Duration::from_millis(400);
 
 /// Last left-click handled by the stage poller, for double-click detection.
 #[cfg(windows)]
@@ -129,6 +159,11 @@ struct Inner {
     /// Fullscreen transitions hide the surface and must not let a late
     /// `video_sync`/`present` re-show it in the middle of the resize.
     suspended: bool,
+    /// Set by the first `present()` after showing: the window is temporarily
+    /// at full height so the webview allocates the taller surface while the bar
+    /// is still faded out. The next state change from the page (or
+    /// `WARMUP_FALLBACK`) collapses it back to the bar strip.
+    warmup_pending: bool,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -156,6 +191,7 @@ impl OverlayState {
                 cursor_ignored: Some(true),
                 interaction_generation: 0,
                 suspended: false,
+                warmup_pending: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -250,6 +286,10 @@ impl OverlayState {
         let player = {
             let mut inner = self.lock();
             inner.expanded = expanded;
+            // The page reporting its state is the "webview is up and drawn"
+            // signal the first-show warm-up waits for; clearing it here means
+            // the `present` below also clips the surface back to the bar.
+            inner.warmup_pending = false;
             inner.mode == UiMode::Player
         };
         if player {
@@ -260,18 +300,29 @@ impl OverlayState {
     }
 
     pub fn set_interactive(&self, app: &AppHandle, interactive: bool) {
-        let generation = {
+        let (generation, settled) = {
             let mut inner = self.lock();
             if inner.interactive != interactive {
                 eprintln!("[overlay] interactive -> {interactive}");
             }
             inner.interactive = interactive;
+            // Same settle signal as `set_expanded`: the page sends this from its
+            // own show/hide effect, so it means "the webview is up and has
+            // drawn". Clearing the flag is not enough on its own — the region
+            // has to be clipped back to the bar, which `present` does.
+            let settled = std::mem::take(&mut inner.warmup_pending);
             if interactive {
                 // Turning input on must win over any deferred click-through.
                 inner.interaction_generation = inner.interaction_generation.wrapping_add(1);
             }
-            inner.interaction_generation
+            (inner.interaction_generation, settled)
         };
+        if settled {
+            // Collapse the first-show full-height surface to the bar strip.
+            if let Err(err) = self.present(app, None) {
+                eprintln!("[overlay] warm-up collapse failed: {err}");
+            }
+        }
         if interactive {
             if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
                 // `apply_click_through` compares against the state last applied
@@ -283,25 +334,39 @@ impl OverlayState {
             }
             return;
         }
-        // Click-through is deferred: the page calls this from its auto-hide
-        // timer, which can fire between pointerdown and pointerup. Applying
-        // `WS_EX_TRANSPARENT` there drops the button-up and the click never
-        // happens (the reported "play/pause and fullscreen buttons do nothing"
-        // bug). Nothing visual depends on this call, so waiting one gesture is
-        // free; the wait is also extended while a mouse button is physically
-        // down so a slow press cannot be cut in half either.
+        // Click-through is a *state*, not a delay: apply it now unless a mouse
+        // button is physically down. The page calls this from its auto-hide
+        // timer, which can fire between `pointerdown` and `pointerup`; switching
+        // to `WS_EX_TRANSPARENT` inside that window drops the button-up and the
+        // button click is never synthesized (the reported "play/pause and
+        // fullscreen buttons do nothing" bug).
+        //
+        // The gesture is *observed*, not timed: the old code always slept 450 ms
+        // first, so after every auto-hide the surface stayed clickable for
+        // almost half a second and silently swallowed clicks meant for the
+        // video, then waited up to 4 s more. The common case now costs nothing
+        // and the button-down case lasts only as long as the gesture.
+        if !pointer_button_down() {
+            if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
+                self.apply_click_through(&controls);
+            }
+            return;
+        }
+        // Only reached while a button is held: wait for the release, bounded.
         let app = app.clone();
         std::thread::Builder::new()
             .name("overlay-click-through".to_string())
             .spawn(move || {
-                std::thread::sleep(CLICK_THROUGH_GRACE);
                 let deadline = Instant::now() + CLICK_THROUGH_MAX_PRESS;
                 while pointer_button_down() && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(30));
+                    std::thread::sleep(Duration::from_millis(16));
                 }
                 let Some(state) = app.try_state::<OverlayState>() else {
                     return;
                 };
+                // Re-check: the page may have turned input back on (a new
+                // generation) while the button was down. That deferred apply is
+                // then stale and must not swallow the next gesture.
                 let still_wanted = {
                     let inner = state.lock();
                     !inner.interactive
@@ -316,7 +381,7 @@ impl OverlayState {
                 }
             })
             .map(|_| ())
-            .unwrap_or_else(|err| eprintln!("[overlay] click-through timer failed: {err}"));
+            .unwrap_or_else(|err| eprintln!("[overlay] click-through wait failed: {err}"));
     }
 
     /// Push the desired click-through state to the OS only when the applied
@@ -441,26 +506,44 @@ impl OverlayState {
 
         if !shown {
             // First show in this playback: expose the full-height surface for
-            // one moment while the bar is still faded out, then let the
-            // deferred present() clip it back. The first menu then does not pay
-            // for allocating the taller window surface (that used to flash).
+            // one moment while the bar is still faded out, so the first menu
+            // does not pay for allocating the taller window surface (that used
+            // to flash).
+            //
+            // The collapse is event driven: `warmup_pending` is cleared by the
+            // next state change the page makes (`overlay_set_interactive` /
+            // `overlay_set_expanded`), which always follows the show because the
+            // page owns the auto-hide timer. The 220 ms sleep this replaces fired
+            // whether or not the page had settled, so a bar that the user was
+            // already interacting with could be clipped mid-gesture.
             apply_region(&controls, geometry.2, geometry.3, geometry.3)?;
             self.lock().last_active = Some(geometry.3);
             show_controls(&controls)?;
-            self.lock().controls_shown = true;
-            // `show()` can rewrite the ex-style from Tauri's window flags, so
-            // the click-through state is re-applied once afterwards instead of
-            // being repaired after every show/hide. `cursor_ignored` is marked
-            // unknown first so the current state is really pushed.
-            self.lock().cursor_ignored = None;
+            {
+                let mut inner = self.lock();
+                inner.controls_shown = true;
+                inner.warmup_pending = true;
+                // `show()` can rewrite the ex-style from Tauri's window flags,
+                // so the click-through state is re-applied once afterwards
+                // instead of being repaired after every show/hide.
+                // `cursor_ignored` is marked unknown first so the current state
+                // is really pushed.
+                inner.cursor_ignored = None;
+            }
             self.apply_click_through(&controls);
+            // Fallback only, for a page that never reports its state back (a
+            // dead webview): the surface must not stay full-height forever.
             let app = app.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(220));
-                if let Some(state) = app.try_state::<OverlayState>() {
-                    if let Err(err) = state.present(&app, None) {
-                        eprintln!("[overlay] warm-up collapse failed: {err}");
-                    }
+                std::thread::sleep(WARMUP_FALLBACK);
+                let Some(state) = app.try_state::<OverlayState>() else {
+                    return;
+                };
+                if !state.lock().warmup_pending {
+                    return;
+                }
+                if let Err(err) = state.present(&app, None) {
+                    eprintln!("[overlay] warm-up fallback failed: {err}");
                 }
             });
         }
@@ -472,6 +555,10 @@ impl OverlayState {
             let mut inner = self.lock();
             let shown = inner.controls_shown;
             inner.controls_shown = false;
+            // A hidden window cannot be warmed up; the next show arms it again.
+            // Without this the fallback thread could re-present a window the
+            // page already left.
+            inner.warmup_pending = false;
             shown
         };
         if !was_shown {
@@ -1032,8 +1119,13 @@ pub fn spawn_wake_poller(app: AppHandle) {
         .spawn(move || {
             let mut last: Option<(i32, i32)> = None;
             let mut last_left_down = false;
+            // Two rates instead of one fixed 50 ms tick: the fast rate is only
+            // used while the pointer is over the video, where a movement means
+            // something. Everywhere else the thread sleeps 250 ms, so an idle
+            // library screen costs four Win32 reads per second instead of twenty.
+            let mut interval = WAKE_POLL_IDLE;
             while !stop.load(Ordering::SeqCst) {
-                std::thread::sleep(WAKE_POLL_INTERVAL);
+                std::thread::sleep(interval);
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
@@ -1045,6 +1137,7 @@ pub fn spawn_wake_poller(app: AppHandle) {
                     // Stop tracking so re-entering player mode starts fresh.
                     last = None;
                     last_left_down = false;
+                    interval = WAKE_POLL_IDLE;
                     continue;
                 }
                 let Some(main) = app.get_webview_window(MAIN_LABEL) else {
@@ -1065,8 +1158,10 @@ pub fn spawn_wake_poller(app: AppHandle) {
                 if !inside {
                     // Re-entering the video starts a fresh movement baseline.
                     last = None;
+                    interval = WAKE_POLL_IDLE;
                     continue;
                 }
+                interval = WAKE_POLL_ACTIVE;
                 // Compare against the last wake, not the previous tick: slow
                 // movement then still crosses the 3 px threshold eventually.
                 match last {

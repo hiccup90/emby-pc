@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use emby_mpv::{
     MpvLibrary, MpvOption, OpenRequest, PlayerCommand, PlayerSession, PlayerSnapshot, PlayerStats,
-    SessionConfig, SnapshotHub, SnapshotSink, TrackKind, VideoSync, SHUTDOWN_TIMEOUT, STATUS_IDLE,
+    SessionConfig, SnapshotAssembler, SnapshotHub, SnapshotSink, TrackKind, VideoSync,
+    SHUTDOWN_TIMEOUT, STATUS_IDLE,
 };
 use tauri::ipc::Channel;
 use tauri::State;
@@ -21,6 +22,34 @@ use crate::video_window::VideoHost;
 
 /// `player_open` waits at most this long for the worker's loading snapshot.
 const OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+/// `player_stats` waits at most this long for the mpv worker. The info panel
+/// polls this only while it is open; the bound exists so a stuck mpv cannot
+/// hang the request, not as an expected latency.
+const STATS_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// Everything that is fixed for the lifetime of one mpv session.
+///
+/// libmpv only accepts these options before `mpv_initialize()`, so a session
+/// can never be reconfigured in place. Comparing against this key is what makes
+/// a rebuild *explicit*: it happens where the configuration actually changed and
+/// says why, instead of being silently triggered by the next unrelated open.
+#[derive(Debug, Clone, PartialEq)]
+struct SessionKey {
+    /// Quality preset; maps to an mpv profile.
+    quality: VideoQuality,
+    /// `http-header-fields`. Empty and absent are the same thing.
+    headers: Option<Vec<String>>,
+}
+
+impl SessionKey {
+    fn new(quality: VideoQuality, headers: Option<Vec<String>>) -> Self {
+        // An empty list would be passed to mpv as an empty option string; treat
+        // it as "no headers" so a caller sending `Some(vec![])` does not force a
+        // pointless rebuild.
+        let headers = headers.filter(|list| !list.is_empty());
+        Self { quality, headers }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct DesiredPlayback {
@@ -88,8 +117,9 @@ pub struct PlayerService {
     config_dir: Option<PathBuf>,
     /// Persisted quality/autoplay/page-size preferences (`settings.json`).
     settings: Option<SettingsStore>,
-    /// Quality preset the running mpv session was created with.
-    session_quality: Mutex<Option<VideoQuality>>,
+    /// Immutable configuration of the running mpv session. `None` means "no
+    /// session"; a mismatch against the desired key retires it.
+    session_key: Mutex<Option<SessionKey>>,
 }
 
 impl PlayerService {
@@ -108,7 +138,7 @@ impl PlayerService {
             log_path: mpv_log_path(),
             config_dir,
             settings,
-            session_quality: Mutex::new(None),
+            session_key: Mutex::new(None),
         }
     }
 
@@ -122,8 +152,14 @@ impl PlayerService {
             .unwrap_or_default()
     }
 
-    /// Saves settings. A quality change takes effect the next time an mpv
-    /// session is created: mpv options are immutable after initialization.
+    /// Saves settings.
+    ///
+    /// mpv options are immutable after `mpv_initialize()`, so a quality change
+    /// cannot be applied to a running session. Instead of "silently rebuild on
+    /// the next unrelated `player_open`", the rebuild happens **here**, where
+    /// the change actually happened, and is logged with its reason. The current
+    /// playback is stopped by the rebuild; the UI reloads its snapshot and the
+    /// user resumes from the same position.
     pub(crate) fn save_settings(&self, settings: AppSettings) -> Result<AppSettings, String> {
         let settings = settings.normalized();
         let store = self
@@ -133,6 +169,18 @@ impl PlayerService {
         store
             .save(&settings)
             .map_err(|err| format!("无法保存设置：{err}"))?;
+
+        // Only the session-level part of the settings matters here. Page size
+        // and autoplay are read per request and must not interrupt playback.
+        let live = self.lock_session_key().clone();
+        if let Some(live) = live {
+            if live.quality != settings.video_quality {
+                self.rebuild_session(&format!(
+                    "quality changed from {:?} to {:?}",
+                    live.quality, settings.video_quality
+                ));
+            }
+        }
         Ok(settings)
     }
 
@@ -184,16 +232,13 @@ impl PlayerService {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn lock_session_quality(&self) -> MutexGuard<'_, Option<VideoQuality>> {
-        self.session_quality
+    fn lock_session_key(&self) -> MutexGuard<'_, Option<SessionKey>> {
+        self.session_key
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn spawn_session(
-        &self,
-        headers: Option<Vec<String>>,
-    ) -> Result<PlayerSession, String> {
+    fn spawn_session(&self, key: SessionKey) -> Result<PlayerSession, String> {
         let host = self
             .host
             .as_ref()
@@ -204,20 +249,56 @@ impl PlayerService {
         let library = MpvLibrary::load().map_err(|err| err.to_string())?;
         library.check_api_version().map_err(|err| err.to_string())?;
         let desired = *self.lock_desired();
-        let settings = self.current_settings();
+        eprintln!(
+            "[player] creating mpv session (quality={:?}, headers={})",
+            key.quality,
+            if key.headers.is_some() { "yes" } else { "no" }
+        );
         let config = SessionConfig {
             host_hwnd: host.hwnd(),
             log_path: self.log_path.clone(),
-            headers,
-            profile: settings.video_quality.mpv_profile().map(str::to_string),
+            headers: key.headers.clone(),
+            profile: key.quality.mpv_profile().map(str::to_string),
             extra_options: self.user_options(),
             volume: desired.volume,
             muted: desired.muted,
         };
         let session = PlayerSession::spawn(library, config, Arc::clone(&self.hub))
             .map_err(|err| format!("player_open: {err}"))?;
-        *self.lock_session_quality() = Some(settings.video_quality);
+        *self.lock_session_key() = Some(key);
         Ok(session)
+    }
+
+    /// Retire the running mpv session so the next command creates one with the
+    /// current settings. Called where the configuration changed (settings save)
+    /// or where a request needs options the running session does not have.
+    ///
+    /// Returns whether a session was actually torn down.
+    ///
+    /// Blocking, but bounded by `SHUTDOWN_TIMEOUT` and short in practice (mpv
+    /// normally terminates in tens of milliseconds). It is called from
+    /// `save_settings`, so it must not run on a thread that owns a window —
+    /// see the note in `settings_set` about making that command `(async)`.
+    fn rebuild_session(&self, reason: &str) -> bool {
+        // Take the session out and release the lock *before* waiting: mpv's
+        // shutdown is bounded but not instant, and holding the session mutex
+        // across it would queue every control command behind a settings save.
+        let running = {
+            let mut session = self.lock_session();
+            *self.lock_session_key() = None;
+            session.take()
+        };
+        let Some(mut running) = running else {
+            return false;
+        };
+        eprintln!("[player] recreating mpv session: {reason}");
+        if !running.shutdown(SHUTDOWN_TIMEOUT) {
+            eprintln!(
+                "[player] previous mpv session did not stop within {SHUTDOWN_TIMEOUT:?}; \
+                 it is detached and the new session starts anyway"
+            );
+        }
+        true
     }
 
     // ---- commands -----------------------------------------------------------
@@ -231,10 +312,9 @@ impl PlayerService {
             return Err("player_open: empty url".to_string());
         }
         let start_seconds = request.start_seconds.filter(|s| s.is_finite() && *s > 0.0);
-        let headers = request.headers.clone();
         // Read settings before taking the session lock so a slow disk cannot
         // block player controls; the quality preset only matters when spawning.
-        let desired_quality = self.current_settings().video_quality;
+        let key = SessionKey::new(self.current_settings().video_quality, request.headers);
 
         let reply = {
             let mut session = self.lock_session();
@@ -244,25 +324,32 @@ impl PlayerService {
             if self.shutdown_started.load(Ordering::SeqCst) {
                 return Err("player_open: the application is shutting down".to_string());
             }
-            // mpv options are fixed before `mpv_initialize()`. If the user
-            // changed the quality preset since this worker was created, retire
-            // it so the next command below spawns with the new profile.
-            if session.is_some() && *self.lock_session_quality() != Some(desired_quality) {
-                if let Some(mut stale) = session.take() {
-                    let _ = stale.shutdown(SHUTDOWN_TIMEOUT);
+            // mpv options are fixed before `mpv_initialize()`, so a request that
+            // needs different ones can only be served by a new session. Both
+            // causes are logged by `rebuild_session`/`spawn_session` above;
+            // nothing is rebuilt when the key is unchanged.
+            // The retire-and-respawn pair stays under the session lock on
+            // purpose: releasing it between the two would let a concurrent open
+            // spawn a second worker for the same host window. This only runs on
+            // a real configuration change, never on an ordinary open.
+            if session.is_some() && self.lock_session_key().as_ref() != Some(&key) {
+                let running = session.take();
+                *self.lock_session_key() = None;
+                if let Some(mut running) = running {
+                    eprintln!(
+                        "[player] open: recreating the mpv session for the requested \
+                         quality/headers"
+                    );
+                    if !running.shutdown(SHUTDOWN_TIMEOUT) {
+                        eprintln!(
+                            "[player] previous mpv session did not stop within \
+                             {SHUTDOWN_TIMEOUT:?}; detaching it and starting a new one"
+                        );
+                    }
                 }
-                *self.lock_session_quality() = None;
             }
-            let created = session.is_none();
-            if created {
-                *session = Some(self.spawn_session(headers.clone())?);
-            } else if headers.as_ref().is_some_and(|list| !list.is_empty()) {
-                // http-header-fields only works before mpv_initialize(); the
-                // session is already running, so the headers cannot be applied.
-                eprintln!(
-                    "[player] open: headers can only be applied when a session is created; \
-                     reusing the running session without them"
-                );
+            if session.is_none() {
+                *session = Some(self.spawn_session(key)?);
             }
 
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -277,6 +364,7 @@ impl PlayerService {
             if let Err(err) = send_result {
                 eprintln!("[player] open: mpv thread is gone ({err}); dropping the session");
                 *session = None;
+                *self.lock_session_key() = None;
                 return Err(format!(
                     "player_open: mpv worker is not running ({err}); retry the open"
                 ));
@@ -285,21 +373,31 @@ impl PlayerService {
         };
 
         // The worker publishes the post-reset loading snapshot and replies with
-        // it; a short bounded wait here keeps the returned `seq` consistent with
-        // the channel stream (this is not the UI thread).
+        // it; the bounded wait keeps the returned `seq` consistent with the
+        // channel stream (this is not the UI thread).
+        //
+        // A timeout is a *failure*, never a fallback to `hub.latest()`: that
+        // snapshot still describes the previous file, so the UI would show the
+        // old title/duration as if the new one were ready to play.
         match reply.recv_timeout(OPEN_REPLY_TIMEOUT) {
             Ok(snapshot) => Ok(snapshot),
             Err(err) => {
                 eprintln!("[player] open: no snapshot reply within {OPEN_REPLY_TIMEOUT:?}: {err}");
-                Ok(self.hub.latest())
+                Err(format!(
+                    "player_open: mpv did not confirm the stream within {} s ({}); retry the open",
+                    OPEN_REPLY_TIMEOUT.as_secs(),
+                    match err {
+                        std::sync::mpsc::RecvTimeoutError::Timeout => "worker is busy",
+                        std::sync::mpsc::RecvTimeoutError::Disconnected => "worker is gone",
+                    }
+                ))
             }
         }
     }
 
+    /// Play/pause. Unlike the "remember for later" preferences below, this only
+    /// makes sense with a loaded stream, so it reports when there is none.
     pub fn set_paused(&self, paused: bool) -> Result<(), String> {
-        // Do not go through the shared `send` here: a missing session would
-        // return `Ok(())` and the UI would sit on an unchanged snapshot with no
-        // explanation. Play/pause is the one control that must report that.
         let session = self.lock_session();
         match session.as_ref() {
             Some(active) => active
@@ -308,9 +406,7 @@ impl PlayerService {
                 .map(|()| {
                     eprintln!("[player] set_paused({paused}) dispatched to mpv");
                 }),
-            None => Err(
-                "player_set_paused: no active mpv session (open a stream first)".to_string()
-            ),
+            None => Err(no_session_error("player_set_paused")),
         }
     }
 
@@ -318,10 +414,13 @@ impl PlayerService {
         if !seconds.is_finite() {
             return Err(format!("player_seek: invalid position {seconds}"));
         }
-        self.send(PlayerCommand::Seek {
-            seconds: seconds.max(0.0),
-            exact: exact.unwrap_or(true),
-        })
+        self.dispatch(
+            "player_seek",
+            PlayerCommand::Seek {
+                seconds: seconds.max(0.0),
+                exact: exact.unwrap_or(true),
+            },
+        )
     }
 
     pub fn set_volume(&self, volume: f64) -> Result<(), String> {
@@ -364,7 +463,7 @@ impl PlayerService {
                 "player_set_track: unknown track kind {kind:?} (expected \"audio\" or \"subtitle\")"
             ));
         };
-        self.send(PlayerCommand::SetTrack { kind, id })
+        self.dispatch("player_set_track", PlayerCommand::SetTrack { kind, id })
     }
 
     pub fn stop(&self) -> Result<(), String> {
@@ -377,20 +476,13 @@ impl PlayerService {
             // still puts the UI back into a sane state.
             let _ = active.send(PlayerCommand::Stop);
         }
+        // The idle shape is owned by the crate that also owns the state machine
+        // (`SnapshotAssembler::idle_snapshot`), so this cannot drift from
+        // `reset_to_idle` when a field is added. Only the desired volume/mute
+        // are carried over: stopping must not make the bar jump to 100 %.
         let desired = *self.lock_desired();
-        self.hub.update(|snapshot| {
-            snapshot.status = STATUS_IDLE.to_string();
-            snapshot.position_seconds = 0.0;
-            snapshot.duration_seconds = 0.0;
-            snapshot.buffering = false;
-            snapshot.video_width = 0;
-            snapshot.video_height = 0;
-            snapshot.audio_tracks.clear();
-            snapshot.subtitle_tracks.clear();
-            snapshot.error = None;
-            snapshot.volume = desired.volume;
-            snapshot.muted = desired.muted;
-        });
+        let idle = SnapshotAssembler::idle_snapshot(desired.volume, desired.muted);
+        self.hub.publish(idle);
         Ok(())
     }
 
@@ -399,12 +491,26 @@ impl PlayerService {
     }
 
     /// Live mpv statistics; fails when no session exists yet.
+    ///
+    /// The 800 ms wait for mpv happens **after** the session lock is released:
+    /// holding it across the wait queued every control command (play/pause,
+    /// seek) behind the info panel's poll, which is what made the bar feel
+    /// stuck while the panel was open. `Command::Stats` only needs the channel
+    /// sender, so the lock is only held long enough to clone it.
     pub fn stats(&self) -> Result<PlayerStats, String> {
-        let session = self.lock_session();
-        match session.as_ref() {
-            Some(active) => active.stats(std::time::Duration::from_millis(800)),
-            None => Err("player_stats: no active session".to_string()),
-        }
+        let sender = {
+            let session = self.lock_session();
+            match session.as_ref() {
+                Some(active) => active.command_sender(),
+                None => return Err(no_session_error("player_stats")),
+            }
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        sender
+            .send(PlayerCommand::Stats(tx))
+            .map_err(|err| format!("player_stats: mpv worker is not running ({err})"))?;
+        rx.recv_timeout(STATS_TIMEOUT)
+            .map_err(|err| format!("player_stats: mpv did not answer within {STATS_TIMEOUT:?} ({err})"))
     }
 
     pub fn subscribe(&self, channel: Channel<PlayerSnapshot>) -> Result<(), String> {
@@ -503,7 +609,7 @@ impl PlayerService {
             return;
         }
         let session = self.lock_session().take();
-        *self.lock_session_quality() = None;
+        *self.lock_session_key() = None;
         let mut clean = true;
         if let Some(mut session) = session {
             clean = session.shutdown(SHUTDOWN_TIMEOUT);
@@ -530,15 +636,29 @@ impl PlayerService {
         // the window procedure both check the destroyed flag / HWND validity.
     }
 
-    fn send(&self, command: PlayerCommand) -> Result<(), String> {
+    /// Queue a command that is only meaningful for a loaded stream.
+    ///
+    /// One rule for every such command (seek, tracks, ...): no session is an
+    /// error with the same wording, so the UI never gets `Ok(())` for a command
+    /// that did nothing. The old split — `set_paused` errored while `seek` and
+    /// `set_track` silently succeeded — is what made a dead session look alive.
+    ///
+    /// Volume/mute deliberately do *not* go through here: they are preferences
+    /// that outlive a session (see `set_volume`/`set_muted`).
+    fn dispatch(&self, command_name: &str, command: PlayerCommand) -> Result<(), String> {
         let session = self.lock_session();
         match session.as_ref() {
-            Some(active) => active.send(command).map_err(|err| err.to_string()),
-            // Controls before the first open are not an error: mpv simply has
-            // nothing to apply them to (volume/mute are persisted separately).
-            None => Ok(()),
+            Some(active) => active
+                .send(command)
+                .map_err(|err| format!("{command_name}: mpv worker is not running ({err})")),
+            None => Err(no_session_error(command_name)),
         }
     }
+}
+
+/// One wording for "this command needs an open stream".
+fn no_session_error(command_name: &str) -> String {
+    format!("{command_name}: no active mpv session (open a stream first)")
 }
 
 /// The libmpv file log is off unless `EMBY_MPV_LOG` is truthy at startup:
@@ -634,7 +754,10 @@ pub fn player_snapshot(state: State<'_, PlayerService>) -> Result<PlayerSnapshot
     Ok(state.snapshot())
 }
 
-#[tauri::command]
+// Runs on Tauri's thread pool: the 800 ms bound on mpv's reply must never be
+// paid on the main thread, which is shared with the webview and every window
+// message (same reasoning as `player_open`).
+#[tauri::command(async)]
 pub fn player_stats(state: State<'_, PlayerService>) -> Result<PlayerStats, String> {
     state.stats()
 }

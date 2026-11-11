@@ -31,6 +31,21 @@ impl Default for SnapshotAssembler {
 }
 
 impl SnapshotAssembler {
+    /// Canonical "nothing is loaded" snapshot, published by `player_stop`.
+    ///
+    /// Owned by the assembler so the idle shape has exactly one definition: the
+    /// app layer used to clear every field by hand, which silently drifted from
+    /// `reset_to_idle` whenever a field was added. Only the persisted volume and
+    /// mute carry over, so stopping does not make the bar jump back to 100 %.
+    ///
+    /// `seq` is left at 0: `SnapshotHub::publish` assigns it.
+    pub fn idle_snapshot(volume: f64, muted: bool) -> PlayerSnapshot {
+        let mut assembler = Self::new();
+        assembler.set_volume(volume);
+        assembler.set_muted(muted);
+        assembler.build()
+    }
+
     pub fn new() -> Self {
         Self {
             status: PlayerStatus::Idle,
@@ -351,6 +366,38 @@ mod tests {
         asm.begin_open(None);
         asm.on_file_loaded();
         asm
+    }
+
+    #[test]
+    fn idle_snapshot_is_canonical_and_keeps_volume() {
+        let snapshot = SnapshotAssembler::idle_snapshot(42.0, true);
+        assert_eq!(snapshot.status, STATUS_IDLE);
+        assert_eq!(snapshot.seq, 0, "the hub assigns seq");
+        assert_eq!(snapshot.volume, 42.0);
+        assert!(snapshot.muted);
+        assert_eq!(snapshot.position_seconds, 0.0);
+        assert_eq!(snapshot.duration_seconds, 0.0);
+        assert!(!snapshot.buffering);
+        assert_eq!(snapshot.video_width, 0);
+        assert_eq!(snapshot.video_height, 0);
+        assert!(snapshot.audio_tracks.is_empty());
+        assert!(snapshot.subtitle_tracks.is_empty());
+        assert!(snapshot.error.is_none());
+    }
+
+    #[test]
+    fn idle_snapshot_matches_a_stopped_assembler() {
+        // The whole point of the constructor: the hand-rolled idle shape in the
+        // app layer and `reset_to_idle` must not drift apart.
+        let mut asm = asm();
+        asm.set_volume(42.0);
+        asm.set_muted(true);
+        asm.on_stopped();
+        assert_eq!(
+            asm.build(),
+            SnapshotAssembler::idle_snapshot(42.0, true),
+            "idle_snapshot must equal a stopped assembler"
+        );
     }
 
     #[test]

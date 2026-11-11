@@ -6,9 +6,26 @@
 //! UI thread (the old project used `SetWindowSubclass`) is not thread safe, so
 //! we only ever:
 //! * move/show/hide the **host** window (owned by the main thread),
-//! * walk `EnumChildWindows` from a 120 ms timer and sync the geometry /
-//!   ex-style of **direct children** with `SWP_ASYNCWINDOWPOS`,
+//! * walk `EnumChildWindows` and sync the geometry / ex-style of **direct
+//!   children** with `SWP_ASYNCWINDOWPOS`,
 //! * assert the host is the top sibling (`GetWindow(host, GW_HWNDPREV) == null`).
+//!
+//! Child syncing is **event driven**, not polled. Every path that can make the
+//! host change size or gain a child ends in one synchronous
+//! `sync_direct_children` call:
+//! * `WM_SIZE` — the host was placed or resized (`apply_pending` runs on every
+//!   `video_sync`, so this covers the page moving or resizing the video rect,
+//!   window resizes and fullscreen),
+//! * `WM_PARENTNOTIFY` — a child of the host was created or destroyed (mpv
+//!   creates its VO window as a child of the host on its playback thread),
+//! * the host's own `WM_CREATE`, so a restarted host starts aligned.
+//!
+//! A slow `FALLBACK_INTERVAL_MS` timer remains **only** as a safety net: an
+//! out-of-band child creation (mpv setting `WS_EX_NOPARENTNOTIFY` suppresses
+//! `WM_PARENTNOTIFY`, and `SetWinEventHook` would need a different
+//! `windows-sys` feature set) must not leave the video permanently mis-sized
+//! on a machine we cannot debug. It does no Win32 work unless the child really
+//! is out of sync, so the steady-state cost is one timer tick per second.
 //!
 //! Coordinates: `VideoSync` is CSS pixels relative to the webview client area;
 //! `emby_mpv::resolve_placement` converts to physical pixels and clamps to the
@@ -37,17 +54,20 @@ mod imp {
         GWL_EXSTYLE, GW_HWNDPREV, HTTRANSPARENT, HWND_TOP, IDC_ARROW, MA_NOACTIVATE,
         SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
         SW_SHOWNA, WM_APP, WM_CREATE, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-        WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-        WS_EX_NOACTIVATE, WS_EX_NOPARENTNOTIFY, WS_EX_TRANSPARENT,
+        WM_PAINT, WM_PARENTNOTIFY, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
+        WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOPARENTNOTIFY, WS_EX_TRANSPARENT,
     };
 
     /// `WM_APP + 1`: "apply the latest `VideoSync`" (posted from IPC threads so
     /// the Win32 calls run on the window owner / main thread).
     pub(crate) const WM_EMBY_VIDEO_SYNC: u32 = WM_APP + 1;
 
-    /// Timer that keeps the mpv child aligned and the host on top.
+    /// Safety-net timer id. Geometry itself is event driven (see the module
+    /// docs); this only re-checks for a child window the events missed.
     const TIMER_ID: usize = 0xE1B1;
-    const TIMER_INTERVAL_MS: u32 = 120;
+    /// One second, not the old 120 ms: every in-band change already syncs
+    /// synchronously, so this only has to *eventually* repair a miss.
+    const FALLBACK_INTERVAL_MS: u32 = 1000;
 
     /// UTF-16 for "EmbyVideoHost" + NUL. Kept as a const so the pointer handed
     /// to `RegisterClassExW` stays valid for the process lifetime.
@@ -196,8 +216,14 @@ mod imp {
                 ));
             }
 
+            // One explicit sync at creation: put the host on top of the Tauri
+            // window's child stack and pick up any child that already exists.
+            // Everything after this is event driven (see the module docs); the
+            // timer below is only the safety net.
             unsafe {
-                SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, None);
+                maintain_z_order(hwnd);
+                sync_direct_children(hwnd);
+                SetTimer(hwnd, TIMER_ID, FALLBACK_INTERVAL_MS, None);
             }
 
             Ok(Self {
@@ -340,11 +366,34 @@ mod imp {
                 EndPaint(hwnd, &paint);
                 0
             }
+            // Safety net only (see the module docs): repair a child that was
+            // created without a WM_PARENTNOTIFY we could observe.
             WM_TIMER => {
-                if wparam == TIMER_ID {
+                if wparam == TIMER_ID && host_needs_repair(hwnd) {
                     maintain_z_order(hwnd);
                     sync_direct_children(hwnd);
                 }
+                0
+            }
+            // The host was placed or resized (apply_pending uses SetWindowPos).
+            //
+            // mpv's VO child does not follow its parent on its own, so it is
+            // re-aligned here instead of from a timer. `WM_SIZE` alone is enough:
+            // `DefWindowProcW` turns a position change into `WM_SIZE` for this
+            // window anyway, and a pure *move* needs no child sync at all — the
+            // child is laid out at `(0, 0)` inside the host client area, so only
+            // its size can drift.
+            WM_SIZE => {
+                DefWindowProcW(hwnd, msg, wparam, lparam);
+                sync_direct_children(hwnd);
+                0
+            }
+            // A child of the host is being created or destroyed. mpv creates its
+            // VO window on the playback thread, so this is the notification that
+            // replaces "poll until it shows up": syncing right away means the new
+            // child is never visible at the wrong size.
+            WM_PARENTNOTIFY => {
+                sync_direct_children(hwnd);
                 0
             }
             WM_EMBY_VIDEO_SYNC => {
@@ -369,10 +418,13 @@ mod imp {
     /// Host must be the topmost sibling of the Tauri window, above the WebView2
     /// child, otherwise the video hides behind the UI.
     ///
-    /// Runs from `WM_TIMER` on the host's owner thread, so `SetWindowPos` is a
+    /// Runs on the host's owner thread (from `WM_TIMER`), so `SetWindowPos` is a
     /// synchronous same-input-queue call. `SWP_ASYNCWINDOWPOS` would degrade to
     /// a normal call here (it only posts when the target belongs to another
     /// input queue), so it is omitted to keep the synchronous path explicit.
+    /// `WM_WINDOWPOSCHANGED` does not run this: `apply_pending` already places
+    /// the host with `HWND_TOP`, and re-entering `SetWindowPos` from that
+    /// message would recurse.
     unsafe fn maintain_z_order(hwnd: HWND) {
         let previous = GetWindow(hwnd, GW_HWNDPREV);
         if !previous.is_null() {
@@ -389,7 +441,10 @@ mod imp {
     }
 
     unsafe fn sync_direct_children(hwnd: HWND) {
-        let mut context = ChildSyncContext { host: hwnd };
+        let mut context = ChildSyncContext {
+            host: hwnd,
+            stale: false,
+        };
         EnumChildWindows(
             hwnd,
             Some(sync_child_proc),
@@ -397,8 +452,52 @@ mod imp {
         );
     }
 
+    /// True when the host is not the top sibling or a direct child is missing
+    /// the click-through ex-style bits / does not match the host client area.
+    ///
+    /// The safety-net timer only does its Win32 work when this returns true, so
+    /// a healthy session costs one `GetWindow` + `EnumChildWindows` +
+    /// `GetClientRect` per second and nothing else.
+    unsafe fn host_needs_repair(hwnd: HWND) -> bool {
+        if !GetWindow(hwnd, GW_HWNDPREV).is_null() {
+            return true;
+        }
+        let mut context = ChildSyncContext {
+            host: hwnd,
+            stale: false,
+        };
+        EnumChildWindows(
+            hwnd,
+            Some(stale_child_proc),
+            &mut context as *mut ChildSyncContext as LPARAM,
+        );
+        context.stale
+    }
+
+    unsafe extern "system" fn stale_child_proc(child: HWND, lparam: LPARAM) -> i32 {
+        let context = &mut *(lparam as *mut ChildSyncContext);
+        if GetParent(child) != context.host {
+            return 1;
+        }
+        let mut host_rect = RECT::default();
+        let mut child_rect = RECT::default();
+        let size_ok = GetClientRect(context.host, &mut host_rect) != 0
+            && GetClientRect(child, &mut child_rect) != 0
+            && child_rect.right == host_rect.right
+            && child_rect.bottom == host_rect.bottom;
+        let style = GetWindowLongPtrW(child, GWL_EXSTYLE) as u32;
+        let style_ok = style | HOST_EX_STYLE == style;
+        if !size_ok || !style_ok {
+            context.stale = true;
+            return 0; // stop enumerating: one stale child is enough to act.
+        }
+        1
+    }
+
     struct ChildSyncContext {
         host: HWND,
+        /// Set by `stale_child_proc`; unused by the syncing walk.
+        stale: bool,
     }
 
     /// Only direct children belong to mpv's VO. Nested windows are left alone.

@@ -80,7 +80,6 @@ pub struct PlayerSession {
     tx: Sender<PlayerCommand>,
     join: Option<JoinHandle<()>>,
     done: Receiver<()>,
-    hub: Arc<SnapshotHub>,
 }
 
 impl PlayerSession {
@@ -108,26 +107,25 @@ impl PlayerSession {
             tx,
             join: Some(join),
             done: done_rx,
-            hub,
         })
-    }
-
-    pub fn hub(&self) -> &Arc<SnapshotHub> {
-        &self.hub
     }
 
     pub fn send(&self, command: PlayerCommand) -> Result<(), MpvError> {
         self.tx.send(command).map_err(|_| MpvError::NotStarted)
     }
 
-    /// Read mpv statistics from the worker thread (bounded wait).
-    pub fn stats(&self, timeout: Duration) -> Result<PlayerStats, String> {
-        let (tx, rx) = mpsc::channel();
-        self.tx
-            .send(PlayerCommand::Stats(tx))
-            .map_err(|err| err.to_string())?;
-        rx.recv_timeout(timeout).map_err(|err| err.to_string())
+    /// A cloneable handle that can queue commands without borrowing the
+    /// session.
+    ///
+    /// Needed for the one bounded wait in the command surface: `player_stats`
+    /// blocks up to 800 ms for mpv, and doing that while holding the session
+    /// mutex froze every control command behind it (play/pause was queued for
+    /// almost a second whenever the info panel polled). Callers clone this, drop
+    /// the lock, and wait outside it.
+    pub fn command_sender(&self) -> Sender<PlayerCommand> {
+        self.tx.clone()
     }
+
 
     /// Ask the worker to quit, wait up to `timeout`, then join.
     ///
@@ -581,7 +579,7 @@ fn refresh_tracks(core: &MpvCore<'_>, assembler: &mut SnapshotAssembler) {
         let Some(kind) = core
             .get_property_string(&format!("{prefix}/type"))
             .as_deref()
-            .and_then(TrackKind::from_mpv)
+            .and_then(TrackKind::parse)
         else {
             continue;
         };
