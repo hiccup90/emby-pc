@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PlayerSnapshot, PlayerStatus, PlayerTrack } from "./contract";
+import type { PlayerSnapshot, PlayerTrack } from "./contract";
 import {
   createPlayerChannel,
   describeError,
@@ -10,30 +10,11 @@ import {
   invokePlayerSetPaused,
   invokePlayerSetTrack,
   invokePlayerSetVolume,
-  invokePlayerSnapshot,
   invokePlayerSubscribe,
   invokePlayerToggleFullscreen,
 } from "./tauri";
 
-export type PlayerTrackKind = PlayerTrack["type"];
-
-export interface PlayerSession {
-  isDesktop: boolean;
-  snapshot: PlayerSnapshot | null;
-  status: PlayerStatus;
-  error: string | null;
-  isOpening: boolean;
-  sourceUrl: string | null;
-  isFullscreen: boolean;
-  open: (url: string, startSeconds?: number) => Promise<boolean>;
-  togglePlayback: () => Promise<void>;
-  seek: (seconds: number) => Promise<boolean>;
-  setVolume: (volume: number) => Promise<void>;
-  toggleMuted: () => Promise<void>;
-  selectTrack: (kind: PlayerTrackKind, id: number) => Promise<void>;
-  toggleFullscreen: () => Promise<void>;
-  dismissError: () => void;
-}
+type PlayerTrackKind = PlayerTrack["type"];
 
 const PREVIEW_DURATION_SECONDS = 96 * 60;
 
@@ -93,13 +74,12 @@ function normalizeSourceUrl(rawUrl: string): string {
   }
 }
 
-export function usePlayer(): PlayerSession {
+export function usePlayer() {
   const isDesktop = hasTauriRuntime();
   const [snapshot, setSnapshot] = useState<PlayerSnapshot | null>(() =>
     isDesktop ? null : createIdleSnapshot(),
   );
   const [error, setError] = useState<string | null>(null);
-  const [isOpening, setIsOpening] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const mountedRef = useRef(true);
@@ -133,15 +113,8 @@ export function usePlayer(): PlayerSession {
       }
     });
 
-    void invokePlayerSnapshot()
-      .then((next) => {
-        if (!cancelled) acceptSnapshot(next);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError((current) => current ?? describeError(reason, "无法读取播放器状态"));
-        }
-      });
+    // `player_subscribe` delivers the current snapshot to the new sink right
+    // away (SnapshotHub::set_sink), so no extra `player_snapshot` fetch is owed.
 
     return () => {
       cancelled = true;
@@ -187,7 +160,6 @@ export function usePlayer(): PlayerSession {
       const resumeAt = Number.isFinite(startSeconds) ? Math.max(0, startSeconds) : 0;
       setError(null);
       if (!isDesktop) {
-        setIsOpening(true);
         setSnapshot((previous) => {
           const base = createPreviewSnapshot(
             previous?.volume ?? 72,
@@ -197,11 +169,9 @@ export function usePlayer(): PlayerSession {
           return { ...base, seq: (previous?.seq ?? 0) + 1 };
         });
         setSourceUrl(url);
-        setIsOpening(false);
         return true;
       }
 
-      setIsOpening(true);
       lastSeqRef.current = -1;
       try {
         const next = await invokePlayerOpen({ url, startSeconds: resumeAt });
@@ -218,8 +188,6 @@ export function usePlayer(): PlayerSession {
           setError(describeError(reason, "无法打开播放地址"));
         }
         return false;
-      } finally {
-        if (mountedRef.current) setIsOpening(false);
       }
     },
     [isDesktop],
@@ -414,14 +382,11 @@ export function usePlayer(): PlayerSession {
     }
   }, [isDesktop]);
 
-  const dismissError = useCallback(() => setError(null), []);
-
   return {
     isDesktop,
     snapshot,
     status: snapshot?.status ?? "idle",
     error,
-    isOpening,
     sourceUrl,
     isFullscreen,
     open,
@@ -431,6 +396,5 @@ export function usePlayer(): PlayerSession {
     toggleMuted,
     selectTrack,
     toggleFullscreen,
-    dismissError,
   };
 }

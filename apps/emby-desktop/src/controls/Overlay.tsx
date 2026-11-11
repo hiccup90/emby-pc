@@ -9,13 +9,12 @@ import type { OverlayAction } from "./contract";
 import {
   createPreviewMeta,
   createPreviewSnapshot,
+  createPreviewStats,
   dragOverlayWindow,
-  fetchPlayerSnapshot,
   hasTauriRuntime,
-  onOverlayMeta,
-  onOverlayStats,
+  onOverlayState,
   onOverlayWake,
-  requestOverlayMeta,
+  requestOverlayState,
   sendOverlayAction,
   setOverlayExpanded,
   setOverlayInteractive,
@@ -24,7 +23,6 @@ import { OverlayIcon } from "./icons";
 import "./overlay.css";
 
 const AUTO_HIDE_MS = 2500;
-const SNAPSHOT_POLL_MS = 250;
 const SEEK_STEP_SECONDS = 10;
 const SEEK_HOLD_MS = 900;
 const VOLUME_HOLD_MS = 700;
@@ -298,13 +296,19 @@ export default function Overlay() {
   );
   const [visible, setVisible] = useState(true);
   const [menu, setMenu] = useState<"audio" | "subtitle" | "chapters" | "info" | null>(null);
-  const [stats, setStats] = useState<PlayerStats | null>(null);
+  const [stats, setStats] = useState<PlayerStats | null>(() =>
+    hasTauriRuntime() ? null : createPreviewStats(),
+  );
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [meta, setMeta] = useState<PlaybackMeta | null>(() =>
     hasTauriRuntime() ? null : createPreviewMeta(),
   );
+  /** Playback failure reported by the player page (player_open/seek/pause). */
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  /** Non-failure status line: ended, auto-play hand-off. */
+  const [notice, setNotice] = useState<string | null>(null);
 
   const snapshotRef = useRef<PlayerSnapshot | null>(snapshot);
   const visibleRef = useRef(true);
@@ -334,8 +338,8 @@ export default function Overlay() {
   }, [clearAutoHide]);
 
   // Only real state changes (playing/buffering/menu and visibility) arm the
-  // timer. It lives in a ref so the 250 ms snapshot poll cannot rebuild it and
-  // restart the fade on every render.
+  // timer. It lives in a ref so a state broadcast (several per second while
+  // playing) cannot rebuild it and restart the fade on every render.
   const scheduleAutoHide = useCallback(() => {
     clearAutoHide();
     if (!visibleRef.current || !autoHideAllowedRef.current) return;
@@ -378,34 +382,40 @@ export default function Overlay() {
     [desktop, wake],
   );
 
-  // ---- snapshot polling ----------------------------------------------------
+  // ---- unified player state ------------------------------------------------
+  // One subscription, one ordering latch: the player page broadcasts snapshot,
+  // meta, stats, error and notice together, so nothing here is polled and two
+  // messages can never be merged into a state that never existed.
   useEffect(() => {
     if (!desktop) return;
-    let cancelled = false;
-    let inFlight = false;
-
-    const poll = () => {
-      if (inFlight) return;
-      inFlight = true;
-      void fetchPlayerSnapshot()
-        .then((next) => {
-          if (cancelled || !next) return;
-          snapshotRef.current = next;
-          setSnapshot(next);
-        })
-        .catch(() => {
-          // The main window surfaces player errors; polling is best-effort.
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-
-    poll();
-    const timer = window.setInterval(poll, SNAPSHOT_POLL_MS);
+    let disposed = false;
+    let lastStamp = 0;
+    let stop: (() => void) | null = null;
+    void onOverlayState((state) => {
+      if (state.stamp <= lastStamp) return;
+      lastStamp = state.stamp;
+      if (state.snapshot) {
+        snapshotRef.current = state.snapshot;
+        setSnapshot(state.snapshot);
+      }
+      setMeta(state.meta);
+      setStats(state.stats);
+      setPlayerError(state.error);
+      setNotice(state.notice);
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        stop = unlisten;
+      })
+      .catch((reason) => {
+        console.warn("[overlay] could not subscribe to the player state", reason);
+      });
     return () => {
-      cancelled = true;
-      window.clearInterval(timer);
+      disposed = true;
+      stop?.();
     };
   }, [desktop]);
 
@@ -482,68 +492,22 @@ export default function Overlay() {
     };
   }, [desktop, wake]);
 
-  // ---- title row ------------------------------------------------------------
-  // The player page pushes PlaybackMeta; a late or reloaded controls window
-  // asks for it once its listener is in place.
+  // ---- statistics demand ---------------------------------------------------
+  // mpv statistics are only read while the info panel is open: the request both
+  // starts and stops the stream in the player page, so nothing polls for a
+  // panel nobody is looking at. Every request also makes the player page resend
+  // the current state, so the first run doubles as the (re)load sync — that is
+  // why the ref starts as "unknown" instead of `false`.
+  const statsWantedRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (!desktop) return;
-    let disposed = false;
-    let lastStamp = 0;
-    let unlisten: (() => void) | null = null;
-    void onOverlayMeta((message) => {
-      if (message.stamp <= lastStamp) return;
-      lastStamp = message.stamp;
-      setMeta(message.meta);
-    })
-      .then((stop) => {
-        if (disposed) {
-          stop();
-          return;
-        }
-        unlisten = stop;
-        return requestOverlayMeta();
-      })
-      .catch((reason) => {
-        console.warn("[overlay] could not sync the title row", reason);
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [desktop]);
-
-  // Live mpv statistics for the info panel; null until the main window pushes.
-  useEffect(() => {
-    if (!desktop) {
-      // Browser preview: fixed sample so the panel can be inspected.
-      setStats({
-        hwdec: "d3d11va",
-        vo: "gpu-next",
-        pixelFormat: "p010",
-        videoCodec: "hevc (Main 10)",
-        displayFps: 59.94,
-        videoFps: 23.976,
-        droppedFrames: 0,
-        bitrate: 18_400_000,
-      });
-      return;
-    }
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void onOverlayStats((value) => {
-      if (!disposed) setStats(value);
-    })
-      .then((stop) => {
-        unlisten = stop;
-      })
-      .catch((reason) => {
-        console.warn("[overlay] could not subscribe to player stats", reason);
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [desktop]);
+    const wanted = menu === "info";
+    if (statsWantedRef.current === wanted) return;
+    statsWantedRef.current = wanted;
+    void requestOverlayState({ stats: wanted }).catch((reason) => {
+      console.warn("[overlay] could not change the statistics demand", reason);
+    });
+  }, [desktop, menu]);
 
   // ---- auto hide -----------------------------------------------------------
   const status = snapshot?.status ?? "idle";
@@ -571,8 +535,13 @@ export default function Overlay() {
   const subtitleTitle = selectedSubtitle
     ? trackLabel(selectedSubtitle, "字幕").title
     : "关闭";
+  // A failure from the player page (player_open, seek, pause) is a real error
+  // even when mpv itself still reports "playing": the native video window
+  // covers the main window's own error text, so this is the only place the user
+  // can see it. `sendError` is local (an action could not be delivered) and is
+  // shown too, but it has no retry because the player never heard about it.
   const errorMessage =
-    status === "error" ? snapshot?.error ?? "播放错误" : null;
+    playerError ?? (status === "error" ? snapshot?.error ?? "播放错误" : null);
   const options = useMemo(
     () => trackOptions(menu === "audio" || menu === "subtitle" ? menu : null, snapshot),
     [menu, snapshot],
@@ -784,8 +753,14 @@ export default function Overlay() {
   const displayError = errorMessage ?? sendError;
   const timeText =
     duration > 0 ? `${formatTime(boundedPosition)} / ${formatTime(duration)}` : null;
+  // The player page owns the wording ("播放结束，正在播放下一集…"): the same line
+  // exists in the main window but the native video covers it, so the ends of a
+  // playback and the auto-play hand-off only ever surface here.
   const statusText =
-    status === "loading" ? "正在载入…" : buffering && status === "playing" ? "缓冲中" : null;
+    notice ??
+    (status === "loading" ? "正在载入…" : buffering && status === "playing" ? "缓冲中" : null);
+  const busy =
+    status === "loading" || (buffering && status === "playing");
   const titleText = meta?.title || null;
   const secondLine = displayError ?? meta?.subtitle ?? null;
   const thirdLine = [statusText, timeText].filter(Boolean).join(" · ") || null;
@@ -824,7 +799,9 @@ export default function Overlay() {
             <div className="ov-menu__list" role="menu" aria-label={`选择${menuLabel}`}>
               {menu === "info" ? (
                 infoRows.length === 0 ? (
-                  <span className="ov-menu__empty">暂无播放信息</span>
+                  <span className="ov-menu__empty">
+                    {stats === null ? "正在读取播放信息…" : "暂无播放信息"}
+                  </span>
                 ) : (
                   infoRows.map((row) => (
                     <div className="ov-menu__option ov-menu__option--static" key={row.label}>
@@ -952,7 +929,7 @@ export default function Overlay() {
               )}
               {thirdLine && (
                 <span className="ov-meta__time">
-                  {statusText && <span className="ov-spinner" aria-hidden="true" />}
+                  {busy && <span className="ov-spinner" aria-hidden="true" />}
                   {thirdLine}
                 </span>
               )}
@@ -1048,7 +1025,7 @@ export default function Overlay() {
               onPointerDown={actionPointerDown(() => toggleMenu("info"))}
               onKeyDown={actionKeyDown(() => toggleMenu("info"))}
               onClick={swallowClick}
-              disabled={!hasMedia || !stats}
+              disabled={!hasMedia}
               aria-label="播放信息"
               title="播放信息"
               aria-haspopup="menu"

@@ -4,17 +4,21 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   invokePlayerUiMode,
-  onOverlayMetaRequest,
-  publishOverlayMeta,
-  publishOverlayStats,
+  onOverlayRequest,
+  publishOverlayState,
 } from "../controls/bridge";
-import type { OverlayAction } from "../controls/contract";
+import type { OverlayAction, OverlayStateInput } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
 import { reportEmbyPlayback } from "../emby/playback";
-import type { PlaybackMeta, PlayerStatus } from "./contract";
+import type { PlaybackMeta, PlayerStats, PlayerStatus } from "./contract";
 import { invokePlayerStats, invokePlayerStop } from "./tauri";
 import { usePlayer } from "./usePlayer";
 import { useVideoSync } from "./useVideoSync";
+
+/** Coalescing window for position-only overlay updates (mpv reports several per second). */
+const OVERLAY_STATE_THROTTLE_MS = 250;
+/** Info-panel statistics cadence; runs only while that panel is open. */
+const STATS_POLL_MS = 1500;
 
 function statusLabel(status: PlayerStatus): string {
   const labels: Record<PlayerStatus, string> = {
@@ -240,26 +244,40 @@ export default function PlayerPage({
     writeTrackPreference(trackScope, preference);
   }, [snapshot, trackScope, playbackKey]);
 
-  // Push mpv statistics to the controls window (info panel) while playing.
+  // mpv statistics exist only while the overlay's info panel is open: the
+  // controls window asks for them (overlay-request {stats:true}) and drops the
+  // demand when the panel closes, which stops this stream entirely.
+  const [statsWanted, setStatsWanted] = useState(false);
+  const [stats, setStats] = useState<PlayerStats | null>(null);
+
   useEffect(() => {
-    if (!isDesktop || !playback) return;
+    if (!isDesktop || !playback || !statsWanted) {
+      setStats(null);
+      return;
+    }
     let disposed = false;
+    // One request in flight at a time: `player_stats` waits up to 800 ms for
+    // mpv, so a 1.5 s timer can otherwise queue overlapping requests.
+    let inFlight = false;
     const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const stats = await invokePlayerStats();
-        if (!disposed) await publishOverlayStats(stats);
+        const next = await invokePlayerStats();
+        if (!disposed) setStats(next);
       } catch {
-        if (!disposed) await publishOverlayStats(null).catch(() => undefined);
+        if (!disposed) setStats(null);
+      } finally {
+        inFlight = false;
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 1500);
+    const timer = window.setInterval(() => void poll(), STATS_POLL_MS);
     return () => {
       disposed = true;
       window.clearInterval(timer);
-      void publishOverlayStats(null).catch(() => undefined);
     };
-  }, [isDesktop, playback]);
+  }, [isDesktop, playback, statsWanted]);
 
   // Auto-play the next queued episode shortly after the current one ends.
   useEffect(() => {
@@ -427,29 +445,116 @@ export default function PlayerPage({
     overlayActionRef.current = handleOverlayAction;
   }, [handleOverlayAction]);
 
-  // Title row of the controls window. It is a separate webview, so the meta is
-  // pushed on change, resent when that window (re)loads and asks, and cleared
-  // when the player page goes away.
-  const metaTitle = meta?.title ?? null;
-  const metaSubtitle = meta?.subtitle ?? null;
-  const overlayMetaRef = useRef<PlaybackMeta | null>(null);
+  // ---- unified overlay state ------------------------------------------------
+  // The controls window is a separate webview that never polls: this page owns
+  // the player state and broadcasts the whole surface (snapshot + meta + stats
+  // + error) in one message, so what the controls show can never be a mix of
+  // two different instants. Position-only changes are coalesced; anything the
+  // user can act on (status, error, meta, tracks, volume) goes out at once.
+  const errorText = error ?? (snapshot?.status === "error" ? snapshot.error : null);
+
+  /** Never a failure: "ended" and the auto-play hand-off need a status line too. */
+  const notice =
+    status === "ended"
+      ? onNext && !nextUnavailable
+        ? "播放结束，正在播放下一集…"
+        : "播放结束"
+      : null;
+
+  const overlayStateRef = useRef<OverlayStateInput>({
+    snapshot: null,
+    meta: null,
+    stats: null,
+    error: null,
+    notice: null,
+  });
+  const lastPublishAtRef = useRef(0);
+  const publishTimerRef = useRef<number | null>(null);
+  const lastSignatureRef = useRef("");
+
+  const flushOverlayState = useCallback(() => {
+    if (publishTimerRef.current !== null) {
+      window.clearTimeout(publishTimerRef.current);
+      publishTimerRef.current = null;
+    }
+    lastPublishAtRef.current = Date.now();
+    void publishOverlayState(overlayStateRef.current).catch((reason: unknown) => {
+      console.warn("[player] could not publish the overlay state", reason);
+    });
+  }, []);
+
+  /**
+   * `urgent` bypasses the throttle. A position tick is not urgent; a play/pause,
+   * a track switch or an error is, because the controls window has no other way
+   * to learn about it.
+   */
+  const scheduleOverlayState = useCallback(
+    (urgent: boolean) => {
+      const now = Date.now();
+      const elapsed = now - lastPublishAtRef.current;
+      if (urgent || elapsed >= OVERLAY_STATE_THROTTLE_MS) {
+        flushOverlayState();
+        return;
+      }
+      if (publishTimerRef.current !== null) return;
+      publishTimerRef.current = window.setTimeout(() => {
+        publishTimerRef.current = null;
+        flushOverlayState();
+      }, OVERLAY_STATE_THROTTLE_MS - elapsed);
+    },
+    [flushOverlayState],
+  );
+
+  /** Everything except the position must reach the overlay without delay. */
+  const stateSignature = [
+    snapshot?.status ?? "idle",
+    snapshot?.audioTracks.find((track) => track.selected)?.id ?? "none",
+    snapshot?.subtitleTracks.find((track) => track.selected)?.id ?? "none",
+    snapshot?.volume ?? 0,
+    snapshot?.muted ?? false,
+    snapshot?.durationSeconds ?? 0,
+    errorText ?? "",
+    notice ?? "",
+    meta?.title ?? "",
+    meta?.subtitle ?? "",
+    meta?.chapters?.length ?? 0,
+    stats ? 1 : 0,
+  ].join("|");
+
   useEffect(() => {
     if (!isDesktop) return;
-    const next = metaTitle ? { title: metaTitle, subtitle: metaSubtitle } : null;
-    overlayMetaRef.current = next;
-    void publishOverlayMeta(next).catch((reason: unknown) => {
-      console.warn("[player] could not send the title to the controls", reason);
-    });
-  }, [isDesktop, metaTitle, metaSubtitle]);
+    overlayStateRef.current = {
+      snapshot: snapshot ?? null,
+      // The whole meta, chapters included — the controls render the chapter
+      // menu and the seek markers from it.
+      meta: meta ?? null,
+      stats: stats ?? null,
+      error: errorText,
+      notice,
+    };
+    const urgent = stateSignature !== lastSignatureRef.current;
+    lastSignatureRef.current = stateSignature;
+    scheduleOverlayState(urgent);
+  }, [errorText, isDesktop, meta, notice, scheduleOverlayState, snapshot, stateSignature, stats]);
 
+  useEffect(() => {
+    return () => {
+      if (publishTimerRef.current !== null) {
+        window.clearTimeout(publishTimerRef.current);
+        publishTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // A (re)loaded controls window asks once for the current state and states
+  // whether it wants the statistics stream; the answer is always a full resend.
   useEffect(() => {
     if (!isDesktop) return;
     let disposed = false;
     let stop: (() => void) | null = null;
-    void onOverlayMetaRequest(() => {
-      void publishOverlayMeta(overlayMetaRef.current).catch(() => {
-        // Best effort: the next change sends it again.
-      });
+    void onOverlayRequest((request) => {
+      if (typeof request?.stats === "boolean") setStatsWanted(request.stats);
+      scheduleOverlayState(true);
     })
       .then((unlisten) => {
         if (disposed) {
@@ -459,17 +564,25 @@ export default function PlayerPage({
         stop = unlisten;
       })
       .catch((reason: unknown) => {
-        console.warn("[player] could not listen for overlay-meta-request", reason);
+        console.warn("[player] could not listen for overlay requests", reason);
       });
     return () => {
       disposed = true;
       stop?.();
-      overlayMetaRef.current = null;
-      void publishOverlayMeta(null).catch(() => {
+      // Leaving the player clears the controls window: it must not keep the
+      // last item's title, chapters or error on screen.
+      overlayStateRef.current = {
+        snapshot: null,
+        meta: null,
+        stats: null,
+        error: null,
+        notice: null,
+      };
+      void publishOverlayState(overlayStateRef.current).catch(() => {
         // The controls window may already be hidden or gone.
       });
     };
-  }, [isDesktop]);
+  }, [isDesktop, scheduleOverlayState]);
 
   // The overlay window is a separate webview: player intents arrive as events
   // so pause/seek/stop reporting stays in this window.
@@ -572,24 +685,20 @@ export default function PlayerPage({
     togglePlayback,
   ]);
 
-  const errorText =
-    error ?? (snapshot?.status === "error" ? snapshot.error : null);
-
-  // One short line at most: the video is the page.
+  // One short line at most: the video is the page and covers this text on a
+  // real machine — the same strings go to the controls window as `error` and
+  // `notice`, which is what the user actually sees.
   const hint = !isDesktop
     ? "需要桌面环境"
     : errorText ??
+      notice ??
       (status === "error"
         ? "播放失败"
         : status === "idle"
           ? "等待播放"
           : status === "loading"
             ? "正在载入"
-            : status === "ended"
-              ? onNext && !nextUnavailable
-                ? "播放结束，正在播放下一集…"
-                : "播放结束"
-              : null);
+            : null);
 
   return (
     <main

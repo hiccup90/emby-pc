@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { PlaybackMeta, PlayerSnapshot, PlayerStats } from "../player/contract";
-import type { OverlayAction, OverlayMetaMessage, OverlayUiMode } from "./contract";
+import type {
+  OverlayAction,
+  OverlayRequest,
+  OverlayState,
+  OverlayStateInput,
+  OverlayUiMode,
+} from "./contract";
 
 type TauriAwareWindow = Window & { __TAURI_INTERNALS__?: unknown };
 
@@ -43,60 +49,49 @@ export async function onOverlayWake(handler: () => void): Promise<() => void> {
   return listen("overlay-wake", () => handler());
 }
 
-/** Overlay window: poll the shared snapshot (no Channel subscription here). */
-export async function fetchPlayerSnapshot(): Promise<PlayerSnapshot> {
-  return invoke<PlayerSnapshot>("player_snapshot");
-}
+// ---- unified player state (main -> controls) --------------------------------
 
-// ---- title row (PlaybackMeta) ---------------------------------------------------
+const STATE_EVENT = "overlay-state";
+const REQUEST_EVENT = "overlay-request";
 
-const META_EVENT = "overlay-meta";
-const META_REQUEST_EVENT = "overlay-meta-request";
-let lastMetaStamp = 0;
+let lastStateStamp = 0;
 
 /** Grows across sends and across reloads of either window (wall clock based). */
-function nextMetaStamp(): number {
-  lastMetaStamp = Math.max(Date.now(), lastMetaStamp + 1);
-  return lastMetaStamp;
+function nextStateStamp(): number {
+  lastStateStamp = Math.max(Date.now(), lastStateStamp + 1);
+  return lastStateStamp;
 }
 
-/** Main window: show (or, with null, clear) the title row of the controls. */
-export async function publishOverlayMeta(meta: PlaybackMeta | null): Promise<void> {
-  const message: OverlayMetaMessage = { stamp: nextMetaStamp(), meta };
-  await emitTo("controls", META_EVENT, message);
+/**
+ * Main window: broadcast the whole player surface to the controls window. One
+ * message carries snapshot, meta, stats and error, so the overlay keeps a
+ * single ordering latch instead of merging three independent streams.
+ */
+export async function publishOverlayState(input: OverlayStateInput): Promise<void> {
+  const message: OverlayState = { stamp: nextStateStamp(), ...input };
+  await emitTo("controls", STATE_EVENT, message);
 }
 
-/** Main window: the controls window (re)loaded and asks for the title row. */
-export async function onOverlayMetaRequest(handler: () => void): Promise<() => void> {
-  return listen(META_REQUEST_EVENT, () => handler());
-}
-
-/** Overlay window: title-row updates from the player page. */
-export async function onOverlayMeta(
-  handler: (message: OverlayMetaMessage) => void,
+/** Overlay window: the single subscription for every piece of player state. */
+export async function onOverlayState(
+  handler: (state: OverlayState) => void,
 ): Promise<() => void> {
-  return listen<OverlayMetaMessage>(META_EVENT, (event) => handler(event.payload));
+  return listen<OverlayState>(STATE_EVENT, (event) => handler(event.payload));
 }
 
-/** Overlay window: ask the player page to resend the current title row. */
-export async function requestOverlayMeta(): Promise<void> {
-  await emitTo("main", META_REQUEST_EVENT, null);
+/**
+ * Overlay window: ask the player page to resend the state, and to start/stop the
+ * statistics stream. Sent on mount and whenever the info panel opens/closes.
+ */
+export async function requestOverlayState(request: OverlayRequest): Promise<void> {
+  await emitTo("main", REQUEST_EVENT, request);
 }
 
-// ---- playback statistics (PlayerStats) ---------------------------------------------
-
-const STATS_EVENT = "overlay-stats";
-
-/** Main window: push the latest mpv statistics to the controls window. */
-export async function publishOverlayStats(stats: PlayerStats | null): Promise<void> {
-  await emitTo("controls", STATS_EVENT, stats);
-}
-
-/** Overlay window: statistics updates from the player page. */
-export async function onOverlayStats(
-  handler: (stats: PlayerStats | null) => void,
+/** Main window: a controls window (re)loaded, or its stats demand changed. */
+export async function onOverlayRequest(
+  handler: (request: OverlayRequest) => void,
 ): Promise<() => void> {
-  return listen<PlayerStats | null>(STATS_EVENT, (event) => handler(event.payload));
+  return listen<OverlayRequest>(REQUEST_EVENT, (event) => handler(event.payload));
 }
 
 // ---- browser-only preview ----------------------------------------------------------
@@ -124,7 +119,7 @@ export function readPreviewState(): PreviewState {
 
 /**
  * Browser-only preview state so `controls.html` can be opened alone with Vite.
- * Real snapshots always come from `player_snapshot`.
+ * Real states always arrive through `overlay-state`.
  */
 export function createPreviewSnapshot(
   state: PreviewState = readPreviewState(),
@@ -176,5 +171,19 @@ export function createPreviewMeta(): PlaybackMeta {
       { seconds: 1500, title: "第三幕" },
       { seconds: 2100, title: "结尾" },
     ],
+  };
+}
+
+/** Preview statistics for the info panel (the real ones come from mpv). */
+export function createPreviewStats(): PlayerStats {
+  return {
+    hwdec: "d3d11va",
+    vo: "gpu-next",
+    pixelFormat: "p010",
+    videoCodec: "hevc (Main 10)",
+    displayFps: 59.94,
+    videoFps: 23.976,
+    droppedFrames: 0,
+    bitrate: 18_400_000,
   };
 }

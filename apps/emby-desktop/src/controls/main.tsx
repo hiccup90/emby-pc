@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import Overlay from "./Overlay";
+import { OVERLAY_BAR_HEIGHT, OVERLAY_PANEL_HEIGHT } from "./contract";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
   const icon = document.createElement("link");
@@ -8,6 +9,15 @@ if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]
   icon.href = "data:,";
   document.head.append(icon);
 }
+
+/**
+ * `contract.ts` owns the overlay layout numbers; publish them as CSS variables
+ * so `overlay.css` can lay the bar and the panel out without repeating them.
+ * Rust keeps the same values for the actual window geometry.
+ */
+const root = document.documentElement;
+root.style.setProperty("--ov-bar-h", `${OVERLAY_BAR_HEIGHT}px`);
+root.style.setProperty("--ov-panel-h", `${OVERLAY_PANEL_HEIGHT}px`);
 
 const rootElement = document.getElementById("overlay-root");
 if (!rootElement) {

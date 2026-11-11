@@ -91,10 +91,6 @@ export async function invokePlayerStop(): Promise<void> {
   await invoke<void>("player_stop");
 }
 
-export async function invokePlayerSnapshot(): Promise<PlayerSnapshot> {
-  return invoke<PlayerSnapshot>("player_snapshot");
-}
-
 export async function invokePlayerStats(): Promise<PlayerStats> {
   return invoke<PlayerStats>("player_stats");
 }

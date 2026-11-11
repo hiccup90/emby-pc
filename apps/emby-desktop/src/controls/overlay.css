@@ -3,32 +3,26 @@
  * a flat dark band at the bottom whose top edge carries the seek line, title
  * block left, transport centre, volume / tracks / fullscreen right.
  *
- * Window: 96 px collapsed, 352 px expanded (bar + track popover), bottom-anchored
- * over the video and inset by the resize band. Keep the heights in sync with
- * COLLAPSED_HEIGHT / EXPANDED_HEIGHT in src-tauri/src/overlay.rs and
- * OVERLAY_BAR_HEIGHT / OVERLAY_EXPANDED_HEIGHT in contract.ts.
+ * Window: collapsed bar + expanded track popover, bottom-anchored over the video
+ * and inset by the resize band. The two heights are NOT repeated here: `controls/main.tsx` publishes `--ov-bar-h` and `--ov-panel-h` from the
+ * OVERLAY_* constants in contract.ts, which mirror COLLAPSED_HEIGHT /
+ * EXPANDED_HEIGHT in src-tauri/src/overlay.rs.
  * Colours and type follow the main-window tokens in src/styles.css.
  */
 
 :root {
   color-scheme: dark;
-  /* Layout (logical px). */
-  --ov-bar-h: 96px;
-  --ov-panel-h: 256px; /* 352 - 96 */
+  /* Set from contract.ts at startup (see controls/main.tsx). */
   --ov-seek-h: 24px;
   --ov-band-top: 12px; /* seek line sits on the band edge */
   /* Main-window tokens (src/styles.css). */
   --ov-accent: #e5a00d;
-  --ov-accent-hover: #f3b52f;
   --ov-accent-ink: #1f2326;
   /* Plex Web's player seek fill is a darker orange than the UI accent. */
   --ov-seek-fill: #cc7b19;
   --ov-text: #eeeeee;
   --ov-text-2: rgba(255, 255, 255, 0.75);
   --ov-text-3: rgba(255, 255, 255, 0.5);
-  --ov-surface: #2b2f33;
-  --ov-surface-raised: #33383c;
-  --ov-bg-deep: #191b1e;
   --ov-danger: #e5656b;
   --ov-radius: 4px;
   --ov-radius-menu: 6px;
@@ -108,7 +102,7 @@ input:focus:not(:focus-visible) {
   pointer-events: auto;
 }
 
-/* Expanded part: 352 - 96 = 256 px above the bar. The window always has the
+/* Expanded part: the panel height above the bar (`--ov-panel-h`). The window always has the
  * expanded size (Rust only changes its window region), and the panel is always
  * mounted and only toggled with opacity, so a menu never moves the bar. */
 .overlay__panel {
