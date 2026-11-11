@@ -10,6 +10,7 @@ import type {
   EmbyResumeRequest,
   EmbySession,
   EmbySessionBoot,
+  EmbySessionReason,
   EmbySessionEvent,
   EmbySetFavoriteRequest,
   EmbySetPlayedRequest,
@@ -38,14 +39,14 @@ export interface EmbyCredentials {
   password: string;
 }
 
-export interface EmbyImageRequest {
+interface EmbyImageRequest {
   itemId: string;
   imageType?: string;
   maxWidth?: number;
   tag?: string;
 }
 
-export interface EmbyPlaybackReportRequest {
+interface EmbyPlaybackReportRequest {
   itemId: string;
   mediaSourceId?: string;
   playSessionId?: string;
@@ -77,62 +78,49 @@ function rawEmbyErrorMessage(error: unknown): string {
   return "";
 }
 
+/**
+ * Text for every machine-readable reason the backend can send. `null` means
+ * "no better wording than the backend own message": the class is known but the
+ * detail lives in the message (a 404, a plain 5xx, an invalid request).
+ */
+const REASON_TEXT: Record<EmbySessionReason, string | null> = {
+  none: null,
+  token_rejected: "登录已失效，请重新登录。",
+  invalid_credentials: "用户名或密码不正确。",
+  unreachable: "无法连接 Emby 服务器，请检查地址、端口与网络。",
+  storage_error: "无法读写本地登录信息，请检查磁盘权限。",
+  invalid_request: null,
+  server_error: null,
+};
+
+function embyErrorReason(error: unknown): EmbySessionReason | null {
+  if (typeof error !== "object" || error === null) return null;
+  const value = (error as { reason?: unknown }).reason;
+  return typeof value === "string" && value in REASON_TEXT ? (value as EmbySessionReason) : null;
+}
+
+/**
+ * One short line for a rejected `emby_*` call.
+ *
+ * The backend classifies every failure (ApiErrorKind -> EmbyCommandError.reason),
+ * so this maps that reason and only falls back to the message text: the UI never
+ * re-parses HTTP status codes or English wording. Errors raised before IPC (no
+ * Tauri runtime, local guards) carry no reason and keep their own message.
+ */
 export function describeEmbyError(error: unknown, fallback: string): string {
   const message = rawEmbyErrorMessage(error).trim();
-  if (!message) return fallback;
+  const reason = embyErrorReason(error);
+  if (reason) return REASON_TEXT[reason] ?? message ?? fallback;
 
   const normalized = message.toLowerCase();
-
-  if (
-    normalized.includes("transcod") ||
-    normalized.includes("转码") ||
-    normalized.includes("no compatible stream") ||
-    normalized.includes("direct play is not possible")
-  ) {
-    return "该条目需要转码，当前不支持直接播放。";
-  }
-  if (
-    normalized.includes("401") ||
-    normalized.includes("unauthorized") ||
-    normalized.includes("invalid credentials") ||
-    normalized.includes("invalid username") ||
-    normalized.includes("authentication failed") ||
-    normalized.includes("access denied")
-  ) {
-    return "用户名或密码不正确，或登录已失效。";
-  }
-  if (
-    normalized.includes("timeout") ||
-    normalized.includes("timed out") ||
-    normalized.includes("超时")
-  ) {
-    return "连接 Emby 超时，请检查服务器地址与网络。";
-  }
-  if (
-    normalized.includes("connection refused") ||
-    normalized.includes("failed to connect") ||
-    normalized.includes("connect error") ||
-    normalized.includes("network error") ||
-    normalized.includes("error sending request") ||
-    normalized.includes("dns") ||
-    normalized.includes("unreachable") ||
-    normalized.includes("failed to fetch") ||
-    normalized.includes("无法连接") ||
-    normalized.includes("网络请求失败")
-  ) {
-    return "无法连接 Emby 服务器，请检查地址、端口与网络。";
-  }
-  if (
+  const backendMissing =
     normalized.includes("unknown command") ||
     normalized.includes("not implemented") ||
     (normalized.includes("command") && normalized.includes("not found")) ||
-    normalized.includes("not available")
-  ) {
-    return `Emby 后端尚未就绪（${message}）。`;
-  }
-  return message;
+    normalized.includes("not available");
+  if (backendMissing) return "Emby 后端尚未就绪（" + message + "）。";
+  return message || fallback;
 }
-
 async function invokeEmby<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(command, args);
 }
@@ -145,11 +133,6 @@ export async function embyLogin(req: EmbyCredentials): Promise<EmbySession> {
 export async function embyLogout(): Promise<EmbySessionBoot> {
   requireDesktop();
   return invokeEmby<EmbySessionBoot>("emby_logout");
-}
-
-export async function embySession(): Promise<EmbySession | null> {
-  requireDesktop();
-  return invokeEmby<EmbySession | null>("emby_session");
 }
 
 /** Single-flight startup restore; pass force=true only for a user retry. */

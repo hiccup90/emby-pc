@@ -4,7 +4,7 @@ import type { PlaybackChapter } from "../player/contract";
 
 const TICKS_PER_SECOND = 10_000_000;
 
-export function ticksToSeconds(ticks: number | null | undefined): number {
+function ticksToSeconds(ticks: number | null | undefined): number {
   if (typeof ticks !== "number" || !Number.isFinite(ticks) || ticks <= 0) return 0;
   return ticks / TICKS_PER_SECOND;
 }

@@ -172,8 +172,7 @@ function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "ty
     runTimeTicks: null,
     imageTags: scenario.noArt ? {} : { Primary: "p" },
     backdropImageTags: scenario.noArt || fields.type === "Episode" ? [] : ["b"],
-    primaryImageAspectRatio: 2 / 3,
-    userData: { playbackPositionTicks: null, played: false, unplayedItemCount: null },
+    userData: { playbackPositionTicks: null, played: false, favorite: false, unplayedItemCount: null },
     seriesId: null,
     seriesName: null,
     indexNumber: null,
@@ -186,7 +185,6 @@ function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "ty
     communityRating: null,
     tagline: null,
     premiereDate: null,
-    endDate: null,
     status: null,
     mediaStreams: [],
     chapters: [],
@@ -208,12 +206,12 @@ function addFlat(viewId: string, prefix: string, type: "Movie" | "Video", seeds:
       runTimeTicks,
       genres: seed.genres,
       overview: type === "Video" ? null : OVERVIEWS[index % OVERVIEWS.length],
-      primaryImageAspectRatio: type === "Video" ? 16 / 9 : 2 / 3,
       // One movie without artwork exercises the fallback tile.
       imageTags: scenario.noArt || index === 11 ? {} : { Primary: "p" },
       userData: {
         playbackPositionTicks: inProgress ? Math.round(runTimeTicks * (0.18 + (index % 3) * 0.27)) : null,
         played: index % 5 === 3,
+        favorite: false,
         unplayedItemCount: null,
       },
     });
@@ -225,7 +223,6 @@ addFlat("v-movies", "m", "Movie", MOVIES);
 addFlat("v-docs", "d", "Movie", DOCS);
 addFlat("v-home", "h", "Video", HOME_VIDEOS);
 
-const resumeEpisodes: EmbyItem[] = [];
 children.set(
   "v-tv",
   SERIES.map((seed, seriesIndex) => {
@@ -246,16 +243,15 @@ children.set(
           parentIndexNumber: seasonIndex + 1,
           productionYear: seed.year + seasonIndex,
           runTimeTicks,
-          primaryImageAspectRatio: 16 / 9,
           overview: OVERVIEWS[(number + seasonIndex) % OVERVIEWS.length],
           userData: {
             playbackPositionTicks: resumeHere ? Math.round(runTimeTicks * 0.42) : null,
             played: watched,
+            favorite: false,
             unplayedItemCount: null,
           },
         });
         episodes.push(episode);
-        if (resumeHere) resumeEpisodes.push(episode);
       }
     });
     children.set(seriesId, episodes);
@@ -267,7 +263,12 @@ children.set(
       productionYear: seed.year,
       genres: seed.genres,
       overview: OVERVIEWS[(seriesIndex + 2) % OVERVIEWS.length],
-      userData: { playbackPositionTicks: null, played: unplayed === 0, unplayedItemCount: unplayed },
+      userData: {
+        playbackPositionTicks: null,
+        played: unplayed === 0,
+        favorite: false,
+        unplayedItemCount: unplayed,
+      },
     });
   }),
 );
@@ -285,10 +286,26 @@ children.set("v-books", [
   makeItem({ id: "b04", name: "The Quiet Year", type: "Book", productionYear: 2022 }),
 ]);
 
-const RESUME: EmbyItem[] = [
-  ...resumeEpisodes,
-  ...(children.get("v-movies") ?? []).filter((item) => (item.userData.playbackPositionTicks ?? 0) > 0),
-];
+/** Mirrors `DEFAULT_RESUME_LIMIT` in src-tauri/src/emby.rs. */
+const DEFAULT_RESUME_LIMIT = 16;
+
+/**
+ * Continue-watching, derived on every call so the row matches the catalogue:
+ * marking an item played clears its position (like the server), and it must
+ * leave this row too. Episodes come first, then movies, the way /Resume lists
+ * them for the mock library.
+ */
+function currentResume(): EmbyItem[] {
+  const withProgress = [...items.values()].filter(
+    (item) =>
+      item.type !== "Season" &&
+      item.type !== "Series" &&
+      (item.userData.playbackPositionTicks ?? 0) > 0,
+  );
+  const episodes = withProgress.filter((item) => item.type === "Episode");
+  const others = withProgress.filter((item) => item.type !== "Episode");
+  return [...episodes, ...others];
+}
 
 const SESSION: EmbySession = {
   serverUrl: "http://emby.home:8096",
@@ -666,9 +683,6 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
     case "emby_session_boot":
       await wait(700);
       return mockSessionBoot(args.force === true);
-    case "emby_session":
-      await wait(150);
-      return session;
     case "emby_login":
       await wait(600);
       if (req.password === "wrong") {
@@ -728,13 +742,18 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
     case "emby_person_items": {
       await wait(200);
       const personId = String(args.personId ?? "");
+      if (!personId) {
+        throw { reason: "invalid_request", message: "personId 不能为空。" };
+      }
       const all = [...items.values()].filter((item) => item.type !== "Season");
       // Base list items carry no people; enrich recreates the same deterministic
       // cast as the detail page so the actor screen shows a believable slice.
-      const featured = personId
-        ? all.filter((item) => enrich(item).people.some((person) => person.id === personId))
-        : all;
-      return page(featured.length > 0 ? featured : all, req);
+      // An unknown person yields nothing — returning the whole library would
+      // make the actor page look like it works when it does not.
+      const featured = all.filter((item) =>
+        enrich(item).people.some((person) => person.id === personId),
+      );
+      return page(featured, req);
     }
     case "settings_get":
       // ?settings=slow delivers the stored pageSize after the library has begun
@@ -759,7 +778,16 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       const played = args.played === true;
       const target = items.get(id);
       if (target) {
-        const next = { ...target, userData: { ...target.userData, played } };
+        // The server clears the resume position when an item is marked played,
+        // so the item also leaves the continue-watching row.
+        const next = {
+          ...target,
+          userData: {
+            ...target.userData,
+            played,
+            playbackPositionTicks: played ? null : target.userData.playbackPositionTicks,
+          },
+        };
         items.set(id, next);
         for (const [viewId, list] of children) {
           const index = list.findIndex((item) => item.id === id);
@@ -771,9 +799,24 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       }
       return null;
     }
-    case "emby_set_favorite":
+    case "emby_set_favorite": {
       await wait(80);
+      const id = String(args.id ?? "");
+      const favorite = args.favorite === true;
+      const target = items.get(id);
+      if (target) {
+        const next = { ...target, userData: { ...target.userData, favorite } };
+        items.set(id, next);
+        for (const [viewId, list] of children) {
+          const index = list.findIndex((item) => item.id === id);
+          if (index < 0) continue;
+          const nextList = [...list];
+          nextList[index] = next;
+          children.set(viewId, nextList);
+        }
+      }
       return null;
+    }
     case "player_stats":
       return {
         hwdec: "d3d11va",
@@ -790,10 +833,14 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       if (scenario.noResume || scenario.state === "empty") {
         return { items: [], totalRecordCount: 0, startIndex: 0 };
       }
-      const limit = typeof req.limit === "number" ? req.limit : RESUME.length;
+      // Same shape as the Rust command: an absent limit uses the backend default
+      // (DEFAULT_RESUME_LIMIT), and the total is the full resume count, not the
+      // number of items in this page.
+      const limit = typeof req.limit === "number" ? req.limit : DEFAULT_RESUME_LIMIT;
+      const resume = currentResume();
       return {
-        items: RESUME.slice(0, limit),
-        totalRecordCount: RESUME.length,
+        items: resume.slice(0, limit),
+        totalRecordCount: resume.length,
         startIndex: 0,
       };
     }

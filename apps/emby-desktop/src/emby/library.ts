@@ -29,7 +29,7 @@ export function collectionTypeOf(
   }
 }
 
-export function includeItemTypesForCollectionType(
+function includeItemTypesForCollectionType(
   collectionType: LibraryCollectionType,
 ): string | undefined {
   switch (collectionType) {

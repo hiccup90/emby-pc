@@ -25,7 +25,7 @@ import LoginScreen from "./screens/LoginScreen";
 import Sidebar from "./screens/Sidebar";
 import TitleBar from "./screens/TitleBar";
 import type { TitleBarAccount } from "./screens/TitleBar";
-import { BrandMark, PageBackdrop } from "./screens/shared";
+import { BrandMark, ErrorNotice, PageBackdrop } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import type { PlaybackMeta } from "./player/contract";
 import { DEFAULT_APP_SETTINGS, getSettings } from "./settings/tauri";
@@ -47,7 +47,30 @@ interface DetailLocation {
 }
 
 /** A detail page plus the detail pages it was opened from ("more like this"). */
-type DetailRoute = DetailLocation & { trail: DetailLocation[] };
+type DetailRoute = DetailLocation & {
+  trail: DetailLocation[];
+  /** Where "back" goes once the trail is empty — the page the user came from. */
+  origin: DetailOrigin;
+};
+
+/**
+ * The page a detail view was opened from. "Back" used to always mean the
+ * library, which threw away the search results (and the actor page) the user
+ * was browsing; it now returns to the page that actually opened the detail.
+ */
+type DetailOrigin =
+  | { screen: "home" }
+  | { screen: "search" }
+  | { screen: "library" }
+  | ActorRoute;
+
+type ActorRoute = {
+  screen: "actor";
+  personId: string;
+  personName: string;
+  /** The detail page the actor page was opened from. */
+  from: DetailRoute;
+};
 
 type Route =
   | { screen: "login" }
@@ -55,7 +78,7 @@ type Route =
   | { screen: "home" }
   | { screen: "search" }
   | { screen: "settings" }
-  | { screen: "actor"; personId: string; personName: string; from: DetailRoute }
+  | ActorRoute
   | ({ screen: "detail" } & DetailRoute)
   | {
       screen: "player";
@@ -65,6 +88,20 @@ type Route =
       /** Series or movie id used to remember the chosen audio/subtitle track. */
       trackScope: string | null;
     };
+
+/** The page a detail view is being opened from, so "back" can return there. */
+function originOf(route: Route): DetailOrigin {
+  switch (route.screen) {
+    case "actor":
+      return route;
+    case "home":
+      return { screen: "home" };
+    case "search":
+      return { screen: "search" };
+    default:
+      return { screen: "library" };
+  }
+}
 
 function BootScreen() {
   return (
@@ -89,6 +126,14 @@ export default function App() {
     pageSize: settings.pageSize,
   });
   const [route, setRoute] = useState<Route>({ screen: "login" });
+  /**
+   * Search box text, owned here so a detail (or player) round-trip comes back to
+   * the same results. SearchScreen keys its request on this value.
+   */
+  const [searchQuery, setSearchQuery] = useState("");
+  /** Latest route, readable from callbacks that must not re-create on navigation. */
+  const routeRef = useRef(route);
+  routeRef.current = route;
   const autoPlay = settings.autoPlay;
   const previousScreenRef = useRef<Route["screen"] | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -143,6 +188,25 @@ export default function App() {
 
   const goToLibrary = useCallback(() => setRoute({ screen: "library" }), []);
 
+  /**
+   * Open a detail page. The current page is remembered as its origin, so
+   * "back" returns to the search results or the actor page instead of always
+   * dumping the user in the library.
+   */
+  const openItem = useCallback(
+    (item: EmbyLibraryItem) => {
+      libraryScrollRef.current = contentRef.current?.scrollTop ?? 0;
+      setRoute((current) => ({
+        screen: "detail",
+        itemId: item.id,
+        seed: item,
+        trail: [],
+        origin: originOf(current),
+      }));
+    },
+    [],
+  );
+
   const changeQuery = useCallback((next: EmbyLibraryQuery) => {
     libraryScrollRef.current = 0;
     contentRef.current?.scrollTo({ top: 0 });
@@ -159,10 +223,6 @@ export default function App() {
     [library],
   );
 
-  const openItem = useCallback((item: EmbyLibraryItem) => {
-    libraryScrollRef.current = contentRef.current?.scrollTop ?? 0;
-    setRoute({ screen: "detail", itemId: item.id, seed: item, trail: [] });
-  }, []);
 
   // "Recently added" for the home screen (server-sorted, newest first). The row
   // publishes its own load state so a pending/failed request never looks empty.
@@ -219,7 +279,12 @@ export default function App() {
               screen: "actor",
               personId,
               personName: person.name,
-              from: { itemId: current.itemId, seed: current.seed, trail: current.trail },
+              from: {
+                itemId: current.itemId,
+                seed: current.seed,
+                trail: current.trail,
+                origin: current.origin,
+              },
             }
           : current,
       );
@@ -237,18 +302,42 @@ export default function App() {
         current.screen === "detail"
           ? [...current.trail, { itemId: current.itemId, seed: current.seed }]
           : [],
+      // "More like this" does not change where the browsing started.
+      origin: current.screen === "detail" ? current.origin : originOf(current),
     }));
   }, []);
 
   const leaveDetail = useCallback(() => {
     setRoute((current) => {
-      if (current.screen !== "detail" || current.trail.length === 0) return { screen: "library" };
-      const previous = current.trail[current.trail.length - 1];
-      return { screen: "detail", ...previous, trail: current.trail.slice(0, -1) };
+      if (current.screen !== "detail") return { screen: "library" };
+      if (current.trail.length > 0) {
+        const previous = current.trail[current.trail.length - 1];
+        return {
+          screen: "detail",
+          ...previous,
+          trail: current.trail.slice(0, -1),
+          origin: current.origin,
+        };
+      }
+      // Empty trail: back to the page this detail was opened from.
+      return current.origin;
     });
   }, []);
 
-  const { launch } = usePlaybackLauncher();
+  const {
+    launch,
+    error: playbackError,
+    clearError: clearPlaybackError,
+  } = usePlaybackLauncher();
+  /** Item whose launch failed; the banner's retry re-runs exactly that attempt. */
+  const failedPlayItemRef = useRef<EmbyLibraryItem | null>(null);
+
+  // A new page is a new intent: the previous playback failure is stale. Without
+  // this the banner would outlive the click that caused it.
+  useEffect(() => {
+    clearPlaybackError();
+  }, [clearPlaybackError, route.screen]);
+
   /** Episodes still to play: [0] is on screen, the rest auto-play in order. */
   const queueRef = useRef<EmbyItem[] | null>(null);
 
@@ -324,20 +413,34 @@ export default function App() {
   /** Continue-watching cards start playback directly; the server supplies the resume point. */
   const resumeItem = useCallback(
     async (item: EmbyLibraryItem) => {
+      failedPlayItemRef.current = item;
       const target = await launch(item.id);
+      // `launch` reports its own failure through the launcher's error state,
+      // which is rendered above the content instead of being swallowed: a
+      // failed "continue watching" click must never look like a dead button.
       if (!target) return;
+      failedPlayItemRef.current = null;
       const meta =
         item.type === "Episode"
           ? { ...episodePlaybackMeta(item.seriesName, item), chapters: itemChapters(item) }
           : { ...itemPlaybackMeta(item), chapters: itemChapters(item) };
+      const current = routeRef.current;
       const returnTo: DetailRoute =
         item.type === "Episode" && item.seriesId
-          ? { itemId: item.seriesId, seed: null, trail: [] }
-          : { itemId: item.id, seed: item, trail: [] };
+          ? { itemId: item.seriesId, seed: null, trail: [], origin: originOf(current) }
+          : { itemId: item.id, seed: item, trail: [], origin: originOf(current) };
       openPlayer(target, meta, returnTo, [item], item.seriesId ?? item.id);
     },
     [launch, openPlayer],
   );
+
+  /** Retry the exact launch that failed (the banner's only action). */
+  const retryPlayback = useCallback(() => {
+    const item = failedPlayItemRef.current;
+    if (!item) return;
+    clearPlaybackError();
+    void resumeItem(item);
+  }, [clearPlaybackError, resumeItem]);
 
   const logout = useCallback(() => {
     void (async () => {
@@ -374,6 +477,7 @@ export default function App() {
               itemId: route.returnTo.itemId,
               seed: route.returnTo.seed,
               trail: route.returnTo.trail,
+              origin: route.returnTo.origin,
               // route.playback is the item actually on screen, so auto-play's
               // next episode is the one revealed when the user goes back.
               focusEpisodeId: route.playback.itemId,
@@ -445,6 +549,11 @@ export default function App() {
           />
         )}
         <div className="app-content" ref={contentRef}>
+          {playbackError && (
+            <div className="app-content__notice" style={{ padding: "16px 40px 0" }}>
+              <ErrorNotice message={playbackError} onRetry={retryPlayback} />
+            </div>
+          )}
           {route.screen === "login" && (
             <LoginScreen
               desktop={desktop}
@@ -477,7 +586,12 @@ export default function App() {
           )}
 
           {route.screen === "search" && (
-            <SearchScreen onOpen={openItem} onPlay={resumeItem} />
+            <SearchScreen
+              onOpen={openItem}
+              onPlay={resumeItem}
+              initialQuery={searchQuery}
+              onQueryChange={setSearchQuery}
+            />
           )}
 
           {route.screen === "settings" && (
@@ -522,7 +636,12 @@ export default function App() {
                 openPlayer(
                   playback,
                   meta,
-                  { itemId: route.itemId, seed: route.seed, trail: route.trail },
+                  {
+                    itemId: route.itemId,
+                    seed: route.seed,
+                    trail: route.trail,
+                    origin: route.origin,
+                  },
                   queue,
                   trackScope,
                 )
