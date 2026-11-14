@@ -156,14 +156,45 @@ export function createPreviewSnapshot(
   };
 }
 
+/**
+ * Preview-only wordmark so `controls.html` can show both states without the
+ * Tauri runtime. `?logo=0` forces the text fallback; anything else shows it.
+ */
+function previewLogo(title: string): string | null {
+  if (previewParams().get("logo") === "0") return null;
+  return wordmarkSvg(title);
+}
+
+/** Stand-in for Emby's transparent PNG wordmark (white text + accent rule). */
+function wordmarkSvg(title: string): string {
+  const width = Array.from(title).reduce(
+    (sum, char) => sum + (char.charCodeAt(0) > 0x2e80 ? 1 : 0.56),
+    0,
+  );
+  const size = Math.max(40, Math.min(92, 520 / Math.max(width, 1)));
+  const ruleWidth = Math.min(520, width * size * 0.62);
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 128">' +
+    '<rect x="0" y="12" width="10" height="78" rx="5" fill="#e5a00d"/>' +
+    '<text x="26" y="86" font-family="Microsoft YaHei UI, PingFang SC, Noto Sans CJK SC, sans-serif" ' +
+    'font-size="' + size.toFixed(0) + '" font-style="italic" font-weight="700" letter-spacing="4" fill="#ffffff">' +
+    title.replace(/[&<>"']/g, (char) => "&#" + char.charCodeAt(0) + ";") +
+    "</text>" +
+    '<rect x="26" y="104" width="' + ruleWidth.toFixed(0) + '" height="7" rx="3.5" fill="#e5a00d"/>' +
+    "</svg>";
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
 /** Preview title row; `?title=` / `?subtitle=` override it (empty clears). */
 export function createPreviewMeta(): PlaybackMeta {
   const params = previewParams();
+  const title = params.get("title") ?? "长安夜话";
   return {
-    title: params.get("title") ?? "长安夜话",
+    title,
     subtitle: params.has("subtitle")
       ? params.get("subtitle") || null
       : "S1 · E8 — 上元灯会",
+    logoUrl: previewLogo(title),
     chapters: [
       { seconds: 0, title: "开场" },
       { seconds: 420, title: "第一幕" },

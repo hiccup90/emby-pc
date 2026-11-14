@@ -59,6 +59,16 @@ export interface PlaybackMeta {
   subtitle: string | null;
   /** Chapter markers; empty or absent when the item has none. */
   chapters?: PlaybackChapter[];
+  /**
+   * Emby image tag for the item's own transparent `Logo`, copied from
+   * `imageTags.Logo` when the item has one. Absent means "no logo": the
+   * player must not ask the server for an image in that case.
+   */
+  logoTag?: string | null;
+  /** Episode without its own logo: the series whose logo may be used instead. */
+  logoSeriesId?: string | null;
+  /** Resolved logo URL; null/absent falls back to the plain title text. */
+  logoUrl?: string | null;
 }
 
 export interface OpenRequest {

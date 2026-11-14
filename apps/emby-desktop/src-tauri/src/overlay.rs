@@ -6,6 +6,11 @@
 //! `controls` window that is positioned over the bottom strip of the video
 //! rectangle reported by `video_sync`.
 //!
+//! The surface covers the whole video rectangle so the top-left return/logo
+//! strip and the bottom transport bar can live in one window and share one
+//! auto-hide group; the window region (see [`apply_region`]) exposes only those
+//! two strips, so everything between them stays click-through video.
+//!
 //! The window is an owned window of the main window (`.parent(&main)`): Windows
 //! keeps it above its owner, hides it when the owner is minimized and destroys
 //! it with the owner, so no topmost flag or focus-driven show/hide is needed. It never takes focus (`focused(false)` + `focusable(false)`) and is
@@ -96,6 +101,11 @@ pub fn resume(app: &AppHandle) {
 /// and `--ov-bar-h` / `--ov-panel-h` (src/controls/overlay.css).
 const COLLAPSED_HEIGHT: f64 = 96.0;
 const EXPANDED_HEIGHT: f64 = 352.0;
+/// Logical (CSS px) size of the top-left return/logo strip. The region only
+/// exposes this corner, not a full-width band, so clicks on the rest of the
+/// video's top edge still reach the video.
+const TOP_BAND_HEIGHT: f64 = 88.0;
+const TOP_BAND_MAX_WIDTH: f64 = 620.0;
 
 /// Cursor poll interval while the pointer is over the video.
 ///
@@ -136,6 +146,16 @@ enum UiMode {
     Player,
 }
 
+/// Physical-pixel extents of the two strips the window region exposes: the
+/// top-left return/logo corner and the bottom transport surface. An expanded
+/// overlay grows only the bottom strip (the track popover sits above the bar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Bands {
+    top_width: u32,
+    top_height: u32,
+    bottom_height: u32,
+}
+
 struct Inner {
     mode: UiMode,
     expanded: bool,
@@ -144,9 +164,10 @@ struct Inner {
     latch: SeqLatch,
     /// Last geometry pushed to the controls window, to avoid redundant calls.
     last_geometry: Option<(i32, i32, u32, u32)>,
-    /// Height (physical px) of the bottom strip the window region exposes;
-    /// `None` until the first region is applied.
-    last_active: Option<u32>,
+    /// Strips (physical px) the window region exposes; `None` until the first
+    /// region is applied. The top strip is clipped to its own width so only the
+    /// corner is hit-testable, the bottom strip spans the window.
+    last_bands: Option<Bands>,
     controls_shown: bool,
     /// Whether the controls should currently receive mouse input.
     interactive: bool,
@@ -182,7 +203,7 @@ impl OverlayState {
                 sync: None,
                 latch: SeqLatch::new(),
                 last_geometry: None,
-                last_active: None,
+                last_bands: None,
                 controls_shown: false,
                 interactive: false,
                 // `configure_controls_window` starts click-through before the
@@ -487,12 +508,12 @@ impl OverlayState {
         // changes the window region (the visible, hit-testable bottom strip),
         // so the webview is never resized and cannot show a stale frame.
         let geometry = compute_geometry(client_origin, outer_top, scale, &sync, frame);
-        let active = active_height(geometry.3, scale, expanded);
+        let bands = active_bands(geometry.2, geometry.3, scale, expanded);
 
         let (geometry_changed, region_changed) = {
             let inner = self.lock();
             let geometry_changed = inner.last_geometry != Some(geometry);
-            (geometry_changed, geometry_changed || inner.last_active != Some(active))
+            (geometry_changed, geometry_changed || inner.last_bands != Some(bands))
         };
         if geometry_changed {
             // One atomic SetWindowPos instead of separate size/position calls.
@@ -500,8 +521,8 @@ impl OverlayState {
             self.lock().last_geometry = Some(geometry);
         }
         if region_changed {
-            apply_region(&controls, geometry.2, geometry.3, active)?;
-            self.lock().last_active = Some(active);
+            apply_region(&controls, geometry.2, geometry.3, bands)?;
+            self.lock().last_bands = Some(bands);
         }
 
         if !shown {
@@ -516,8 +537,13 @@ impl OverlayState {
             // page owns the auto-hide timer. The 220 ms sleep this replaces fired
             // whether or not the page had settled, so a bar that the user was
             // already interacting with could be clipped mid-gesture.
-            apply_region(&controls, geometry.2, geometry.3, geometry.3)?;
-            self.lock().last_active = Some(geometry.3);
+            let full = Bands {
+                top_width: geometry.2,
+                top_height: geometry.3,
+                bottom_height: geometry.3,
+            };
+            apply_region(&controls, geometry.2, geometry.3, full)?;
+            self.lock().last_bands = Some(full);
             show_controls(&controls)?;
             {
                 let mut inner = self.lock();
@@ -645,7 +671,7 @@ impl OverlayState {
     /// the video and not over the (interactive) controls bar.
     #[cfg(windows)]
     fn is_stage_click(&self, app: &AppHandle, cursor: (i32, i32)) -> bool {
-        let (mode, sync, shown, interactive, geometry, active) = {
+        let (mode, sync, shown, interactive, geometry, bands) = {
             let inner = self.lock();
             (
                 inner.mode,
@@ -653,7 +679,7 @@ impl OverlayState {
                 inner.controls_shown,
                 inner.interactive,
                 inner.last_geometry,
-                inner.last_active,
+                inner.last_bands,
             )
         };
         if mode != UiMode::Player {
@@ -683,18 +709,23 @@ impl OverlayState {
         if !(x >= left && x < right && y >= top && y < bottom) {
             return false;
         }
-        // Clicks on a visible bar belong to the controls window, not the stage.
-        // Only the bottom strip the window region exposes counts: above a
-        // collapsed bar the window is clipped and the click reaches the video.
+        // Clicks on a visible strip belong to the controls window, not the
+        // stage. Only the two strips the window region exposes count: anywhere
+        // else the window is clipped and the click reaches the video.
         if shown && interactive {
-            if let Some((gx, gy, gw, gh)) = geometry {
-                let active = active.unwrap_or(gh).min(gh);
-                let top = gy.saturating_add((gh - active) as i32);
-                if cursor.0 >= gx
-                    && cursor.0 < gx.saturating_add(gw as i32)
-                    && cursor.1 >= top
-                    && cursor.1 < gy.saturating_add(gh as i32)
-                {
+            if let (Some((gx, gy, gw, gh)), Some(bands)) = (geometry, bands) {
+                let bottom = gy.saturating_add(gh as i32);
+                let right = gx.saturating_add(gw as i32);
+                let in_top = cursor.0 >= gx
+                    && cursor.0 < gx.saturating_add(bands.top_width.min(gw) as i32)
+                    && cursor.1 >= gy
+                    && cursor.1 < gy.saturating_add(bands.top_height.min(gh) as i32);
+                let bottom_top = bottom.saturating_sub(bands.bottom_height.min(gh) as i32);
+                let in_bottom = cursor.0 >= gx
+                    && cursor.0 < right
+                    && cursor.1 >= bottom_top
+                    && cursor.1 < bottom;
+                if in_top || in_bottom {
                     return false;
                 }
             }
@@ -770,32 +801,41 @@ fn compute_geometry(
 ) -> (i32, i32, u32, u32) {
     // The controls window must never cover the frameless main window resize
     // band: tao hit-tests SM_CXFRAME/SM_CYFRAME pixels *inside* the window rect,
-    // and an owned window on top steals those hits. Leave that band free on the
-    // left, right and bottom edge (the bar only touches those three).
+    // and an owned window on top steals those hits. Leave that band free on
+    // every edge the surface touches.
     let (frame_x, frame_y) = frame;
     let x = client_origin.x + (sync.x * scale).round() as i32 + frame_x;
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
     let width = ((sync.w * scale).round() as i32 - frame_x * 2).max(1) as u32;
     let video_bottom = video_top + (sync.h * scale).round().max(0.0) as i32;
-    // Bottom-anchored and always the expanded height: the window region hides
-    // the part above the bar while no menu is open (`active_height` /
-    // `apply_region`). Never above the main window: on a short window the
-    // surface shrinks instead of hanging below the video (the popover scrolls).
-    let room = (video_bottom - frame_y - outer_top).max(1);
-    let height = ((EXPANDED_HEIGHT * scale).round() as i32).clamp(1, room) as u32;
-    let y = (video_bottom - height as i32 - frame_y).max(outer_top);
+    // Cover the whole video rectangle: the top-left return/logo strip and the
+    // bottom transport surface are two regions of the same window, so the
+    // top-left corner finally has a window to draw in. Never above the main
+    // window and never over its bottom resize band; on a short window the
+    // surface shrinks instead of hanging outside the video.
+    let y = (video_top + frame_y).max(outer_top);
+    let bottom = (video_bottom - frame_y).max(y + 1);
+    let height = (bottom - y).max(1) as u32;
     (x, y, width, height)
 }
 
-/// Height (physical px) of the bottom strip that is visible and receives input:
-/// the bar, or the whole surface while a menu is open. Never taller than the
-/// window (a short main window shrinks the surface).
-fn active_height(window_height: u32, scale: f64, expanded: bool) -> u32 {
-    if expanded {
-        return window_height;
+/// Extents of the two strips the window region exposes. The bottom strip is
+/// the bar, or the bar plus the track-popover area while a menu is open; the
+/// top strip is the return/logo corner. Never larger than the window.
+fn active_bands(window_width: u32, window_height: u32, scale: f64, expanded: bool) -> Bands {
+    let bottom = if expanded {
+        (EXPANDED_HEIGHT * scale).round().max(1.0) as u32
+    } else {
+        (COLLAPSED_HEIGHT * scale).round().max(1.0) as u32
     }
-    let collapsed = (COLLAPSED_HEIGHT * scale).round().max(1.0) as u32;
-    collapsed.min(window_height)
+    .min(window_height);
+    let top_height = ((TOP_BAND_HEIGHT * scale).round().max(1.0) as u32).min(window_height);
+    let top_width = ((TOP_BAND_MAX_WIDTH * scale).round().max(1.0) as u32).min(window_width);
+    Bands {
+        top_width,
+        top_height,
+        bottom_height: bottom,
+    }
 }
 
 /// Physical thickness of the resize band tao hit-tests for an undecorated,
@@ -858,37 +898,66 @@ fn apply_bounds(controls: &WebviewWindow, geometry: (i32, i32, u32, u32)) -> Res
     }
 }
 
-/// Clip the controls window to its bottom `active` pixels with a window region.
-/// The clipped part is neither drawn nor hit-tested, so clicks above a
-/// collapsed bar reach the video. Unlike a resize, changing the region leaves
-/// the webview's size and layout alone, so no stale frame can flash.
+/// Clip the controls window to the top-left return/logo strip and the bottom
+/// transport strip. Everything else is neither drawn nor hit-tested, so clicks
+/// over the video reach the video even though the window now covers it. Unlike
+/// a resize, changing the region leaves the webview's size and layout alone, so
+/// no stale frame can flash.
 fn apply_region(
     controls: &WebviewWindow,
     width: u32,
     height: u32,
-    active: u32,
+    bands: Bands,
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
+        use windows_sys::Win32::Graphics::Gdi::{
+            CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR,
+        };
 
         let hwnd = controls_hwnd(controls)?;
         // Always a concrete region, even for the whole window: clearing a
         // region makes Windows repaint the entire window, which showed up as a
         // one-frame flash the first time a menu opened.
-        let top = height.saturating_sub(active) as i32;
-        let region = unsafe { CreateRectRgn(0, top, width as i32, height as i32) };
+        let top_width = bands.top_width.min(width) as i32;
+        let top_height = bands.top_height.min(height) as i32;
+        let bottom_top = height.saturating_sub(bands.bottom_height.min(height)) as i32;
+        let region = unsafe { CreateRectRgn(0, 0, 0, 0) };
         if region.is_null() {
             return Err("apply_region: CreateRectRgn failed".to_string());
+        }
+        let top_rect = unsafe { CreateRectRgn(0, 0, top_width, top_height) };
+        let bottom_rect =
+            unsafe { CreateRectRgn(0, bottom_top, width as i32, height as i32) };
+        if top_rect.is_null() || bottom_rect.is_null() {
+            unsafe {
+                DeleteObject(region as _);
+                if !top_rect.is_null() {
+                    DeleteObject(top_rect as _);
+                }
+                if !bottom_rect.is_null() {
+                    DeleteObject(bottom_rect as _);
+                }
+            }
+            return Err("apply_region: CreateRectRgn failed".to_string());
+        }
+        let combined = unsafe { CombineRgn(region, top_rect, bottom_rect, RGN_OR) };
+        unsafe {
+            DeleteObject(top_rect as _);
+            DeleteObject(bottom_rect as _);
+        }
+        if combined == 0 {
+            unsafe {
+                DeleteObject(region as _);
+            }
+            return Err("apply_region: CombineRgn failed".to_string());
         }
         // `bRedraw = 0`: the region only clips the existing WebView2 surface;
         // forcing a repaint here is what flashed the bar.
         let ok = unsafe { SetWindowRgn(hwnd, region, 0) };
         if ok == 0 {
-            if !region.is_null() {
-                unsafe {
-                    DeleteObject(region as _);
-                }
+            unsafe {
+                DeleteObject(region as _);
             }
             return Err("apply_region: SetWindowRgn(controls) failed".to_string());
         }
@@ -896,7 +965,7 @@ fn apply_region(
     }
     #[cfg(not(windows))]
     {
-        let _ = (controls, width, height, active);
+        let _ = (controls, width, height, bands);
         Ok(())
     }
 }
@@ -1245,4 +1314,65 @@ pub fn overlay_drag_window(app: AppHandle) -> Result<(), String> {
         .ok_or_else(|| "overlay_drag_window: missing main window".to_string())?;
     main.start_dragging()
         .map_err(|err| format!("overlay_drag_window: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn video(x: f64, y: f64, w: f64, h: f64) -> VideoSync {
+        VideoSync {
+            seq: 1,
+            visible: true,
+            x,
+            y,
+            w,
+            h,
+            dpr: 1.0,
+        }
+    }
+
+    #[test]
+    fn geometry_covers_the_whole_video_rect() {
+        let (x, y, width, height) = compute_geometry(
+            PhysicalPosition::new(100, 50),
+            50,
+            1.0,
+            &video(0.0, 40.0, 1280.0, 720.0),
+            (0, 0),
+        );
+        assert_eq!((x, y), (100, 90));
+        assert_eq!((width, height), (1280, 720));
+    }
+
+    #[test]
+    fn geometry_leaves_the_resize_band_free() {
+        let (x, y, width, height) = compute_geometry(
+            PhysicalPosition::new(100, 50),
+            50,
+            1.0,
+            &video(0.0, 0.0, 1280.0, 720.0),
+            (4, 4),
+        );
+        assert_eq!((x, y), (104, 54));
+        assert_eq!((width, height), (1272, 712));
+    }
+
+    #[test]
+    fn bands_expose_only_the_corner_and_the_bar() {
+        let collapsed = active_bands(1280, 720, 1.0, false);
+        assert_eq!(collapsed.top_width, 620);
+        assert_eq!(collapsed.top_height, 88);
+        assert_eq!(collapsed.bottom_height, 96);
+
+        let expanded = active_bands(1280, 720, 1.0, true);
+        assert_eq!(expanded.top_height, 88);
+        assert_eq!(expanded.bottom_height, 352);
+
+        // A short window never exposes strips larger than the window itself.
+        let tiny = active_bands(320, 100, 1.0, true);
+        assert_eq!(tiny.top_width, 320);
+        assert!(tiny.top_height <= 100);
+        assert!(tiny.bottom_height <= 100);
+    }
 }

@@ -1,7 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import Overlay from "./Overlay";
-import { OVERLAY_BAR_HEIGHT, OVERLAY_PANEL_HEIGHT } from "./contract";
+import {
+  OVERLAY_BAR_HEIGHT,
+  OVERLAY_PANEL_HEIGHT,
+  OVERLAY_TOP_BAND_HEIGHT,
+  OVERLAY_TOP_BAND_MAX_WIDTH,
+} from "./contract";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
   const icon = document.createElement("link");
@@ -18,6 +23,8 @@ if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]
 const root = document.documentElement;
 root.style.setProperty("--ov-bar-h", `${OVERLAY_BAR_HEIGHT}px`);
 root.style.setProperty("--ov-panel-h", `${OVERLAY_PANEL_HEIGHT}px`);
+root.style.setProperty("--ov-top-h", `${OVERLAY_TOP_BAND_HEIGHT}px`);
+root.style.setProperty("--ov-top-max-w", `${OVERLAY_TOP_BAND_MAX_WIDTH}px`);
 
 const rootElement = document.getElementById("overlay-root");
 if (!rootElement) {

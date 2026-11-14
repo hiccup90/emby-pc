@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -9,6 +9,7 @@ import {
 } from "../controls/bridge";
 import type { OverlayAction, OverlayStateInput } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
+import { embyImageUrl, embyItem } from "../emby/client";
 import { reportEmbyPlayback } from "../emby/playback";
 import type { PlaybackMeta, PlayerStats, PlayerStatus } from "./contract";
 import { invokePlayerStats, invokePlayerStop } from "./tauri";
@@ -17,6 +18,46 @@ import { useVideoSync } from "./useVideoSync";
 
 /** Coalescing window for position-only overlay updates (mpv reports several per second). */
 const OVERLAY_STATE_THROTTLE_MS = 250;
+/** Wide enough for the control bar's logo at 4K; the file is a transparent PNG. */
+const LOGO_MAX_WIDTH = 520;
+
+/**
+ * Series id -> its `imageTags.Logo` (or null when it has none). Only episodes
+ * without their own logo pay one request per series, and only once: the promise
+ * is cached too, so StrictMode's double effect cannot fire two requests.
+ */
+const seriesLogoTagCache = new Map<string, Promise<string | null>>();
+
+function seriesLogoTag(seriesId: string): Promise<string | null> {
+  const cached = seriesLogoTagCache.get(seriesId);
+  if (cached) return cached;
+  const pending = embyItem(seriesId).then((item) => item.imageTags.Logo ?? null);
+  seriesLogoTagCache.set(seriesId, pending);
+  pending.catch(() => seriesLogoTagCache.delete(seriesId));
+  return pending;
+}
+
+/** Built logo URLs, keyed by item + tag; the command itself is an IPC round-trip. */
+const logoUrlCache = new Map<string, Promise<string | null>>();
+
+function buildLogoUrl(itemId: string, tag: string): Promise<string | null> {
+  const key = `${itemId}:${tag}`;
+  const cached = logoUrlCache.get(key);
+  if (cached) return cached;
+  const pending = embyImageUrl({
+    itemId,
+    imageType: "Logo",
+    maxWidth: LOGO_MAX_WIDTH,
+    tag,
+  })
+    .then((url) => (url.trim() ? url : null))
+    .catch((reason: unknown) => {
+      console.warn("[player] could not build the logo URL", reason);
+      return null;
+    });
+  logoUrlCache.set(key, pending);
+  return pending;
+}
 /** Info-panel statistics cadence; runs only while that panel is open. */
 const STATS_POLL_MS = 1500;
 
@@ -124,6 +165,45 @@ export default function PlayerPage({
   const restoredTracksForRef = useRef<string | null>(null);
   const savedTracksRef = useRef<string>("");
   const [nextUnavailable, setNextUnavailable] = useState(false);
+
+  /**
+   * Overlay logo. The item's own tag is free (copied by `itemPlaybackMeta`);
+   * an episode without one borrows its series' logo through one cached request;
+   * no tag at all means no request and the overlay falls back to the title.
+   */
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const logoTag = meta?.logoTag ?? null;
+  const logoSeriesId = meta?.logoSeriesId ?? null;
+  const playbackItemId = playback?.itemId ?? null;
+
+  useEffect(() => {
+    setLogoUrl(null);
+    if (!isDesktop || !playbackItemId) return;
+    let cancelled = false;
+    const resolve = async (): Promise<string | null> => {
+      if (logoTag) return buildLogoUrl(playbackItemId, logoTag);
+      if (!logoSeriesId) return null;
+      try {
+        const tag = await seriesLogoTag(logoSeriesId);
+        return tag ? buildLogoUrl(logoSeriesId, tag) : null;
+      } catch (reason) {
+        console.warn("[player] could not read the series logo", reason);
+        return null;
+      }
+    };
+    void resolve().then((url) => {
+      if (!cancelled) setLogoUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDesktop, logoSeriesId, logoTag, playbackItemId]);
+
+  /** What the controls receive: the title row plus the resolved logo URL. */
+  const overlayMeta = useMemo(
+    () => (meta ? { ...meta, logoUrl } : null),
+    [meta, logoUrl],
+  );
 
   const isFullscreenRef = useRef(isFullscreen);
   useEffect(() => {
@@ -518,6 +598,7 @@ export default function PlayerPage({
     meta?.title ?? "",
     meta?.subtitle ?? "",
     meta?.chapters?.length ?? 0,
+    logoUrl ?? "",
     stats ? 1 : 0,
   ].join("|");
 
@@ -525,9 +606,9 @@ export default function PlayerPage({
     if (!isDesktop) return;
     overlayStateRef.current = {
       snapshot: snapshot ?? null,
-      // The whole meta, chapters included — the controls render the chapter
-      // menu and the seek markers from it.
-      meta: meta ?? null,
+      // The whole meta, chapters and the resolved logo included — the controls
+      // render the chapter menu, the seek markers and the top-left logo from it.
+      meta: overlayMeta,
       stats: stats ?? null,
       error: errorText,
       notice,
@@ -535,7 +616,7 @@ export default function PlayerPage({
     const urgent = stateSignature !== lastSignatureRef.current;
     lastSignatureRef.current = stateSignature;
     scheduleOverlayState(urgent);
-  }, [errorText, isDesktop, meta, notice, scheduleOverlayState, snapshot, stateSignature, stats]);
+  }, [errorText, isDesktop, meta, notice, overlayMeta, scheduleOverlayState, snapshot, stateSignature, stats]);
 
   useEffect(() => {
     return () => {

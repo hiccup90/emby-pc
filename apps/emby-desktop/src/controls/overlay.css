@@ -14,7 +14,10 @@
   color-scheme: dark;
   /* Set from contract.ts at startup (see controls/main.tsx). */
   --ov-seek-h: 24px;
-  --ov-band-top: 12px; /* seek line sits on the band edge */
+  --ov-band-top: 0px; /* the seek line sits inside the band's top edge */
+  /* Set from contract.ts at startup; the literals are the same values. */
+  --ov-top-h: 88px;
+  --ov-top-max-w: 620px;
   /* Main-window tokens (src/styles.css). */
   --ov-accent: #e5a00d;
   --ov-accent-ink: #1f2326;
@@ -251,7 +254,10 @@ input:focus:not(:focus-visible) {
 .ov-bar__band {
   position: absolute;
   inset: var(--ov-band-top) 0 0;
-  background: var(--ov-band);
+  background: linear-gradient(180deg, rgba(14, 16, 18, 0.72) 0%, var(--ov-band) 44%);
+  box-shadow:
+    0 -1px 0 rgba(255, 255, 255, 0.05),
+    0 -12px 30px rgba(0, 0, 0, 0.35);
 }
 
 /* Full-width seek line on the band edge; the 24 px row is its hit area. */
@@ -309,12 +315,14 @@ input:focus:not(:focus-visible) {
 }
 
 .ov-group--center {
+  flex-direction: column;
   justify-content: center;
-  gap: 12px;
+  gap: 1px;
 }
 
 .ov-group--right {
   justify-content: flex-end;
+  gap: 2px;
 }
 
 .ov-btn {
@@ -357,45 +365,103 @@ input:focus:not(:focus-visible) {
   color: var(--ov-accent-ink);
 }
 
-/* Title block: title, subtitle (or error), time. */
-.ov-meta {
+/* ---- top-left return + logo ------------------------------------------------
+ * Emby Theater keeps the back arrow and the item's transparent wordmark in
+ * the top-left corner, over the video. The Rust window region exposes only
+ * this corner (TOP_BAND_MAX_WIDTH x TOP_BAND_HEIGHT) so every click to its
+ * right still reaches the video. */
+.overlay__top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  width: min(100%, var(--ov-top-max-w, 620px));
+  height: var(--ov-top-h, 88px);
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 12px 0 14px;
+}
+
+.ov-btn--back {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(12, 14, 16, 0.62);
+  color: #ffffff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+}
+
+.ov-btn--back:hover:not(:disabled) {
+  background: rgba(24, 27, 30, 0.86);
+  color: #ffffff;
+}
+
+.ov-top__brand {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
+  padding-top: 2px;
 }
 
-.ov-meta__title,
-.ov-meta__sub {
+/* Transparent PNG wordmark: height follows the band, width shrinks with the
+ * window so a long logo never reaches the exposed-corner edge. */
+.ov-top__logo {
+  display: block;
+  width: auto;
+  max-width: min(420px, 44vw);
+  height: clamp(26px, 3.2vw, 36px);
+  object-fit: contain;
+  object-position: left center;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.75));
+}
+
+.ov-top__title {
+  max-width: min(420px, 44vw);
   overflow: hidden;
+  color: var(--ov-text);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
   white-space: nowrap;
 }
 
-.ov-meta__title {
-  color: var(--ov-text);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.ov-meta__sub {
-  color: var(--ov-text-2);
-  font-size: 12px;
-}
-
-.ov-meta__sub.is-error {
-  color: var(--ov-danger);
-}
-
-.ov-meta__time {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.ov-top__sub {
+  max-width: min(420px, 44vw);
   overflow: hidden;
   color: var(--ov-text-2);
   font-size: 12px;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+.ov-top__sub.is-error {
+  color: var(--ov-danger);
+}
+
+/* Centre of the bar: elapsed / duration, with the status line under it. */
+.ov-time {
+  color: var(--ov-text);
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.ov-status {
+  display: flex;
+  max-width: 30vw;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--ov-text-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -511,13 +577,14 @@ input:focus:not(:focus-visible) {
 }
 
 .ov-slider--seek {
+  --ov-track: 3px;
   height: var(--ov-seek-h);
 }
 
 .ov-slider--seek:hover,
 .ov-slider--seek:active,
 .ov-slider--seek:focus-within {
-  --ov-track: 6px;
+  --ov-track: 5px;
 }
 
 /* Plex shows the seek thumb only while the pointer is on the line. */
@@ -548,14 +615,33 @@ input:focus:not(:focus-visible) {
 }
 
 @media (max-width: 600px) {
+  .overlay__top {
+    gap: 8px;
+    padding: 10px 8px 0 10px;
+  }
+
+  .ov-top__logo {
+    max-width: 54vw;
+    height: 24px;
+  }
+
+  .ov-top__title {
+    max-width: 54vw;
+    font-size: 16px;
+  }
+
+  .ov-top__sub {
+    max-width: 54vw;
+    font-size: 11px;
+  }
+
   .ov-controls {
     gap: 8px;
     padding: 0 8px 6px;
   }
 
-  .ov-group--left,
-  .ov-group--center {
-    gap: 4px;
+  .ov-group--left {
+    gap: 2px;
   }
 
   .ov-group--right {
@@ -563,13 +649,17 @@ input:focus:not(:focus-visible) {
   }
 
   .ov-btn {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
 
   .ov-btn--play {
-    width: 40px;
-    height: 40px;
+    width: 38px;
+    height: 38px;
+  }
+
+  .ov-status {
+    max-width: 26vw;
   }
 
   .ov-menu {

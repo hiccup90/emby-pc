@@ -309,6 +309,8 @@ export default function Overlay() {
   const [playerError, setPlayerError] = useState<string | null>(null);
   /** Non-failure status line: ended, auto-play hand-off. */
   const [notice, setNotice] = useState<string | null>(null);
+  /** A logo URL that failed to load falls back to the plain title text. */
+  const [logoFailed, setLogoFailed] = useState(false);
 
   const snapshotRef = useRef<PlayerSnapshot | null>(snapshot);
   const visibleRef = useRef(true);
@@ -363,7 +365,9 @@ export default function Overlay() {
     (action: OverlayAction) => {
       wake();
       if (!desktop) {
-        // Standalone preview: mirror the intent locally so the bar still works.
+        // Standalone preview: mirror the intent locally so the bar still works,
+        // and announce it so the screenshot harness can assert the click path.
+        window.dispatchEvent(new CustomEvent("overlay-preview-action", { detail: action }));
         setSnapshot((previous) => applyPreviewAction(previous, action));
         return;
       }
@@ -763,7 +767,12 @@ export default function Overlay() {
     status === "loading" || (buffering && status === "playing");
   const titleText = meta?.title || null;
   const secondLine = displayError ?? meta?.subtitle ?? null;
-  const thirdLine = [statusText, timeText].filter(Boolean).join(" · ") || null;
+  // The player resolves this once per item; absent means "fall back to text".
+  const logoUrl = meta?.logoUrl ?? null;
+  const showLogo = Boolean(logoUrl) && !logoFailed;
+  useEffect(() => {
+    setLogoFailed(false);
+  }, [logoUrl]);
   const volumeIcon =
     muted || volume === 0 ? "volume-off" : volume < 50 ? "volume-low" : "volume";
 
@@ -872,6 +881,47 @@ export default function Overlay() {
         )}
       </div>
 
+      {/* Return + media logo: same DOM tree as the bar, so the existing
+          auto-hide group fades both together (no second timer). */}
+      <div className="overlay__top" onPointerDown={handleDragStart}>
+        <button
+          className="ov-btn ov-btn--back"
+          type="button"
+          data-no-drag="true"
+          onPointerDown={actionPointerDown(() => send({ type: "back" }))}
+          onKeyDown={actionKeyDown(() => send({ type: "back" }))}
+          onClick={swallowClick}
+          aria-label="返回详情"
+          title="返回详情"
+        >
+          <OverlayIcon name="back" size={22} />
+        </button>
+        <div
+          className="ov-top__brand"
+          title={[titleText, secondLine].filter(Boolean).join("\n") || undefined}
+        >
+          {showLogo ? (
+            <img
+              className="ov-top__logo"
+              src={logoUrl ?? undefined}
+              alt={titleText ?? ""}
+              draggable={false}
+              onError={() => setLogoFailed(true)}
+            />
+          ) : (
+            titleText && <span className="ov-top__title">{titleText}</span>
+          )}
+          {secondLine && (
+            <span
+              className={`ov-top__sub${displayError ? " is-error" : ""}`}
+              role={displayError ? "alert" : undefined}
+            >
+              {secondLine}
+            </span>
+          )}
+        </div>
+      </div>
+
       <div className="overlay__bar" onPointerDown={handleDragStart}>
         <div className="ov-bar__band" aria-hidden="true" />
 
@@ -902,41 +952,6 @@ export default function Overlay() {
 
         <div className="ov-controls">
           <div className="ov-group ov-group--left">
-            <button
-              className="ov-btn"
-              type="button"
-              data-no-drag="true"
-              onPointerDown={actionPointerDown(() => send({ type: "back" }))}
-              onKeyDown={actionKeyDown(() => send({ type: "back" }))}
-              onClick={swallowClick}
-              aria-label="返回详情"
-              title="返回详情"
-            >
-              <OverlayIcon name="back" size={22} />
-            </button>
-            <div
-              className="ov-meta"
-              title={[titleText, secondLine].filter(Boolean).join("\n") || undefined}
-            >
-              {titleText && <span className="ov-meta__title">{titleText}</span>}
-              {secondLine && (
-                <span
-                  className={`ov-meta__sub${displayError ? " is-error" : ""}`}
-                  role={displayError ? "alert" : undefined}
-                >
-                  {secondLine}
-                </span>
-              )}
-              {thirdLine && (
-                <span className="ov-meta__time">
-                  {busy && <span className="ov-spinner" aria-hidden="true" />}
-                  {thirdLine}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="ov-group ov-group--center">
             <button
               className="ov-btn"
               type="button"
@@ -993,6 +1008,16 @@ export default function Overlay() {
             </button>
           </div>
 
+          <div className="ov-group ov-group--center">
+            {timeText && <span className="ov-time">{timeText}</span>}
+            {statusText && (
+              <span className="ov-status">
+                {busy && <span className="ov-spinner" aria-hidden="true" />}
+                {statusText}
+              </span>
+            )}
+          </div>
+
           <div className="ov-group ov-group--right">
             <button
               className="ov-btn"
@@ -1018,36 +1043,6 @@ export default function Overlay() {
               onCommit={changeVolume}
               onGestureStart={wake}
             />
-            <button
-              className={`ov-btn${menu === "info" ? " is-active" : ""}`}
-              type="button"
-              data-no-drag="true"
-              onPointerDown={actionPointerDown(() => toggleMenu("info"))}
-              onKeyDown={actionKeyDown(() => toggleMenu("info"))}
-              onClick={swallowClick}
-              disabled={!hasMedia}
-              aria-label="播放信息"
-              title="播放信息"
-              aria-haspopup="menu"
-              aria-expanded={menu === "info"}
-            >
-              <OverlayIcon name="info" />
-            </button>
-            <button
-              className={`ov-btn${menu === "chapters" ? " is-active" : ""}`}
-              type="button"
-              data-no-drag="true"
-              onPointerDown={actionPointerDown(() => toggleMenu("chapters"))}
-              onKeyDown={actionKeyDown(() => toggleMenu("chapters"))}
-              onClick={swallowClick}
-              disabled={!hasMedia || chapters.length < 2}
-              aria-label="章节"
-              title="章节"
-              aria-haspopup="menu"
-              aria-expanded={menu === "chapters"}
-            >
-              <OverlayIcon name="chapters" />
-            </button>
             <button
               className={`ov-btn${menu === "audio" ? " is-active" : ""}`}
               type="button"
@@ -1077,6 +1072,36 @@ export default function Overlay() {
               aria-expanded={menu === "subtitle"}
             >
               <OverlayIcon name="subtitles" />
+            </button>
+            <button
+              className={`ov-btn${menu === "chapters" ? " is-active" : ""}`}
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => toggleMenu("chapters"))}
+              onKeyDown={actionKeyDown(() => toggleMenu("chapters"))}
+              onClick={swallowClick}
+              disabled={!hasMedia || chapters.length < 2}
+              aria-label="章节"
+              title="章节"
+              aria-haspopup="menu"
+              aria-expanded={menu === "chapters"}
+            >
+              <OverlayIcon name="chapters" />
+            </button>
+            <button
+              className={`ov-btn${menu === "info" ? " is-active" : ""}`}
+              type="button"
+              data-no-drag="true"
+              onPointerDown={actionPointerDown(() => toggleMenu("info"))}
+              onKeyDown={actionKeyDown(() => toggleMenu("info"))}
+              onClick={swallowClick}
+              disabled={!hasMedia}
+              aria-label="播放信息"
+              title="播放信息"
+              aria-haspopup="menu"
+              aria-expanded={menu === "info"}
+            >
+              <OverlayIcon name="info" />
             </button>
             <button
               className="ov-btn"

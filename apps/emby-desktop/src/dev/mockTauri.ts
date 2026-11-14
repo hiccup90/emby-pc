@@ -206,8 +206,14 @@ function addFlat(viewId: string, prefix: string, type: "Movie" | "Video", seeds:
       runTimeTicks,
       genres: seed.genres,
       overview: type === "Video" ? null : OVERVIEWS[index % OVERVIEWS.length],
-      // One movie without artwork exercises the fallback tile.
-      imageTags: scenario.noArt || index === 11 ? {} : { Primary: "p" },
+      // One movie without artwork exercises the fallback tile; every fourth
+      // movie also has no wordmark so the "logo -> title" fallback is visible.
+      imageTags:
+        scenario.noArt || index === 11
+          ? {}
+          : index % 4 === 3
+            ? { Primary: "p" }
+            : { Primary: "p", Logo: "l" },
       userData: {
         playbackPositionTicks: inProgress ? Math.round(runTimeTicks * (0.18 + (index % 3) * 0.27)) : null,
         played: index % 5 === 3,
@@ -263,6 +269,9 @@ children.set(
       productionYear: seed.year,
       genres: seed.genres,
       overview: OVERVIEWS[(seriesIndex + 2) % OVERVIEWS.length],
+      // Series carry the wordmark; episodes do not, which exercises the
+      // "episode without its own logo borrows the series logo" path.
+      imageTags: scenario.noArt ? {} : { Primary: "p", Logo: "l" },
       userData: {
         playbackPositionTicks: null,
         played: unplayed === 0,
@@ -438,10 +447,29 @@ function portraitSvg(id: string): string {
   );
 }
 
+/** Transparent white wordmark: the Emby `Logo` image type. */
+function logoSvg(title: string): string {
+  const width = Array.from(title).reduce(
+    (sum, char) => sum + (char.charCodeAt(0) > 0x2e80 ? 1 : 0.56),
+    0,
+  );
+  const size = Math.max(40, Math.min(96, 560 / Math.max(width, 1)));
+  const rule = Math.min(520, width * size * 0.62);
+  return svgUrl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 128">' +
+      '<rect x="0" y="12" width="10" height="78" rx="5" fill="#e5a00d"/>' +
+      '<text x="26" y="86" font-family="' + FONT + '" font-size="' + size.toFixed(0) +
+      '" font-style="italic" font-weight="700" letter-spacing="4" fill="#ffffff">' + escapeXml(title) + "</text>" +
+      '<rect x="26" y="104" width="' + rule.toFixed(0) + '" height="7" rx="3.5" fill="#e5a00d"/>' +
+      "</svg>",
+  );
+}
+
 function imageUrl(req: { itemId?: string; imageType?: string }): string {
   if (req.itemId && PEOPLE.has(req.itemId)) return portraitSvg(req.itemId);
   const item = req.itemId ? items.get(req.itemId) : undefined;
   if (!item) return "";
+  if (req.imageType === "Logo") return logoSvg(item.name);
   if (req.imageType === "Backdrop") return stillSvg(item.id, null);
   if (item.type === "Episode" || item.type === "Video") return stillSvg(item.id, null);
   return posterSvg(item.id, item.name, item.productionYear);

@@ -1,7 +1,7 @@
 import { embyImageUrl } from "./client";
 import type { EmbyItem, EmbyPerson } from "./contract";
 
-export type ArtworkKind = "Primary" | "Backdrop";
+export type ArtworkKind = "Primary" | "Backdrop" | "Logo";
 
 type ArtworkSource = Pick<EmbyItem, "id" | "imageTags" | "backdropImageTags">;
 
@@ -12,7 +12,12 @@ export async function safeImageUrl(
   maxWidth: number,
 ): Promise<string | null> {
   const tag =
-    imageType === "Primary" ? item.imageTags.Primary : item.backdropImageTags[0];
+    imageType === "Primary"
+      ? item.imageTags.Primary
+      : imageType === "Backdrop"
+        ? item.backdropImageTags[0]
+        : item.imageTags.Logo;
+  // No tag means the server has no such image: never ask for a URL.
   if (!tag) return null;
 
   try {

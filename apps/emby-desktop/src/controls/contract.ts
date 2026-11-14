@@ -19,6 +19,14 @@ export const OVERLAY_BAR_HEIGHT = 96;
 export const OVERLAY_EXPANDED_HEIGHT = 352;
 /** Expanded panel is the space above the bar (`--ov-panel-h`). */
 export const OVERLAY_PANEL_HEIGHT = OVERLAY_EXPANDED_HEIGHT - OVERLAY_BAR_HEIGHT;
+/**
+ * Top-left return/logo strip in logical pixels. The controls window covers the
+ * whole video rectangle now; its window region exposes this corner plus the
+ * bottom bar. Mirrors `TOP_BAND_HEIGHT` in `src-tauri/src/overlay.rs`.
+ */
+export const OVERLAY_TOP_BAND_HEIGHT = 88;
+/** Widest the exposed top-left corner gets (the rest of the top edge is video). */
+export const OVERLAY_TOP_BAND_MAX_WIDTH = 620;
 
 export type OverlayAction =
   | { type: "toggle-play" }

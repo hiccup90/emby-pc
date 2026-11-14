@@ -82,20 +82,40 @@ export function itemEpisodeLabel(
 /** Player title row for an episode, like Plex Web: series, then "S1 · E3 — name". */
 export function episodePlaybackMeta(
   seriesName: string | null | undefined,
-  item: Pick<EmbyItem, "name" | "parentIndexNumber" | "indexNumber">,
+  item: Pick<EmbyItem, "name" | "parentIndexNumber" | "indexNumber"> & {
+    imageTags?: Record<string, string>;
+    seriesId?: string | null;
+  },
 ): PlaybackMeta {
   const label = itemEpisodeLabel(item);
   const name = item.name.trim();
   const series = seriesName?.trim();
-  if (!series) return { title: name || label || "", subtitle: name ? label : null };
+  const logo = logoFields(item);
+  if (!series) {
+    return { title: name || label || "", subtitle: name ? label : null, ...logo };
+  }
   const subtitle = [label, name].filter((part): part is string => Boolean(part)).join(" — ");
-  return { title: series, subtitle: subtitle || null };
+  return { title: series, subtitle: subtitle || null, ...logo };
 }
 
 export function itemPlaybackMeta(item: EmbyItem): PlaybackMeta {
   return item.type === "Episode"
     ? episodePlaybackMeta(item.seriesName, item)
-    : { title: item.name, subtitle: itemYearLabel(item) };
+    : { title: item.name, subtitle: itemYearLabel(item), ...logoFields(item) };
+}
+
+/**
+ * Logo hints copied off the item: the tag is what the player needs to build a
+ * URL, and an episode without one borrows its series' logo. Zero requests.
+ */
+function logoFields(item: {
+  imageTags?: Record<string, string>;
+  seriesId?: string | null;
+}): Pick<PlaybackMeta, "logoTag" | "logoSeriesId"> {
+  return {
+    logoTag: item.imageTags?.Logo ?? null,
+    logoSeriesId: item.seriesId ?? null,
+  };
 }
 
 
