@@ -26,9 +26,6 @@ const AUTO_HIDE_MS = 2500;
 const SEEK_STEP_SECONDS = 10;
 const SEEK_HOLD_MS = 900;
 const VOLUME_HOLD_MS = 700;
-/** Transport buttons, as in Plex: back 10 s, forward 30 s. */
-const SKIP_BACK_SECONDS = 10;
-const SKIP_FORWARD_SECONDS = 30;
 
 function formatTime(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds));
@@ -648,15 +645,6 @@ export default function Overlay() {
     setMenu(null);
   };
 
-  /** Transport skip. Steps from a pending seek so quick presses accumulate. */
-  const skip = (delta: number) => {
-    if (!snapshot || snapshot.durationSeconds <= 0) return;
-    const from = seekDraftRef.current ?? snapshot.positionSeconds;
-    const target = Math.min(Math.max(0, from + delta), snapshot.durationSeconds);
-    send({ type: "seek", seconds: target });
-    holdSeek(target);
-  };
-
   /** A press on the empty strip above the bar closes the popover (Plex-like). */
   const handlePanelPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !event.isPrimary) return;
@@ -770,6 +758,11 @@ export default function Overlay() {
   // The player resolves this once per item; absent means "fall back to text".
   const logoUrl = meta?.logoUrl ?? null;
   const showLogo = Boolean(logoUrl) && !logoFailed;
+  // Episode transport replaces the old ±skip buttons. The player page owns the
+  // decision (it knows the episode run); the controls never query the server.
+  const episodeNav = meta?.hasPrevEpisode != null || meta?.hasNextEpisode != null;
+  const hasPrevEpisode = meta?.hasPrevEpisode === true;
+  const hasNextEpisode = meta?.hasNextEpisode === true;
   useEffect(() => {
     setLogoFailed(false);
   }, [logoUrl]);
@@ -952,18 +945,21 @@ export default function Overlay() {
 
         <div className="ov-controls">
           <div className="ov-group ov-group--left">
-            <button
-              className="ov-btn"
-              type="button"
-              data-no-drag="true"
-              onPointerDown={actionPointerDown(() => skip(-SKIP_BACK_SECONDS))}
-              onKeyDown={actionKeyDown(() => skip(-SKIP_BACK_SECONDS))}
-              onClick={swallowClick}
-              disabled={!canSeek}
-              aria-label={`后退 ${SKIP_BACK_SECONDS} 秒`}
-            >
-              <OverlayIcon name="replay-10" size={24} />
-            </button>
+            {episodeNav && (
+              <button
+                className="ov-btn"
+                type="button"
+                data-no-drag="true"
+                onPointerDown={actionPointerDown(() => send({ type: "previous" }))}
+                onKeyDown={actionKeyDown(() => send({ type: "previous" }))}
+                onClick={swallowClick}
+                disabled={!hasPrevEpisode}
+                aria-label="上一集"
+                title="上一集"
+              >
+                <OverlayIcon name="previous-episode" size={22} />
+              </button>
+            )}
             {errorMessage ? (
               <button
                 key="retry"
@@ -994,18 +990,21 @@ export default function Overlay() {
                 <OverlayIcon name={playing ? "pause" : "play"} size={22} />
               </button>
             )}
-            <button
-              className="ov-btn"
-              type="button"
-              data-no-drag="true"
-              onPointerDown={actionPointerDown(() => skip(SKIP_FORWARD_SECONDS))}
-              onKeyDown={actionKeyDown(() => skip(SKIP_FORWARD_SECONDS))}
-              onClick={swallowClick}
-              disabled={!canSeek}
-              aria-label={`前进 ${SKIP_FORWARD_SECONDS} 秒`}
-            >
-              <OverlayIcon name="forward-30" size={24} />
-            </button>
+            {episodeNav && (
+              <button
+                className="ov-btn"
+                type="button"
+                data-no-drag="true"
+                onPointerDown={actionPointerDown(() => send({ type: "next" }))}
+                onKeyDown={actionKeyDown(() => send({ type: "next" }))}
+                onClick={swallowClick}
+                disabled={!hasNextEpisode}
+                aria-label="下一集"
+                title="下一集"
+              >
+                <OverlayIcon name="next-episode" size={22} />
+              </button>
+            )}
           </div>
 
           <div className="ov-group ov-group--center">

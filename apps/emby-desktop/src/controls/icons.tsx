@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 export type OverlayIconName =
   | "play"
   | "pause"
-  | "replay-10"
-  | "forward-30"
+  | "previous-episode"
+  | "next-episode"
   | "volume"
   | "volume-low"
   | "volume-off"
@@ -19,22 +19,6 @@ export type OverlayIconName =
   | "info";
 
 const SPEAKER = <path d="M4 9.5h3l4.5-4v13l-4.5-4H4z" fill="currentColor" />;
-
-function SkipLabel({ children }: { children: string }) {
-  return (
-    <text
-      x="12"
-      y="14.9"
-      textAnchor="middle"
-      fontSize="7.4"
-      fontWeight="700"
-      fill="currentColor"
-      stroke="none"
-    >
-      {children}
-    </text>
-  );
-}
 
 // 24x24 line icons drawn for this app (no third-party artwork).
 const PATHS: Record<OverlayIconName, ReactNode> = {
@@ -51,19 +35,17 @@ const PATHS: Record<OverlayIconName, ReactNode> = {
       <rect x="13.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none" />
     </>
   ),
-  // Open circle turning counter-clockwise, arrow at the top.
-  "replay-10": (
+  // Episode transport, as in Emby Theater: a bar with a chevron pointing at it.
+  "previous-episode": (
     <>
-      <path d="M5.45 7.4A8 8 0 1 0 12 4" />
-      <path d="M13.3 1.6 10.9 4l2.4 2.4" />
-      <SkipLabel>10</SkipLabel>
+      <path d="M6.5 5.5v13" />
+      <path d="M19 5.8 10 12l9 6.2z" fill="currentColor" stroke="none" />
     </>
   ),
-  "forward-30": (
+  "next-episode": (
     <>
-      <path d="M18.55 7.4A8 8 0 1 1 12 4" />
-      <path d="M10.7 1.6 13.1 4l-2.4 2.4" />
-      <SkipLabel>30</SkipLabel>
+      <path d="M17.5 5.5v13" />
+      <path d="M5 5.8 14 12l-9 6.2z" fill="currentColor" stroke="none" />
     </>
   ),
   volume: (

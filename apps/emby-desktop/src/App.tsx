@@ -338,8 +338,23 @@ export default function App() {
     clearPlaybackError();
   }, [clearPlaybackError, route.screen]);
 
-  /** Episodes still to play: [0] is on screen, the rest auto-play in order. */
-  const queueRef = useRef<EmbyItem[] | null>(null);
+  /**
+   * The whole ordered episode run of the series on screen, fetched once per
+   * series and shared by auto-play, the previous-episode action and the
+   * previous/next availability the controls show. One request per series, no
+   * matter how many episodes the user walks through.
+   */
+  const episodeRunRef = useRef<{ seriesId: string; items: Promise<EmbyItem[]> } | null>(null);
+  /** The item actually on screen in the player (auto-play and step both update it). */
+  const playingItemRef = useRef<EmbyItem | null>(null);
+  /** One episode switch at a time: a double click must not skip two episodes. */
+  const episodeStepPendingRef = useRef(false);
+  /**
+   * Ordered episode ids of the series on screen; null for anything that is not
+   * an episode. The player page turns this into the previous/next availability
+   * it broadcasts, so the controls never query the server.
+   */
+  const [episodeRunIds, setEpisodeRunIds] = useState<string[] | null>(null);
 
   // The single session-state transition: signed-in lands on home once the
   // login page is no longer current; signed-out always returns to login and
@@ -348,7 +363,9 @@ export default function App() {
     if (sessionState.status === "signedIn") {
       setRoute((current) => (current.screen === "login" ? { screen: "home" } : current));
     } else if (sessionState.status === "signedOut") {
-      queueRef.current = null;
+      episodeRunRef.current = null;
+      playingItemRef.current = null;
+      setEpisodeRunIds(null);
       setRoute({ screen: "login" });
     }
   }, [sessionState.status]);
@@ -361,54 +378,119 @@ export default function App() {
       queue: EmbyItem[] | null = null,
       trackScope: string | null = null,
     ) => {
-      queueRef.current = queue;
+      // The queue is a forward slice (the detail page hands over the episodes
+      // after the clicked one), so it only identifies the item on screen; the
+      // full run is resolved from the series once, see loadEpisodeRun.
+      playingItemRef.current = queue?.[0] ?? null;
       setRoute({ screen: "player", playback, meta, returnTo, trackScope });
     },
     [],
   );
 
-  /** Auto-play the next queued episode; false when the queue is exhausted. */
-  const playNext = useCallback(async () => {
-    let queue = queueRef.current;
-    if (!queue || queue.length === 0) return false;
-    if (queue.length < 2) {
-      // Opened from continue-watching: only the current episode is queued, so
-      // fetch the rest of the series on demand.
-      const current = queue[0];
-      if (current.type !== "Episode" || !current.seriesId) return false;
+  /**
+   * The whole ordered episode run of one series, fetched at most once per
+   * series and shared by auto-play, the previous-episode action and the
+   * previous/next availability the controls show. Same request the auto-play
+   * path always made; nothing new is queried.
+   */
+  const loadEpisodeRun = useCallback(
+    async (item: EmbyItem): Promise<EmbyItem[] | null> => {
+      if (item.type !== "Episode" || !item.seriesId) return null;
+      const cached = episodeRunRef.current;
+      if (cached && cached.seriesId === item.seriesId) return cached.items;
+      // Cache the promise, not the result: the availability effect and a quick
+      // "next" press can ask at the same time, and the series must be fetched
+      // only once.
+      const pending = embyItems({
+        parentId: item.seriesId,
+        includeItemTypes: "Episode",
+        recursive: true,
+        sortBy: "ParentIndexNumber,IndexNumber",
+        limit: 500,
+      }).then((page) => page.items);
+      episodeRunRef.current = { seriesId: item.seriesId, items: pending };
       try {
-        const page = await embyItems({
-          parentId: current.seriesId,
-          includeItemTypes: "Episode",
-          recursive: true,
-          sortBy: "ParentIndexNumber,IndexNumber",
-          limit: 500,
-        });
-        const index = page.items.findIndex((entry) => entry.id === current.id);
-        if (index < 0 || index + 1 >= page.items.length) return false;
-        queue = page.items.slice(index);
-        queueRef.current = queue;
+        return await pending;
       } catch (reason) {
-        console.warn("[player] could not load the next episode", reason);
-        return false;
+        console.warn("[player] could not load the episode list", reason);
+        episodeRunRef.current = null;
+        return null;
       }
+    },
+    [],
+  );
+
+  /**
+   * Move `delta` episodes inside the current run and really start that file.
+   * False (and nothing changes) at either end of the run, on a launch failure,
+   * or when the item on screen is not an episode.
+   */
+  const stepEpisode = useCallback(
+    async (delta: number): Promise<boolean> => {
+      const currentItem = playingItemRef.current;
+      if (!currentItem || episodeStepPendingRef.current) return false;
+      episodeStepPendingRef.current = true;
+      try {
+        const run = await loadEpisodeRun(currentItem);
+        if (!run) return false;
+        const index = run.findIndex((entry) => entry.id === currentItem.id);
+        const targetIndex = index + delta;
+        if (index < 0 || targetIndex < 0 || targetIndex >= run.length) return false;
+        const next = run[targetIndex];
+        const target = await launch(next.id);
+        if (!target) return false;
+        playingItemRef.current = next;
+        const meta =
+          next.type === "Episode"
+            ? { ...episodePlaybackMeta(next.seriesName, next), chapters: itemChapters(next) }
+            : { ...itemPlaybackMeta(next), chapters: itemChapters(next) };
+        setRoute((current) =>
+          current.screen === "player"
+            ? { ...current, playback: target, meta, trackScope: next.seriesId ?? next.id }
+            : current,
+        );
+        return true;
+      } finally {
+        episodeStepPendingRef.current = false;
+      }
+    },
+    [launch, loadEpisodeRun],
+  );
+
+  /** Auto-play the next queued episode; false when the run is exhausted. */
+  const playNext = useCallback(() => stepEpisode(1), [stepEpisode]);
+  /** Explicit "previous episode" from the controls. */
+  const playPrevious = useCallback(() => stepEpisode(-1), [stepEpisode]);
+
+  /**
+   * Previous/next availability for the controls. Recomputed when the item on
+   * screen changes; the episode run is fetched once per series and cached, so
+   * walking through episodes costs no extra requests.
+   */
+  const playingItemId = route.screen === "player" ? route.playback.itemId : null;
+
+  useEffect(() => {
+    if (!playingItemId) {
+      setEpisodeRunIds(null);
+      return undefined;
     }
-    if (!queue || queue.length < 2) return false;
-    const next = queue[1];
-    const target = await launch(next.id);
-    if (!target) return false;
-    queueRef.current = queue.slice(1);
-    const meta =
-      next.type === "Episode"
-        ? { ...episodePlaybackMeta(next.seriesName, next), chapters: itemChapters(next) }
-        : { ...itemPlaybackMeta(next), chapters: itemChapters(next) };
-    setRoute((current) =>
-      current.screen === "player"
-        ? { ...current, playback: target, meta, trackScope: next.seriesId ?? next.id }
-        : current,
-    );
-    return true;
-  }, [launch]);
+    const item = playingItemRef.current;
+    // A movie (or a route the ref does not describe yet) gets no episode run,
+    // so the player page broadcasts no neighbours and the controls render
+    // neither transport button.
+    if (!item || item.id !== playingItemId || item.type !== "Episode" || !item.seriesId) {
+      setEpisodeRunIds(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void loadEpisodeRun(item).then((run) => {
+      if (cancelled) return;
+      setEpisodeRunIds(run ? run.map((entry) => entry.id) : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadEpisodeRun, playingItemId]);
 
   /** Continue-watching cards start playback directly; the server supplies the resume point. */
   const resumeItem = useCallback(
@@ -469,9 +551,14 @@ export default function App() {
           playback={route.playback}
           meta={route.meta}
           trackScope={route.trackScope}
-          onNext={autoPlay ? playNext : undefined}
+          onNext={playNext}
+          onPrevious={playPrevious}
+          autoPlayNext={autoPlay}
+          episodeRun={episodeRunIds}
           onBack={() => {
-            queueRef.current = null;
+            episodeRunRef.current = null;
+            playingItemRef.current = null;
+            setEpisodeRunIds(null);
             setRoute({
               screen: "detail",
               itemId: route.returnTo.itemId,

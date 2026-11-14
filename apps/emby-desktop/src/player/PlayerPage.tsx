@@ -79,8 +79,19 @@ interface PlayerPageProps {
   meta?: PlaybackMeta;
   /** Series (or movie) id; keys the remembered audio/subtitle choice. */
   trackScope?: string | null;
-  /** Start the next queued item; resolves false when there is none. */
+  /** Start the next episode; resolves false when there is none. */
   onNext?: () => Promise<boolean>;
+  /** Start the previous episode; resolves false when there is none. */
+  onPrevious?: () => Promise<boolean>;
+  /** Whether finishing an episode auto-advances (the "autoplay" setting). */
+  autoPlayNext?: boolean;
+  /**
+   * Ordered ids of the current series' episodes, from the shell's queue. Null
+   * means "not an episode": the controls then show neither transport button.
+   * The player works out the neighbours from this list, and the overlay never
+   * queries the server.
+   */
+  episodeRun?: readonly string[] | null;
   onBack: () => void;
 }
 
@@ -130,6 +141,9 @@ export default function PlayerPage({
   meta,
   trackScope = null,
   onNext,
+  onPrevious,
+  autoPlayNext = false,
+  episodeRun = null,
   onBack,
 }: PlayerPageProps) {
   const {
@@ -176,6 +190,20 @@ export default function PlayerPage({
   const logoSeriesId = meta?.logoSeriesId ?? null;
   const playbackItemId = playback?.itemId ?? null;
 
+  /**
+   * Episode navigation, worked out from the shell's ordered episode run: the
+   * position of the item on screen decides both neighbours. Null for anything
+   * that is not an episode, which is what removes the buttons entirely.
+   */
+  const episodeIndex = episodeRun && playbackItemId ? episodeRun.indexOf(playbackItemId) : -1;
+  const episodeNav = useMemo(
+    () =>
+      episodeRun && episodeIndex >= 0
+        ? { hasPrev: episodeIndex > 0, hasNext: episodeIndex + 1 < episodeRun.length }
+        : null,
+    [episodeIndex, episodeRun],
+  );
+
   useEffect(() => {
     setLogoUrl(null);
     if (!isDesktop || !playbackItemId) return;
@@ -199,10 +227,25 @@ export default function PlayerPage({
     };
   }, [isDesktop, logoSeriesId, logoTag, playbackItemId]);
 
-  /** What the controls receive: the title row plus the resolved logo URL. */
+  /**
+   * What the controls receive: the title row, the resolved logo URL and the
+   * episode neighbours. Only episodes get neighbours, so a movie leaves both
+   * flags undefined and the controls render neither transport button.
+   */
   const overlayMeta = useMemo(
-    () => (meta ? { ...meta, logoUrl } : null),
-    [meta, logoUrl],
+    () =>
+      meta
+        ? {
+            ...meta,
+            logoUrl,
+            // Only episodes carry neighbours; a movie has neither key and the
+            // controls then render no episode transport at all.
+            ...(episodeNav
+              ? { hasPrevEpisode: episodeNav.hasPrev, hasNextEpisode: episodeNav.hasNext }
+              : {}),
+          }
+        : null,
+    [episodeNav, meta, logoUrl],
   );
 
   const isFullscreenRef = useRef(isFullscreen);
@@ -362,7 +405,10 @@ export default function PlayerPage({
   // Auto-play the next queued episode shortly after the current one ends.
   useEffect(() => {
     setNextUnavailable(false);
-    if (!isDesktop || !playback || !onNext || status !== "ended") return;
+    if (!isDesktop || !playback || !onNext || !autoPlayNext || status !== "ended") return;
+    // Only episodes with a known next neighbour auto-advance: the last episode
+    // of a run (and anything that is not an episode) has nowhere to go.
+    if (episodeNav?.hasNext !== true) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void (async () => {
@@ -374,7 +420,7 @@ export default function PlayerPage({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [isDesktop, onNext, playback, status]);
+  }, [autoPlayNext, episodeNav, isDesktop, onNext, playback, status]);
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -502,6 +548,12 @@ export default function PlayerPage({
         case "back":
           leavePlayer();
           break;
+        case "previous":
+          void onPrevious?.();
+          break;
+        case "next":
+          void onNext?.();
+          break;
         case "retry":
           retryPlayback();
           break;
@@ -512,6 +564,8 @@ export default function PlayerPage({
     [
       handleSeek,
       leavePlayer,
+      onNext,
+      onPrevious,
       retryPlayback,
       selectTrack,
       setVolume,
@@ -536,7 +590,7 @@ export default function PlayerPage({
   /** Never a failure: "ended" and the auto-play hand-off need a status line too. */
   const notice =
     status === "ended"
-      ? onNext && !nextUnavailable
+      ? autoPlayNext && onNext && !nextUnavailable && episodeNav?.hasNext === true
         ? "播放结束，正在播放下一集…"
         : "播放结束"
       : null;
@@ -599,6 +653,7 @@ export default function PlayerPage({
     meta?.subtitle ?? "",
     meta?.chapters?.length ?? 0,
     logoUrl ?? "",
+    episodeNav ? `${episodeNav.hasPrev}:${episodeNav.hasNext}` : "none",
     stats ? 1 : 0,
   ].join("|");
 
@@ -616,7 +671,18 @@ export default function PlayerPage({
     const urgent = stateSignature !== lastSignatureRef.current;
     lastSignatureRef.current = stateSignature;
     scheduleOverlayState(urgent);
-  }, [errorText, isDesktop, meta, notice, overlayMeta, scheduleOverlayState, snapshot, stateSignature, stats]);
+  }, [
+    episodeNav,
+    errorText,
+    isDesktop,
+    meta,
+    notice,
+    overlayMeta,
+    scheduleOverlayState,
+    snapshot,
+    stateSignature,
+    stats,
+  ]);
 
   useEffect(() => {
     return () => {

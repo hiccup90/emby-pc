@@ -30,6 +30,8 @@ export const OVERLAY_TOP_BAND_MAX_WIDTH = 620;
 
 export type OverlayAction =
   | { type: "toggle-play" }
+  | { type: "previous" }
+  | { type: "next" }
   | { type: "seek"; seconds: number }
   | { type: "set-volume"; value: number }
   | { type: "toggle-mute" }

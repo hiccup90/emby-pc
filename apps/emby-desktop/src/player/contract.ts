@@ -69,6 +69,13 @@ export interface PlaybackMeta {
   logoSeriesId?: string | null;
   /** Resolved logo URL; null/absent falls back to the plain title text. */
   logoUrl?: string | null;
+  /**
+   * Episode navigation, computed by the shell from its episode run and put on
+   * the wire by the player page. Both absent means "not an episode" (a movie
+   * has no previous/next neighbour), so the controls show no such buttons.
+   */
+  hasPrevEpisode?: boolean;
+  hasNextEpisode?: boolean;
 }
 
 export interface OpenRequest {

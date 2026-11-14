@@ -185,16 +185,28 @@ function wordmarkSvg(title: string): string {
   return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }
 
-/** Preview title row; `?title=` / `?subtitle=` override it (empty clears). */
+/**
+ * Preview title row; `?title=` / `?subtitle=` override it (empty clears).
+ * `?episode=movie` hides the previous/next buttons, and `?prev=0` / `?next=0`
+ * disable one of them, so the harness can capture every transport state.
+ */
 export function createPreviewMeta(): PlaybackMeta {
   const params = previewParams();
   const title = params.get("title") ?? "长安夜话";
+  const kind = params.get("episode") ?? "middle";
+  const isMovie = kind === "movie";
+  const hasPrev = isMovie ? undefined : kind === "first" ? false : params.get("prev") !== "0";
+  const hasNext = isMovie ? undefined : kind === "last" ? false : params.get("next") !== "0";
   return {
     title,
     subtitle: params.has("subtitle")
       ? params.get("subtitle") || null
-      : "S1 · E8 — 上元灯会",
+      : isMovie
+        ? "2021"
+        : "S1 · E8 — 上元灯会",
     logoUrl: previewLogo(title),
+    hasPrevEpisode: hasPrev,
+    hasNextEpisode: hasNext,
     chapters: [
       { seconds: 0, title: "开场" },
       { seconds: 420, title: "第一幕" },
