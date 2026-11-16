@@ -185,12 +185,12 @@ struct Inner {
     /// is still faded out. The next state change from the page (or
     /// `WARMUP_FALLBACK`) collapses it back to the bar strip.
     warmup_pending: bool,
-    /// Whether the frame has already been forced to compose again since this
-    /// window was last shown. A caption that was composed into the window
-    /// surface *before* the styles were fixed is not removed by a style change
-    /// alone, so one forced frame + child repaint per show is what actually
-    /// clears it; more than one would only cost a repaint per menu toggle.
-    frame_forced: bool,
+    /// Region signature the frame was last forced to compose with. A caption
+    /// composed into the window surface *before* the styles were fixed is only
+    /// removed by re-composing the frame, and the bug is intermittent, so every
+    /// show and every distinct region gets one forced composition. `None` after
+    /// a hide, which makes the next show force it again.
+    forced_region: Option<String>,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -219,7 +219,7 @@ impl OverlayState {
                 interaction_generation: 0,
                 suspended: false,
                 warmup_pending: false,
-                frame_forced: false,
+                forced_region: None,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -231,31 +231,36 @@ impl OverlayState {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Force one frame + child repaint per show cycle, and only while the region
-    /// actually exposes the top band.
+    /// Force a frame + child repaint for a region that has not been composed
+    /// since the last hide.
     ///
-    /// The flag is reset in `hide()` and set here, so opening a track menu or
-    /// switching between the warm-up and the bar region does not pay for another
-    /// synchronous repaint: only the first composition after a show can still
-    /// carry the stale caption.
-    fn force_frame_once(&self, controls: &WebviewWindow, bands: Bands, reason: &str) {
+    /// The caption this fixes is intermittent: it is whatever frame happened to
+    /// be composed while the window still carried one, and that composition can
+    /// survive any number of style changes afterwards. So the rule is: every
+    /// show, every wake from auto-hide, every distinct region, and after any
+    /// strip that changed a style bit — never "only the first time", which
+    /// would just bet on the bug appearing once. Repeated identical signatures
+    /// are skipped, so a present loop cannot turn into a repaint loop.
+    fn force_frame_if_changed(
+        &self,
+        controls: &WebviewWindow,
+        bands: Bands,
+        signature: &str,
+        reason: &str,
+    ) {
         if bands.top_height == 0 || bands.top_width == 0 {
             return;
         }
         {
             let mut inner = self.lock();
-            if inner.frame_forced {
+            if inner.forced_region.as_deref() == Some(signature) {
                 return;
             }
-            inner.frame_forced = true;
+            inner.forced_region = Some(signature.to_string());
         }
         #[cfg(windows)]
         if let Ok(hwnd) = controls_hwnd(controls) {
-            force_frame_redraw(
-                hwnd,
-                &format!("top={}x{}", bands.top_width, bands.top_height),
-                reason,
-            );
+            force_frame_redraw(hwnd, signature, reason);
         }
         #[cfg(not(windows))]
         {
@@ -458,10 +463,24 @@ impl OverlayState {
         }
         match controls.set_ignore_cursor_events(ignore) {
             Ok(()) => {
-                self.lock().cursor_ignored = Some(ignore);
+                let generation = {
+                    let mut inner = self.lock();
+                    inner.cursor_ignored = Some(ignore);
+                    inner.interaction_generation
+                };
                 // `set_ignore_cursor_events` rebuilds the whole style from
                 // tao's window flags, so the caption strip has to run again.
                 reassert_controls_chrome(controls);
+                // Every wake (the bar coming back from auto-hide) composes the
+                // frame once more before the bar is shown again. The region
+                // does not change on an auto-hide cycle, so this is the only
+                // point that can guarantee a clean frame for a wake.
+                if !ignore {
+                    if let Some(bands) = self.lock().last_bands {
+                        let signature = format!("wake-{generation}");
+                        self.force_frame_if_changed(controls, bands, &signature, "wake");
+                    }
+                }
             }
             Err(err) => eprintln!("[overlay] could not set click-through to {ignore}: {err}"),
         }
@@ -589,10 +608,12 @@ impl OverlayState {
             apply_region(&controls, geometry.2, geometry.3, full)?;
             self.lock().last_bands = Some(full);
             show_controls(&controls)?;
-            // The first composition after a show is the only one that can still
-            // contain a caption painted before the styles were fixed; redo it
-            // now, synchronously, so the user never sees that frame.
-            self.force_frame_once(&controls, full, "show");
+            // Every show composes the frame again. The caption is intermittent,
+            // so "once per playback" would be a bet; a full-height region
+            // plus a show is one repaint, which is the cheapest guarantee that
+            // the first visible frame of this show carries no stale caption.
+            let shown_signature = format!("{}x{} full", geometry.2, geometry.3);
+            self.force_frame_if_changed(&controls, full, &shown_signature, "show");
             {
                 let mut inner = self.lock();
                 inner.controls_shown = true;
@@ -620,6 +641,15 @@ impl OverlayState {
                     eprintln!("[overlay] warm-up fallback failed: {err}");
                 }
             });
+        } else if region_changed {
+            // The same guarantee for a region that changes while the window is
+            // already up (menu open/close, warm-up collapsing back to the bar):
+            // compose it once for this distinct region before it is seen.
+            let signature = format!(
+                "{}x{} top={}x{} bottom={}",
+                geometry.2, geometry.3, bands.top_width, bands.top_height, bands.bottom_height
+            );
+            self.force_frame_if_changed(&controls, bands, &signature, "region");
         }
         Ok(())
     }
@@ -633,8 +663,9 @@ impl OverlayState {
             // Without this the fallback thread could re-present a window the
             // page already left.
             inner.warmup_pending = false;
-            // Each show gets one forced frame repaint (see `force_frame_once`).
-            inner.frame_forced = false;
+            // The next show has to compose the frame again (see
+            // `force_frame_if_changed`).
+            inner.forced_region = None;
             shown
         };
         if !was_shown {
@@ -1235,6 +1266,20 @@ fn show_controls(window: &WebviewWindow) -> Result<(), String> {
     // Tauri keeps its own VISIBLE flag in sync; calling `ShowWindow` directly
     // would desynchronise it. Activation stays suppressed by focusable(false).
     window.show().map_err(|err| format!("show controls: {err}"))?;
+    // Hard fallback, re-applied on every show: DWM must not render a
+    // non-client frame for this window, and a DWM transition can drop that
+    // setting. The invalidation is what makes the next composition happen
+    // instead of re-using the frame DWM already has.
+    #[cfg(windows)]
+    if let Ok(hwnd) = controls_hwnd(window) {
+        let hr = disable_dwm_nc_rendering(hwnd);
+        let invalidated = unsafe {
+            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1)
+        };
+        diag::write(&format!(
+            "show chrome: dwm_nc_hr=0x{hr:08x} invalidate={invalidated}"
+        ));
+    }
     // `show` goes through tao's `WindowState::apply_diff`, which rebuilds
     // GWL_STYLE/GWL_EXSTYLE from the window flag set and puts `WS_CAPTION`
     // back (`to_window_styles` seeds it unconditionally for owned windows).
@@ -1639,6 +1684,30 @@ unsafe extern "system" fn caption_guard_proc(
     windows_sys::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
+/// Ask DWM not to render a non-client frame for this window at all.
+///
+/// The style guard already stops a caption from being *installed*; this stops
+/// DWM from composing a non-client frame from whatever it has cached, which is
+/// the other half of the problem. It is re-applied after every show because a
+/// DWM transition (fullscreen, restore, monitor change) can drop the setting.
+/// Best effort: not required for the style guard, so a failure on an older
+/// build is reported by the caller and otherwise ignored.
+#[cfg(windows)]
+fn disable_dwm_nc_rendering(hwnd: windows_sys::Win32::Foundation::HWND) -> i32 {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED,
+    };
+
+    let policy: i32 = DWMNCRP_DISABLED;
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY as u32,
+            &policy as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+    }
+}
 /// Put the guard on `hwnd` and switch DWM non-client rendering off.
 ///
 /// Idempotent: `SetWindowSubclass` with the same `(proc, id)` updates the
@@ -1664,26 +1733,8 @@ fn install_caption_guard(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(
         std::io::Error::last_os_error().raw_os_error()
     ));
 
-    // DWM keeps a non-client frame of its own once one was composited, and this
-    // window is layered while it is click-through. Turning non-client rendering
-    // off makes the frame stop being drawn independently of the client styles.
-    // Best effort: it is not required for the style guard to work, so a failure
-    // (older builds) is ignored on purpose.
-    {
-        use windows_sys::Win32::Graphics::Dwm::{
-            DwmSetWindowAttribute, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED,
-        };
-        let policy: i32 = DWMNCRP_DISABLED;
-        let hr = unsafe {
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_NCRENDERING_POLICY as u32,
-                &policy as *const i32 as *const core::ffi::c_void,
-                std::mem::size_of::<i32>() as u32,
-            )
-        };
-        diag::write(&format!("guard: DwmSetWindowAttribute(NCRENDERING_POLICY) hr=0x{hr:08x}"));
-    }
+    let hr = disable_dwm_nc_rendering(hwnd);
+    diag::write(&format!("guard: DwmSetWindowAttribute(NCRENDERING_POLICY) hr=0x{hr:08x}"));
 
     diag::describe("guard-installed", hwnd);
     diag::region("guard-installed", hwnd);
