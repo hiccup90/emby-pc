@@ -418,7 +418,12 @@ impl OverlayState {
             return;
         }
         match controls.set_ignore_cursor_events(ignore) {
-            Ok(()) => self.lock().cursor_ignored = Some(ignore),
+            Ok(()) => {
+                self.lock().cursor_ignored = Some(ignore);
+                // `set_ignore_cursor_events` rebuilds the whole style from
+                // tao's window flags, so the caption strip has to run again.
+                reassert_controls_chrome(controls);
+            }
             Err(err) => eprintln!("[overlay] could not set click-through to {ignore}: {err}"),
         }
     }
@@ -595,6 +600,10 @@ impl OverlayState {
                 eprintln!("[overlay] could not hide controls: {err}");
             } else {
                 eprintln!("[overlay] controls hidden");
+                // `hide` rewrites the style from tao's flags just like `show`;
+                // strip now so the next `present` cannot expose a caption that
+                // was silently re-added while the window was invisible.
+                reassert_controls_chrome(&controls);
             }
             // The hidden window keeps its ex-style; mark the click-through
             // state unknown so the next show re-applies it.
@@ -1025,6 +1034,11 @@ fn configure_controls_window(window: &WebviewWindow) -> Result<(), String> {
     // each call would force extra frame refreshes.
     #[cfg(windows)]
     apply_tool_window_style(window)?;
+
+    // The window is created with a real Win32 caption (see
+    // `harden_controls_window_chrome`); strip it before the window is ever
+    // shown so no frame can be composited with it.
+    harden_controls_window_chrome(window)?;
     Ok(())
 }
 
@@ -1067,7 +1081,12 @@ fn apply_tool_window_style(window: &WebviewWindow) -> Result<(), String> {
 fn show_controls(window: &WebviewWindow) -> Result<(), String> {
     // Tauri keeps its own VISIBLE flag in sync; calling `ShowWindow` directly
     // would desynchronise it. Activation stays suppressed by focusable(false).
-    window.show().map_err(|err| format!("show controls: {err}"))
+    window.show().map_err(|err| format!("show controls: {err}"))?;
+    // `show` goes through tao's `WindowState::apply_diff`, which rebuilds
+    // GWL_STYLE/GWL_EXSTYLE from the window flag set and puts `WS_CAPTION`
+    // back (`to_window_styles` seeds it unconditionally for owned windows).
+    reassert_controls_chrome(window);
+    Ok(())
 }
 
 /// True while any mouse button is physically down. Used only to delay the
@@ -1122,6 +1141,29 @@ fn left_button_state() -> (bool, bool) {
 /// non-Windows builds.
 #[cfg(windows)]
 pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
+    strip_native_caption(hwnd, "main window")
+}
+
+/// Remove the native caption/border bits tao always turns on.
+///
+/// tao's `WindowFlags::to_window_styles()` starts from
+/// `WS_CAPTION | WS_CLIPSIBLINGS | WS_SYSMENU` and only strips `WS_CAPTION`
+/// for `WS_CHILD` windows. Both windows here are frameless *owned* windows
+/// (`Parent::OwnedBy` / `Parent::None`), so they come out of `CreateWindowExW`
+/// with a real Win32 title bar that Windows paints in the system (light)
+/// colour. `harden_main_window_chrome` has always handled that for the main
+/// window. The controls window never needed it while its window region only
+/// exposed the bottom strip — the caption sits at the top of the window and was
+/// clipped away. Once the region started exposing the top-left band it became
+/// visible as a white "half title bar" (icon + "Emby Controls") over the video.
+///
+/// Every `SetWindowLongPtrW(GWL_STYLE, ...)` triggers a non-client repaint, so
+/// this must be re-run after any Tauri call that changes window flags:
+/// `WindowState::apply_diff` in tao rebuilds the *whole* style from its flag
+/// set on every change (`show`, `hide`, `set_ignore_cursor_events`), which puts
+/// `WS_CAPTION` straight back.
+#[cfg(windows)]
+fn strip_native_caption(hwnd: isize, what: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_WINDOWEDGE,
@@ -1129,7 +1171,7 @@ pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, GetWindowLongPtrW};
 
     if hwnd == 0 {
-        return Err("main window HWND is null".to_string());
+        return Err(format!("{what} HWND is null"));
     }
     let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
     unsafe {
@@ -1160,6 +1202,16 @@ pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
             0,
             SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
         );
+        // Read back instead of trusting the write: if some future tao/wry call
+        // restores the caption through a path that bypasses the helpers in this
+        // file, the bug shows up as a log line on the machine that can reproduce
+        // it rather than as a white strip someone has to notice in a screenshot.
+        // Deliberately a warning and not an `Err`: destroying the controls window
+        // because a cosmetic style bit survived would be worse than the strip.
+        let check = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        if check & (WS_CAPTION | WS_DLGFRAME) != 0 {
+            eprintln!("[overlay] {what} still carries a native caption (style 0x{check:08x})");
+        }
     }
     Ok(())
 }
@@ -1167,6 +1219,59 @@ pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn harden_main_window_chrome(_hwnd: isize) -> Result<(), String> {
     Ok(())
+}
+
+/// The controls window has the exact same tao quirk as the main window: it is
+/// an *owned* popup (`parent(&main)` maps to `Parent::OwnedBy`), so
+/// `WindowFlags::to_window_styles()` seeds `WS_CAPTION | WS_SYSMENU` and never
+/// strips it again. Until task-35 the window region only exposed the bottom
+/// strip, and the caption sits at the *top* of the window, so it was clipped
+/// away and nobody noticed. The top-left band now exposes that corner, and
+/// Windows paints the leftovers of a real Win32 title bar over the video: the
+/// app icon plus the window title ("Emby Controls").
+///
+/// It is worse than a cosmetic overlay: `WS_CAPTION` makes the non-client area
+/// taller, so the WebView2 client rect starts below the caption and every band
+/// in `apply_region` is offset from the HTML it is supposed to match.
+#[cfg(windows)]
+fn harden_controls_window_chrome(window: &WebviewWindow) -> Result<(), String> {
+    let hwnd = controls_hwnd(window)? as isize;
+    strip_native_caption(hwnd, "controls window")
+}
+
+#[cfg(not(windows))]
+fn harden_controls_window_chrome(_window: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+/// [`harden_controls_window_chrome`], then the same strip again on the main
+/// thread.
+///
+/// Call this after anything that makes tao rebuild the window style. Those
+/// calls (`show`, `hide`, `set_ignore_cursor_events`) post their rewrite through
+/// `execute_in_thread`: it runs inline on the event-loop thread but is queued
+/// from any other thread, and the click-through worker really does call in from
+/// its own thread. The inline strip below therefore cannot be the only one.
+fn reassert_controls_chrome(window: &WebviewWindow) {
+    if let Err(err) = harden_controls_window_chrome(window) {
+        eprintln!("[overlay] could not strip the controls caption: {err}");
+    }
+    #[cfg(windows)]
+    {
+        let Ok(hwnd) = controls_hwnd(window).map(|hwnd| hwnd as isize) else {
+            return;
+        };
+        let window = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            if let Err(err) = strip_native_caption(hwnd, "controls window") {
+                eprintln!("[overlay] could not strip the controls caption: {err}");
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+    }
 }
 
 // ---- cursor wake poller ------------------------------------------------------
