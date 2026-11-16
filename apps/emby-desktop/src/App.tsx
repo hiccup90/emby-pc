@@ -553,6 +553,10 @@ export default function App() {
           trackScope={route.trackScope}
           onNext={playNext}
           onPrevious={playPrevious}
+          // The browsing shell renders this banner; the player branch returns
+          // PlayerPage alone, so episode stepping has to hand it over or a
+          // failed launch during a step would show nothing at all.
+          launchError={playbackError}
           autoPlayNext={autoPlay}
           episodeRun={episodeRunIds}
           onBack={() => {

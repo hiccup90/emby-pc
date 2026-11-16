@@ -83,6 +83,13 @@ interface PlayerPageProps {
   onNext?: () => Promise<boolean>;
   /** Start the previous episode; resolves false when there is none. */
   onPrevious?: () => Promise<boolean>;
+  /**
+   * The shell's last launch failure, i.e. it could not obtain a playable URL
+   * from the server (PlaybackInfo). Episode stepping bypasses the browsing
+   * shell, so the banner that normally shows this is not on screen: without
+   * this prop a failed "next episode" would look like a dead button.
+   */
+  launchError?: string | null;
   /** Whether finishing an episode auto-advances (the "autoplay" setting). */
   autoPlayNext?: boolean;
   /**
@@ -142,6 +149,7 @@ export default function PlayerPage({
   trackScope = null,
   onNext,
   onPrevious,
+  launchError = null,
   autoPlayNext = false,
   episodeRun = null,
   onBack,
@@ -179,6 +187,12 @@ export default function PlayerPage({
   const restoredTracksForRef = useRef<string | null>(null);
   const savedTracksRef = useRef<string>("");
   const [nextUnavailable, setNextUnavailable] = useState(false);
+  /**
+   * Label of the last failed previous/next press, or null. The transport
+   * buttons live in the controls window, so a rejected step would otherwise
+   * have nowhere to report itself: `void onNext()` used to drop the result.
+   */
+  const [stepFailure, setStepFailure] = useState<string | null>(null);
 
   /**
    * Overlay logo. The item's own tag is free (copied by `itemPlaybackMeta`);
@@ -273,6 +287,8 @@ export default function PlayerPage({
     startReportedRef.current = false;
     stopReportedRef.current = false;
     lastStatusRef.current = "idle";
+    // A new item on screen supersedes whatever the last step press reported.
+    setStepFailure(null);
   }, [playbackKey]);
 
   useEffect(() => {
@@ -524,6 +540,33 @@ export default function PlayerPage({
     void open(url, resumeAt);
   }, [open, playback?.url, snapshot?.positionSeconds, sourceUrl]);
 
+  /**
+   * Run one previous/next press and keep its outcome.
+   *
+   * `onNext`/`onPrevious` resolve `false` when the shell could not start the
+   * neighbouring episode (no run, end of the run, or a failed PlaybackInfo).
+   * That failure is invisible from the controls window, which only ever sees
+   * the broadcast state, so it is turned into the page's own `stepFailure`
+   * line here. The shell's detailed `launchError` arrives one render later and
+   * `errorText` prefers it, so the user ends up with the real reason.
+   */
+  const runEpisodeStep = useCallback(
+    async (direction: "previous" | "next") => {
+      const action = direction === "next" ? onNext : onPrevious;
+      if (!action) return;
+      const label = direction === "next" ? "切换到下一集失败" : "切换到上一集失败";
+      setStepFailure(null);
+      try {
+        const started = await action();
+        if (!started) setStepFailure(label);
+      } catch (reason) {
+        console.warn(`[player] ${direction} episode failed`, reason);
+        setStepFailure(label);
+      }
+    },
+    [onNext, onPrevious],
+  );
+
   const handleOverlayAction = useCallback(
     (action: OverlayAction) => {
       switch (action.type) {
@@ -549,10 +592,10 @@ export default function PlayerPage({
           leavePlayer();
           break;
         case "previous":
-          void onPrevious?.();
+          void runEpisodeStep("previous");
           break;
         case "next":
-          void onNext?.();
+          void runEpisodeStep("next");
           break;
         case "retry":
           retryPlayback();
@@ -564,9 +607,8 @@ export default function PlayerPage({
     [
       handleSeek,
       leavePlayer,
-      onNext,
-      onPrevious,
       retryPlayback,
+      runEpisodeStep,
       selectTrack,
       setVolume,
       toggleFullscreen,
@@ -585,7 +627,26 @@ export default function PlayerPage({
   // + error) in one message, so what the controls show can never be a mix of
   // two different instants. Position-only changes are coalesced; anything the
   // user can act on (status, error, meta, tracks, volume) goes out at once.
-  const errorText = error ?? (snapshot?.status === "error" ? snapshot.error : null);
+  // The three ways playback can fail have three distinct sources, so the label
+  // below needs no string matching:
+  //   launchError        - the shell could not get a playable URL (PlaybackInfo)
+  //   error              - `player_open` rejected it (no stream confirmation in
+  //                        time, or the mpv worker was gone)
+  //   snapshot.error     - mpv took the file and failed later (END_FILE/error)
+  // Distinguishing them is what makes a single user report point at one stage.
+  const stageError =
+    launchError !== null
+      ? `取流失败：${launchError}`
+      : error !== null
+        ? `播放器启动失败：${error}`
+        : snapshot?.status === "error" && snapshot.error
+          ? `播放中断：${snapshot.error}`
+          : null;
+  const errorText = stepFailure
+    ? stageError
+      ? `${stepFailure}（${stageError}）`
+      : `${stepFailure}：没有可播放的剧集，或取流失败`
+    : stageError;
 
   /** Never a failure: "ended" and the auto-play hand-off need a status line too. */
   const notice =
