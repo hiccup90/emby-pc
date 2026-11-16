@@ -600,6 +600,10 @@ impl OverlayState {
                 eprintln!("[overlay] could not hide controls: {err}");
             } else {
                 eprintln!("[overlay] controls hidden");
+                #[cfg(windows)]
+                if let Ok(hwnd) = controls_hwnd(&controls) {
+                    diag::describe("after-hide", hwnd);
+                }
                 // `hide` rewrites the style from tao's flags just like `show`;
                 // strip now so the next `present` cannot expose a caption that
                 // was silently re-added while the window was invisible.
@@ -964,6 +968,11 @@ fn apply_region(
         // `bRedraw = 0`: the region only clips the existing WebView2 surface;
         // forcing a repaint here is what flashed the bar.
         let ok = unsafe { SetWindowRgn(hwnd, region, 0) };
+        diag::write(&format!(
+            "region: window={}x{} top=0,0,{top_width},{top_height} bottom=0,{bottom_top},{width},{height} SetWindowRgn={ok}",
+            width,
+            height,
+        ));
         if ok == 0 {
             unsafe {
                 DeleteObject(region as _);
@@ -984,6 +993,20 @@ fn apply_region(
 /// Create the hidden controls window during `setup`. A failure is logged by the
 /// caller and must not prevent the library UI from running.
 pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    // Diagnostics first, before anything that could fail: from here on every
+    // interesting step of this window's life lands in one file the user can send
+    // back, whether or not the overlay ends up working.
+    #[cfg(windows)]
+    diag::init(app.path().app_config_dir().ok());
+    #[cfg(windows)]
+    diag::write(&format!(
+        "controls window requested: build={} diag={}",
+        controls_build_id(),
+        diag::path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+    ));
+
     let main = app
         .get_webview_window(MAIN_LABEL)
         .ok_or_else(|| "controls window: missing main window".to_string())?;
@@ -999,7 +1022,11 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     )
     .parent(&main)
     .map_err(|err| format!("controls parent: {err}"))?
-    .title("Emby Controls")
+    // The title is diagnostics, not decoration: the caption that keeps
+    // reappearing is painted by Windows from exactly this string, so a
+    // screenshot of the bug also proves which build produced it. `diag` puts the
+    // same id in the log and into a small badge inside the controls page.
+    .title(format!("Emby Controls · {}", controls_build_id()))
     .transparent(true)
     .decorations(false)
     .skip_taskbar(true)
@@ -1010,14 +1037,57 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     .visible(false)
     .background_color(Color(0, 0, 0, 0))
     .inner_size(1.0, EXPANDED_HEIGHT)
+    // A line of small print in the controls page itself, so "still broken" and
+    // "built from the fixed commit" can be checked from one screenshot. Injected
+    // from here because the page is a separate, otherwise untouched webview.
+    .on_page_load(|webview, _payload| {
+        let script = format!(
+            "(() => {{ const tag = \"embypc-build\"; \
+             if (!document.body || document.getElementById(tag)) return; \
+             const node = document.createElement(\"div\"); \
+             node.id = tag; \
+             node.textContent = \"build {}\"; \
+             node.style.cssText = \"position:fixed;left:8px;bottom:2px;z-index:2147483647;\
+             pointer-events:none;font:9px/1.2 monospace;color:rgba(255,255,255,.55);\
+             text-shadow:0 0 2px rgba(0,0,0,.85);\"; \
+             document.body.appendChild(node); \
+             }})()",
+            controls_build_id(),
+        );
+        let _ = webview.eval(script);
+    })
     .build()
     .map_err(|err| format!("controls window: {err}"))?;
 
     if let Err(err) = configure_controls_window(&window) {
+        #[cfg(windows)]
+        diag::write(&format!("configure failed: {err}"));
         let _ = window.destroy();
         return Err(err);
     }
+
+    // The survey that rules other windows in or out as the source of a visible
+    // artifact: every window in play, with its rectangle, region and style.
+    #[cfg(windows)]
+    if let (Ok(controls_raw), Ok(main_raw)) = (controls_hwnd(&window), main.hwnd()) {
+        let main_raw = main_raw.0 as isize as windows_sys::Win32::Foundation::HWND;
+        diag::write("--- window survey ---");
+        diag::describe("main", main_raw);
+        diag::region("main", main_raw);
+        diag::children("main-child", main_raw);
+        diag::describe("controls", controls_raw);
+        diag::region("controls", controls_raw);
+    }
     Ok(window)
+}
+
+/// Build identifier: the short git sha injected by `build.rs`.
+///
+/// Also shown inside the controls page and used in the window title, so a
+/// screenshot of a broken build can be matched against a commit without asking
+/// the user anything. A source tree without git degrades to `unknown`.
+fn controls_build_id() -> &'static str {
+    option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
 }
 
 fn configure_controls_window(window: &WebviewWindow) -> Result<(), String> {
@@ -1082,6 +1152,11 @@ fn show_controls(window: &WebviewWindow) -> Result<(), String> {
     // Tauri keeps its own VISIBLE flag in sync; calling `ShowWindow` directly
     // would desynchronise it. Activation stays suppressed by focusable(false).
     window.show().map_err(|err| format!("show controls: {err}"))?;
+    #[cfg(windows)]
+    if let Ok(hwnd) = controls_hwnd(window) {
+        diag::describe("after-show", hwnd);
+        diag::region("after-show", hwnd);
+    }
     // `show` goes through tao's `WindowState::apply_diff`, which rebuilds
     // GWL_STYLE/GWL_EXSTYLE from the window flag set and puts `WS_CAPTION`
     // back (`to_window_styles` seeds it unconditionally for owned windows).
@@ -1144,6 +1219,224 @@ pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
     strip_native_caption(hwnd, "main window")
 }
 
+// ---- controls diagnostics ----------------------------------------------------
+
+/// Unconditional, file-based diagnostics for the controls window.
+///
+/// Three "the caption is still there" reports in a row, without any way to tell
+/// whether the code meant to remove it ever ran, is why this exists. It cannot
+/// depend on an environment variable (the application is started by
+/// double-click, so a variable set in a shell is not inherited) and it cannot
+/// use stderr (a release build is `windows_subsystem = "windows"` and has no
+/// console at all).
+///
+/// Every line carries a millisecond timestamp (time since start plus wall
+/// clock), the file is truncated on every launch so it only ever describes the
+/// run that reproduced the problem, and it is cut back to [`MAX_BYTES`] if a
+/// session manages to grow that far.
+///
+/// File: `<app config dir>/controls-diag.log`, i.e.
+/// `%APPDATA%\com.ember.emby-desktop\controls-diag.log` on Windows.
+#[cfg(windows)]
+mod diag {
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    /// Rotate in place instead of growing without bound.
+    pub const MAX_BYTES: u64 = 512 * 1024;
+
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    static START: OnceLock<Instant> = OnceLock::new();
+    static FILE: Mutex<Option<File>> = Mutex::new(None);
+    static LINES: AtomicU64 = AtomicU64::new(0);
+
+    /// Commit the binary was built from, injected by `build.rs`.
+    pub fn build_id() -> &'static str {
+        option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
+    }
+
+    pub fn path() -> Option<&'static PathBuf> {
+        PATH.get().and_then(|path| path.as_ref())
+    }
+
+    /// Truncate the file and write the banner. Best effort throughout: a
+    /// read-only directory may cost diagnostics, never the overlay.
+    pub fn init(dir: Option<PathBuf>) {
+        let path = dir.map(|dir| dir.join("controls-diag.log"));
+        let _ = PATH.set(path.clone());
+        if let Some(path) = path.as_ref() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // One launch, one file: what the user sends back always describes
+            // the run that reproduced the problem.
+            let _ = std::fs::remove_file(path);
+        }
+        let shown = match path.as_ref() {
+            Some(path) => path.display().to_string(),
+            None => "<no app config dir>".to_string(),
+        };
+        write(&format!(
+            "=== controls diag start pid={} build={} file={shown} ===",
+            std::process::id(),
+            build_id(),
+        ));
+    }
+
+    /// Append one timestamped line. Never panics, never blocks a window message
+    /// for longer than the write itself.
+    pub fn write(msg: &str) {
+        let Some(Some(path)) = PATH.get() else {
+            return;
+        };
+        let start = START.get_or_init(Instant::now);
+        let rel = start.elapsed().as_millis();
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_millis())
+            .unwrap_or(0);
+        let mut guard = match FILE.lock() {
+            Ok(guard) => guard,
+            Err(poison) => poison.into_inner(),
+        };
+        if guard.is_none() {
+            *guard = OpenOptions::new().create(true).append(true).open(path).ok();
+        }
+        let Some(file) = guard.as_mut() else {
+            return;
+        };
+        let _ = writeln!(file, "[+{rel:>7}ms {epoch}] {msg}");
+        let _ = file.flush();
+        let lines = LINES.fetch_add(1, Ordering::Relaxed) + 1;
+        if lines % 256 == 0 {
+            if let Ok(meta) = file.metadata() {
+                if meta.len() > MAX_BYTES {
+                    let _ = file.set_len(0);
+                    let _ = writeln!(
+                        file,
+                        "[+{rel:>7}ms {epoch}] --- truncated at {MAX_BYTES} bytes ---"
+                    );
+                }
+            }
+        }
+    }
+
+    /// One line describing a window. Everything needed to decide whether a
+    /// visible artifact could have been painted by it: class, title, style,
+    /// extended style, rectangle and owning thread.
+    pub fn describe(tag: &str, hwnd: windows_sys::Win32::Foundation::HWND) {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetClassNameW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
+            GetWindowTextW, GWL_EXSTYLE, GWL_STYLE,
+        };
+
+        if hwnd.is_null() {
+            write(&format!("{tag}: <null hwnd>"));
+            return;
+        }
+        let mut class = [0u16; 128];
+        let mut title = [0u16; 256];
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let mut class_text = String::new();
+        let mut title_text = String::new();
+        let (tid, style, ex_style) = unsafe {
+            let class_len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+            if class_len > 0 {
+                class_text = utf16(&class[..class_len as usize]);
+            }
+            let title_len = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+            if title_len > 0 {
+                title_text = utf16(&title[..title_len as usize]);
+            }
+            let _ = GetWindowRect(hwnd, &mut rect);
+            (
+                GetWindowThreadProcessId(hwnd, std::ptr::null_mut()),
+                GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
+            )
+        };
+        let raw = hwnd as isize;
+        write(&format!(
+            "{tag}: hwnd=0x{raw:x} tid={tid} class={class_text:?} title={title_text:?} \
+             style=0x{style:08x} ex=0x{ex_style:08x} rect=({},{},{},{}) size={}x{}",
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        ));
+    }
+
+    /// The window region as Windows actually holds it, plus the rectangle it
+    /// falls back to when no region is set. The visible white strip has to be
+    /// inside one of these to have any chance of coming from this window.
+    pub fn region(tag: &str, hwnd: windows_sys::Win32::Foundation::HWND) {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::GetWindowRgnBox;
+
+        if hwnd.is_null() {
+            return;
+        }
+        let mut box_rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let kind = unsafe { GetWindowRgnBox(hwnd, &mut box_rect) };
+        // `GetWindowRgnBox` returns the region type and copies its bounding box,
+        // which is what has to be compared against the visible white strip.
+        write(&format!(
+            "{tag}: region kind={kind} box=({},{},{},{}) size={}x{}",
+            box_rect.left,
+            box_rect.top,
+            box_rect.right,
+            box_rect.bottom,
+            box_rect.right - box_rect.left,
+            box_rect.bottom - box_rect.top,
+        ));
+    }
+
+    /// Describe every child window of `parent`. The native video host and the
+    /// WebView2 surfaces are children of the main window, so this is what rules
+    /// them out as the source of a visible artifact.
+    pub fn children(tag: &str, parent: windows_sys::Win32::Foundation::HWND) {
+        use windows_sys::Win32::Foundation::{HWND, LPARAM};
+        use windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows;
+
+        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> i32 {
+            let out = lparam as *mut Vec<HWND>;
+            if !out.is_null() && !hwnd.is_null() {
+                (*out).push(hwnd);
+            }
+            1
+        }
+
+        let mut found: Vec<HWND> = Vec::new();
+        let ok = unsafe { EnumChildWindows(parent, Some(collect), &mut found as *mut _ as isize) };
+        write(&format!("{tag}: EnumChildWindows -> {ok} ({} children)", found.len()));
+        for child in found {
+            describe(tag, child);
+        }
+    }
+
+    /// `GetClassNameW`/`GetWindowTextW` fill a UTF-16 buffer.
+    fn utf16(units: &[u16]) -> String {
+        String::from_utf16_lossy(units)
+    }
+}
+
 // ---- native caption guard ----------------------------------------------------
 //
 // Why this is a subclass and not another "strip after X" call.
@@ -1194,10 +1487,6 @@ const WM_STYLECHANGED_MSG: u32 = 0x007D;
 #[cfg(windows)]
 const CHROME_SUBCLASS_ID: usize = 0x454D_4243; // "EMBC"
 
-/// How many refusals to log before going quiet: enough for a bug report, not
-/// enough to flood the log of a session that toggles the bar thousands of times.
-#[cfg(windows)]
-const CAPTION_REFUSAL_LOG_LIMIT: u32 = 12;
 #[cfg(windows)]
 static CAPTION_REFUSALS: AtomicU32 = AtomicU32::new(0);
 /// One-shot flag so the "guard installed" line with the live style values is
@@ -1216,21 +1505,10 @@ static CHROME_GUARD_LOGGED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 fn log_chrome(line: &str) {
     eprintln!("{line}");
-    let Ok(value) = std::env::var(emby_mpv::options::LOG_ENV_VAR) else {
-        return;
-    };
-    if !emby_mpv::options::log_enabled_from(Some(&value)) {
-        return;
-    }
-    let mut dir = std::env::temp_dir();
-    dir.push("emby-desktop");
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("chrome-{}.log", std::process::id()));
-    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
-        return;
-    };
-    use std::io::Write;
-    let _ = writeln!(file, "{line}");
+    // Always, and without any opt-in: the previous version gated this on an
+    // environment variable, which a double-clicked application never inherits,
+    // so the evidence arrived exactly zero times.
+    diag::write(line);
 }
 
 /// The subclass procedure that owns the window style.
@@ -1255,24 +1533,27 @@ unsafe extern "system" fn caption_guard_proc(
             let index = wparam as i32;
             let styles = lparam as *mut STYLESTRUCT;
             if !styles.is_null() {
+                let old = (*styles).styleOld;
+                let asked = (*styles).styleNew;
                 if index == GWL_STYLE {
-                    let asked = (*styles).styleNew;
-                    if asked & (WS_CAPTION | WS_DLGFRAME) != 0 {
-                        (*styles).styleNew = asked & !(WS_CAPTION | WS_DLGFRAME);
-                        let seen = CAPTION_REFUSALS.fetch_add(1, Ordering::Relaxed) + 1;
-                        if seen <= CAPTION_REFUSAL_LOG_LIMIT {
-                            log_chrome(&format!(
-                                "[overlay] caption refused: asked 0x{asked:08x}, installed 0x{:08x} (#{seen})",
-                                (*styles).styleNew
-                            ));
-                        }
-                    }
+                    (*styles).styleNew &= !(WS_CAPTION | WS_DLGFRAME);
                 } else if index == GWL_EXSTYLE {
-                    let asked = (*styles).styleNew;
-                    if asked & WS_EX_WINDOWEDGE != 0 {
-                        (*styles).styleNew = asked & !WS_EX_WINDOWEDGE;
-                    }
+                    (*styles).styleNew &= !WS_EX_WINDOWEDGE;
                 }
+                let applied = (*styles).styleNew;
+                let refused = applied != asked;
+                if refused {
+                    CAPTION_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                }
+                // Every single one, unfiltered: this line is the proof that the
+                // guard is actually installed and actually runs, and it names
+                // the caller's intent (`asked`) next to what Windows then
+                // installs (`applied`).
+                diag::write(&format!(
+                    "STYLECHANGING idx={index} old=0x{old:08x} asked=0x{asked:08x} \
+                     applied=0x{applied:08x}{}",
+                    if refused { " REFUSED" } else { "" }
+                ));
             }
         }
         WM_STYLECHANGED_MSG => {
@@ -1286,7 +1567,10 @@ unsafe extern "system" fn caption_guard_proc(
                 && index == GWL_STYLE
                 && (*styles).styleNew & (WS_CAPTION | WS_DLGFRAME) != 0
             {
-                log_chrome("[overlay] caption survived a style change; stripping again");
+                diag::write(&format!(
+                    "STYLECHANGED idx={index} style=0x{:08x} STILL HAS CAPTION",
+                    (*styles).styleNew
+                ));
                 let _ = strip_native_caption(hwnd as isize, "controls window");
             }
         }
@@ -1306,11 +1590,19 @@ fn install_caption_guard(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(
     let installed =
         unsafe { SetWindowSubclass(hwnd, Some(caption_guard_proc), CHROME_SUBCLASS_ID, 0) };
     if installed == 0 {
-        return Err(format!(
-            "SetWindowSubclass failed: {}",
-            std::io::Error::last_os_error()
+        // Both the API result and the error code: 87 (invalid parameter) would
+        // mean a bad HWND, 0 with no error would mean the call never happened.
+        let error = std::io::Error::last_os_error();
+        diag::write(&format!(
+            "guard: SetWindowSubclass -> 0 last_error={:?} ({error})",
+            error.raw_os_error()
         ));
+        return Err(format!("SetWindowSubclass failed: {error}"));
     }
+    diag::write(&format!(
+        "guard: SetWindowSubclass -> {installed} (last_error={:?})",
+        std::io::Error::last_os_error().raw_os_error()
+    ));
 
     // DWM keeps a non-client frame of its own once one was composited, and this
     // window is layered while it is click-through. Turning non-client rendering
@@ -1322,7 +1614,7 @@ fn install_caption_guard(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(
             DwmSetWindowAttribute, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED,
         };
         let policy: i32 = DWMNCRP_DISABLED;
-        let _ = unsafe {
+        let hr = unsafe {
             DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_NCRENDERING_POLICY as u32,
@@ -1330,8 +1622,11 @@ fn install_caption_guard(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(
                 std::mem::size_of::<i32>() as u32,
             )
         };
+        diag::write(&format!("guard: DwmSetWindowAttribute(NCRENDERING_POLICY) hr=0x{hr:08x}"));
     }
 
+    diag::describe("guard-installed", hwnd);
+    diag::region("guard-installed", hwnd);
     if !CHROME_GUARD_LOGGED.swap(true, Ordering::Relaxed) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE,
