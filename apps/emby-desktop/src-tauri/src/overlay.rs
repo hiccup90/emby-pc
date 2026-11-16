@@ -108,7 +108,7 @@ pub fn resume(app: &AppHandle) {
 /// instead of a style/repaint fight.
 ///
 /// 40 logical px covers the 45-physical-pixel caption measured on a 200% display.
-/// The whole layout ships disabled by default: see `top_margin_enabled`.
+/// This layout is the default; `EMBY_TOP_MARGIN=0` is the documented way back.
 const NC_SAFE_MARGIN: f64 = 40.0;
 
 /// Diagnostic line that exists on every platform; the Windows-only `diag`
@@ -120,24 +120,27 @@ fn log_diag(line: &str) {
     let _ = line;
 }
 
-/// `EMBY_TOP_MARGIN=1` opts into the structural top-margin layout.
+/// The top-margin layout is the default. `EMBY_TOP_MARGIN=0` (also `false`/`off`)
+/// is the escape hatch back to the old geometry: `overlay_margin` then returns
+/// zero, every geometry/region/hit-test formula reduces to the previous
+/// behaviour, and the page gets no padding.
 ///
-/// Default **off**: `overlay_margin` returns zero, every geometry/region/hit-test
-/// formula reduces to the previous behaviour, and the page gets no padding. That
-/// is the zero-risk delivery; when the switch is off nothing about the layout
-/// may differ from the build before this feature existed.
+/// On real hardware the margin layout was verified end to end: no strip on
+/// repeated pauses, strips in the right place, no stalls.
 fn top_margin_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("EMBY_TOP_MARGIN") {
         Ok(value) => {
             let value = value.trim();
-            value == "1" || value.eq_ignore_ascii_case("true")
+            !(value == "0"
+                || value.eq_ignore_ascii_case("false")
+                || value.eq_ignore_ascii_case("off"))
         }
-        Err(_) => false,
+        Err(_) => true,
     })
 }
 
-/// The top margin in physical pixels; zero when the switch is off.
+/// The top margin in physical pixels; zero only when `EMBY_TOP_MARGIN=0`.
 fn overlay_margin(scale: f64) -> i32 {
     if !top_margin_enabled() {
         return 0;
@@ -648,7 +651,8 @@ impl OverlayState {
             return;
         }
         // Drop geometry events that our own placement caused. Only consulted
-        // with the margin layout on; the default path keeps the old behaviour.
+        // while the margin layout is active (`EMBY_TOP_MARGIN=0` turns it off
+        // and with it this guard).
         if overlay_margin(1.0) > 0 && self.lock().applying_geometry {
             log_diag("geometry: on_main_geometry event dropped (applying_geometry)");
             return;
@@ -722,10 +726,9 @@ impl OverlayState {
     }
 
     fn present(&self, app: &AppHandle, scale_override: Option<f64>) -> Result<(), String> {
-        // Feedback-loop guard, margin layout only: a window event that arrives
-        // while we are inside `SetWindowPos` must not start another placement.
-        // With the switch off this is not consulted at all, so the default path
-        // is unchanged.
+        // Feedback-loop guard: a window event that arrives while we are inside
+        // `SetWindowPos` must not start another placement. Only active while the
+        // margin layout is on; `EMBY_TOP_MARGIN=0` disables both.
         if overlay_margin(1.0) > 0 && self.lock().applying_geometry {
             log_diag("geometry: re-entrant present dropped (applying_geometry)");
             return Ok(());
@@ -1671,14 +1674,38 @@ mod diag {
         option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
     }
 
+    /// `EMBY_DIAG=1` (or `true`) turns the diagnostic file on.
+    fn enabled() -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| match std::env::var("EMBY_DIAG") {
+            Ok(value) => {
+                let value = value.trim();
+                value == "1" || value.eq_ignore_ascii_case("true")
+            }
+            Err(_) => false,
+        })
+    }
+
     pub fn path() -> Option<&'static PathBuf> {
         PATH.get().and_then(|path| path.as_ref())
     }
 
-    /// Truncate the file and write the banner. Best effort throughout: a
-    /// read-only directory may cost diagnostics, never the overlay.
+    /// Truncate the file and write the banner, and only when diagnostics were
+    /// explicitly asked for with `EMBY_DIAG=1`.
+    ///
+    /// Opt-in on purpose: the log is a debugging tool, not part of normal
+    /// operation, and a shipped package should not leave a file in the user's
+    /// config directory. With the switch off nothing is created, nothing is
+    /// written, and every write below returns immediately.
+    ///
+    /// Best effort throughout: a read-only directory may cost diagnostics,
+    /// never the overlay.
     pub fn init(dir: Option<PathBuf>) {
-        let path = dir.map(|dir| dir.join("controls-diag.log"));
+        let path = if enabled() {
+            dir.map(|dir| dir.join("controls-diag.log"))
+        } else {
+            None
+        };
         let _ = PATH.set(path.clone());
         if let Some(path) = path.as_ref() {
             if let Some(parent) = path.parent() {
@@ -1884,20 +1911,18 @@ static CAPTION_REFUSALS: AtomicU32 = AtomicU32::new(0);
 #[cfg(windows)]
 static CHROME_GUARD_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// Print a chrome/style line and, when the opt-in log is enabled, also append it
-/// to `%TEMP%\emby-desktop\chrome-<pid>.log`.
+/// Print a chrome/style line and, when `EMBY_DIAG=1` is set, append it to
+/// `%APPDATA%\com.ember.emby-desktop\controls-diag.log`.
 ///
 /// The style values are the only runtime evidence that the caption guard is
 /// doing its job, and a release build has no console at all
 /// (`#![windows_subsystem = "windows"]` drops stderr), so the same lines have to
-/// be reachable as a file the user can send along with a bug report. The switch
-/// is the existing `EMBY_MPV_LOG` opt-in; no new environment variable.
+/// be reachable as a file the user can send along with a bug report. The file is
+/// opt-in so a shipped package leaves nothing behind in the user's config
+/// directory.
 #[cfg(windows)]
 fn log_chrome(line: &str) {
     eprintln!("{line}");
-    // Always, and without any opt-in: the previous version gated this on an
-    // environment variable, which a double-clicked application never inherits,
-    // so the evidence arrived exactly zero times.
     diag::write(line);
 }
 
@@ -2360,43 +2385,37 @@ mod tests {
     }
 
     #[test]
-    fn geometry_covers_the_whole_video_rect() {
-        let (x, y, width, height) = compute_geometry(
-            PhysicalPosition::new(100, 50),
-            50,
-            1.0,
-            &video(0.0, 40.0, 1280.0, 720.0),
-            (0, 0),
-        );
-        assert_eq!((x, y), (100, 90));
-        assert_eq!((width, height), (1280, 720));
-    }
-
-    #[test]
-    fn geometry_leaves_the_resize_band_free() {
-        let (x, y, width, height) = compute_geometry(
-            PhysicalPosition::new(100, 50),
-            50,
-            1.0,
-            &video(0.0, 0.0, 1280.0, 720.0),
-            (4, 4),
-        );
-        assert_eq!((x, y), (104, 54));
-        assert_eq!((width, height), (1272, 712));
-    }
-
-    #[test]
-    fn default_layout_is_unchanged_by_the_margin_feature() {
-        // The zero margin is the shipped default; it must reproduce the
-        // pre-margin geometry and region exactly.
-        let literal = compute_geometry(
-            PhysicalPosition::new(100, 50),
-            50,
-            1.0,
-            &video(0.0, 40.0, 1280.0, 720.0),
-            (0, 0),
-        );
+    fn default_geometry_applies_the_top_margin() {
+        // The margin layout is the shipped default: the window is lifted by
+        // `NC_SAFE_MARGIN` logical pixels and grows by exactly that much.
+        let sync = video(0.0, 40.0, 1280.0, 720.0);
+        let shipped = compute_geometry(PhysicalPosition::new(100, 50), 50, 1.0, &sync, (0, 0));
         let explicit = compute_geometry_with_margin(
+            PhysicalPosition::new(100, 50),
+            50,
+            1.0,
+            &sync,
+            (0, 0),
+            NC_SAFE_MARGIN as i32,
+        );
+        assert_eq!(shipped, explicit);
+        assert_eq!(shipped, (100, 50, 1280, 760));
+        // Video top is at 90; the window top is 40 above it.
+        assert_eq!(shipped.1 + NC_SAFE_MARGIN as i32, 90);
+    }
+
+    #[test]
+    fn default_region_starts_at_the_margin() {
+        let bands = active_bands(1280, 760, 1.0, false);
+        let [top, bottom] = region_rects(1280, 760, bands, NC_SAFE_MARGIN as i32);
+        assert_eq!(top, (0, 40, 620, 128));
+        assert_eq!(bottom, (0, 664, 1280, 760));
+    }
+
+    #[test]
+    fn margin_off_restores_the_old_geometry_and_region() {
+        // `EMBY_TOP_MARGIN=0` has to reproduce the pre-margin build exactly.
+        let plain = compute_geometry_with_margin(
             PhysicalPosition::new(100, 50),
             50,
             1.0,
@@ -2404,8 +2423,17 @@ mod tests {
             (0, 0),
             0,
         );
-        assert_eq!(literal, explicit);
-        assert_eq!(literal, (100, 90, 1280, 720));
+        assert_eq!(plain, (100, 90, 1280, 720));
+
+        let framed = compute_geometry_with_margin(
+            PhysicalPosition::new(100, 50),
+            50,
+            1.0,
+            &video(0.0, 0.0, 1280.0, 720.0),
+            (4, 4),
+            0,
+        );
+        assert_eq!(framed, (104, 54, 1272, 712));
 
         let bands = active_bands(1280, 720, 1.0, false);
         let [top, bottom] = region_rects(1280, 720, bands, 0);
