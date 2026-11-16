@@ -97,6 +97,144 @@ pub fn resume(app: &AppHandle) {
 /// Logical (CSS px) heights of the control surface: the window always has the
 /// expanded height; the collapsed height is the strip the window region leaves
 /// visible and clickable while no menu is open. Keep in sync with
+/// Logical pixels the controls window is lifted above the video rectangle when
+/// `EMBY_TOP_MARGIN=1` is set.
+///
+/// Windows paints a window's non-client area at the very top of the window, and
+/// the white strip is exactly that. The window *region* decides which window
+/// pixels exist at all: everything outside it is neither painted nor hit-tested.
+/// Lifting the window by this margin and starting the region below it puts the
+/// window's top edge outside the window's own shape, which is a structural fix
+/// instead of a style/repaint fight.
+///
+/// 40 logical px covers the 45-physical-pixel caption measured on a 200% display.
+/// The whole layout ships disabled by default: see `top_margin_enabled`.
+const NC_SAFE_MARGIN: f64 = 40.0;
+
+/// Diagnostic line that exists on every platform; the Windows-only `diag`
+/// module is what actually persists it there.
+fn log_diag(line: &str) {
+    #[cfg(windows)]
+    diag::write(line);
+    #[cfg(not(windows))]
+    let _ = line;
+}
+
+/// `EMBY_TOP_MARGIN=1` opts into the structural top-margin layout.
+///
+/// Default **off**: `overlay_margin` returns zero, every geometry/region/hit-test
+/// formula reduces to the previous behaviour, and the page gets no padding. That
+/// is the zero-risk delivery; when the switch is off nothing about the layout
+/// may differ from the build before this feature existed.
+fn top_margin_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("EMBY_TOP_MARGIN") {
+        Ok(value) => {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true")
+        }
+        Err(_) => false,
+    })
+}
+
+/// The top margin in physical pixels; zero when the switch is off.
+fn overlay_margin(scale: f64) -> i32 {
+    if !top_margin_enabled() {
+        return 0;
+    }
+    (NC_SAFE_MARGIN * scale).round().max(1.0) as i32
+}
+
+/// The top margin in logical (CSS) pixels for the controls page padding.
+fn overlay_margin_css() -> i32 {
+    if top_margin_enabled() {
+        NC_SAFE_MARGIN as i32
+    } else {
+        0
+    }
+}
+
+/// The two rectangles the window region exposes, in window-relative physical
+/// pixels: the top-left corner strip and the bottom bar.
+///
+/// Single source of truth: `apply_region` builds the region from these and
+/// `is_stage_click` maps them to screen space for hit-testing, so clipping and
+/// click routing cannot drift apart. With `margin == 0` this is exactly the
+/// pre-margin region: the top strip starts at the window's top edge.
+fn region_rects(width: u32, height: u32, bands: Bands, margin: i32) -> [(i32, i32, i32, i32); 2] {
+    let width = width as i32;
+    let height = height as i32;
+    let margin = margin.max(0).min(height.saturating_sub(1));
+    let top_width = bands.top_width.min(width as u32) as i32;
+    let top_bottom = (margin + bands.top_height.min(height as u32) as i32).min(height);
+    let bottom_top = (height - bands.bottom_height.min(height as u32) as i32).max(margin);
+    [
+        (0, margin, top_width, top_bottom),
+        (0, bottom_top, width, height),
+    ]
+}
+
+/// Hysteresis for window repositioning, in physical pixels.
+///
+/// A window the compositor keeps nudging (or a geometry the page reports with a
+/// fraction of a pixel of jitter) must not turn into a `SetWindowPos` per event:
+/// with the margin layout that would be a visible feedback loop. One pixel of
+/// slack is invisible and kills the oscillation.
+const GEOMETRY_SLACK_PX: i32 = 1;
+
+/// Whether the controls window actually has to move to reach `target`.
+///
+/// Returns `true` for a first placement and for any axis that differs by more
+/// than [`GEOMETRY_SLACK_PX`]. Size and position are checked separately so a
+/// one-pixel wobble in either one cannot keep a sixty-hertz present loop alive.
+fn geometry_needs_move(
+    current: Option<(i32, i32, u32, u32)>,
+    target: (i32, i32, u32, u32),
+) -> bool {
+    let Some((cx, cy, cw, ch)) = current else {
+        return true;
+    };
+    let (x, y, w, h) = target;
+    (x - cx).abs() > GEOMETRY_SLACK_PX
+        || (y - cy).abs() > GEOMETRY_SLACK_PX
+        || (w as i32 - cw as i32).abs() > GEOMETRY_SLACK_PX
+        || (h as i32 - ch as i32).abs() > GEOMETRY_SLACK_PX
+}
+
+/// Relocation budget: at most [`MAX_MOVES_PER_SECOND`] window moves per second.
+///
+/// Only used when the margin layout is on. It is the last line of defence: even
+/// if some event source keeps reporting a geometry that needs a move, the window
+/// stops being moved and the log says so instead of spinning the UI thread.
+const MAX_MOVES_PER_SECOND: u32 = 8;
+
+#[derive(Debug, Default)]
+struct MoveBudget {
+    window_start: Option<Instant>,
+    count: u32,
+}
+
+impl MoveBudget {
+    /// `true` when the move is allowed; the caller records it with
+    /// [`MoveBudget::record`].
+    fn allows(&mut self, now: Instant) -> bool {
+        match self.window_start {
+            Some(start) if now.duration_since(start) < Duration::from_secs(1) => {
+                self.count < MAX_MOVES_PER_SECOND
+            }
+            _ => {
+                self.window_start = Some(now);
+                self.count = 0;
+                true
+            }
+        }
+    }
+
+    fn record(&mut self) {
+        self.count = self.count.saturating_add(1);
+    }
+}
+
 /// `OVERLAY_BAR_HEIGHT` / `OVERLAY_EXPANDED_HEIGHT` (src/controls/contract.ts)
 /// and `--ov-bar-h` / `--ov-panel-h` (src/controls/overlay.css).
 const COLLAPSED_HEIGHT: f64 = 96.0;
@@ -191,6 +329,14 @@ struct Inner {
     /// show and every distinct region gets one forced composition. `None` after
     /// a hide, which makes the next show force it again.
     forced_region: Option<String>,
+    /// Relocation budget for the margin layout: at most a handful of window
+    /// moves per second, so no event source can spin the UI thread.
+    move_budget: MoveBudget,
+    /// Set while `present` is inside a Win32 geometry call. Window events that
+    /// arrive re-entrantly are dropped instead of starting another placement:
+    /// this is the feedback-loop guard, and it is only consulted when the
+    /// margin layout is on.
+    applying_geometry: bool,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -220,6 +366,8 @@ impl OverlayState {
                 suspended: false,
                 warmup_pending: false,
                 forced_region: None,
+                move_budget: MoveBudget::default(),
+                applying_geometry: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -476,7 +624,16 @@ impl OverlayState {
                 // does not change on an auto-hide cycle, so this is the only
                 // point that can guarantee a clean frame for a wake.
                 if !ignore {
-                    if let Some(bands) = self.lock().last_bands {
+                    // The guard has to be dropped before the call: the body of
+                    // an `if let` keeps the scrutinee's temporaries alive, and
+                    // `force_frame_if_changed` starts by locking this same
+                    // mutex. `std::sync::Mutex` is not reentrant, so the
+                    // original `if let Some(bands) = self.lock().last_bands`
+                    // deadlocked the UI thread the moment the bar became
+                    // interactive (pause) — the app stopped pumping messages
+                    // while mpv kept playing.
+                    let bands = { self.lock().last_bands };
+                    if let Some(bands) = bands {
                         let signature = format!("wake-{generation}");
                         self.force_frame_if_changed(controls, bands, &signature, "wake");
                     }
@@ -488,6 +645,12 @@ impl OverlayState {
 
     pub fn on_main_geometry(&self, app: &AppHandle, scale_override: Option<f64>) {
         if !self.is_player_mode() {
+            return;
+        }
+        // Drop geometry events that our own placement caused. Only consulted
+        // with the margin layout on; the default path keeps the old behaviour.
+        if overlay_margin(1.0) > 0 && self.lock().applying_geometry {
+            log_diag("geometry: on_main_geometry event dropped (applying_geometry)");
             return;
         }
         if let Err(err) = self.present(app, scale_override) {
@@ -504,7 +667,69 @@ impl OverlayState {
     /// Position the controls window, showing it once when the video becomes
     /// visible. Inside player mode this never hides/shows on focus changes:
     /// the overlay follows `video_sync.visible` and the player UI mode only.
+    /// Move the controls window to `geometry`, never holding the state lock
+    /// across a Win32 call.
+    ///
+    /// With the margin layout this is where the anti-oscillation guards live:
+    /// a relocation budget (`MAX_MOVES_PER_SECOND`) and the `applying_geometry`
+    /// flag, which is set for the duration of the move so any window event the
+    /// move itself causes is dropped instead of moving the window again.
+    /// Every move is logged with its before/after rectangle while the layout is
+    /// switched on.
+    fn apply_geometry(
+        &self,
+        controls: &WebviewWindow,
+        geometry: (i32, i32, u32, u32),
+        margin: i32,
+    ) -> Result<(), String> {
+        if margin > 0 {
+            let allowed = {
+                let mut inner = self.lock();
+                if inner.move_budget.allows(Instant::now()) {
+                    inner.move_budget.record();
+                    inner.applying_geometry = true;
+                    true
+                } else {
+                    false
+                }
+            };
+            if !allowed {
+                log_diag(&format!(
+                    "geometry move skipped: reason=budget-per-second target={geometry:?}"
+                ));
+                return Ok(());
+            }
+            #[cfg(windows)]
+            let before = controls_hwnd(controls).ok().and_then(window_rect);
+            let result = apply_bounds(controls, geometry);
+            // Clear the guard before propagating any error: leaving it set would
+            // block every later present.
+            self.lock().applying_geometry = false;
+            result?;
+            #[cfg(windows)]
+            if let Ok(hwnd) = controls_hwnd(controls) {
+                diag::write(&format!(
+                    "geometry move: reason=present target={geometry:?} before={before:?} after={:?}",
+                    window_rect(hwnd)
+                ));
+            }
+        } else {
+            // Default path: same single SetWindowPos as before the feature.
+            apply_bounds(controls, geometry)?;
+        }
+        self.lock().last_geometry = Some(geometry);
+        Ok(())
+    }
+
     fn present(&self, app: &AppHandle, scale_override: Option<f64>) -> Result<(), String> {
+        // Feedback-loop guard, margin layout only: a window event that arrives
+        // while we are inside `SetWindowPos` must not start another placement.
+        // With the switch off this is not consulted at all, so the default path
+        // is unchanged.
+        if overlay_margin(1.0) > 0 && self.lock().applying_geometry {
+            log_diag("geometry: re-entrant present dropped (applying_geometry)");
+            return Ok(());
+        }
         let (mode, sync, expanded, shown, suspended) = {
             let inner = self.lock();
             (
@@ -570,21 +795,26 @@ impl OverlayState {
         // The window keeps the expanded size; opening or closing a menu only
         // changes the window region (the visible, hit-testable bottom strip),
         // so the webview is never resized and cannot show a stale frame.
+        let margin = overlay_margin(scale);
         let geometry = compute_geometry(client_origin, outer_top, scale, &sync, frame);
         let bands = active_bands(geometry.2, geometry.3, scale, expanded);
 
         let (geometry_changed, region_changed) = {
             let inner = self.lock();
-            let geometry_changed = inner.last_geometry != Some(geometry);
+            // With the margin layout a sub-pixel wobble is not a reason to move:
+            // `geometry_needs_move` only reports a change beyond the slack.
+            let geometry_changed = if margin > 0 {
+                geometry_needs_move(inner.last_geometry, geometry)
+            } else {
+                inner.last_geometry != Some(geometry)
+            };
             (geometry_changed, geometry_changed || inner.last_bands != Some(bands))
         };
         if geometry_changed {
-            // One atomic SetWindowPos instead of separate size/position calls.
-            apply_bounds(&controls, geometry)?;
-            self.lock().last_geometry = Some(geometry);
+            self.apply_geometry(&controls, geometry, margin)?;
         }
         if region_changed {
-            apply_region(&controls, geometry.2, geometry.3, bands)?;
+            apply_region(&controls, geometry.2, geometry.3, bands, margin)?;
             self.lock().last_bands = Some(bands);
         }
 
@@ -600,12 +830,17 @@ impl OverlayState {
             // page owns the auto-hide timer. The 220 ms sleep this replaces fired
             // whether or not the page had settled, so a bar that the user was
             // already interacting with could be clipped mid-gesture.
+            // With the margin layout the warm-up surface stops at the margin
+            // too, or the non-client area is exposed exactly while the window
+            // is being shown for the first time. Without the margin this is
+            // the previous full-height region unchanged.
+            let exposed_height = geometry.3.saturating_sub(margin.max(0) as u32);
             let full = Bands {
                 top_width: geometry.2,
-                top_height: geometry.3,
-                bottom_height: geometry.3,
+                top_height: exposed_height,
+                bottom_height: exposed_height,
             };
-            apply_region(&controls, geometry.2, geometry.3, full)?;
+            apply_region(&controls, geometry.2, geometry.3, full, margin)?;
             self.lock().last_bands = Some(full);
             show_controls(&controls)?;
             // Every show composes the frame again. The caption is intermittent,
@@ -799,18 +1034,22 @@ impl OverlayState {
         // else the window is clipped and the click reaches the video.
         if shown && interactive {
             if let (Some((gx, gy, gw, gh)), Some(bands)) = (geometry, bands) {
-                let bottom = gy.saturating_add(gh as i32);
-                let right = gx.saturating_add(gw as i32);
-                let in_top = cursor.0 >= gx
-                    && cursor.0 < gx.saturating_add(bands.top_width.min(gw) as i32)
-                    && cursor.1 >= gy
-                    && cursor.1 < gy.saturating_add(bands.top_height.min(gh) as i32);
-                let bottom_top = bottom.saturating_sub(bands.bottom_height.min(gh) as i32);
-                let in_bottom = cursor.0 >= gx
-                    && cursor.0 < right
-                    && cursor.1 >= bottom_top
-                    && cursor.1 < bottom;
-                if in_top || in_bottom {
+                // Same rectangles the region exposes, mapped to screen space,
+                // so clipping and click routing cannot drift apart. With the
+                // margin off these are the top-edge strips the old code tested.
+                let margin = overlay_margin(scale);
+                let strips = region_rects(gw, gh, bands, margin);
+                let hit = |(left, top, right, bottom): (i32, i32, i32, i32)| {
+                    let left = gx.saturating_add(left);
+                    let top = gy.saturating_add(top);
+                    let right = gx.saturating_add(right);
+                    let bottom = gy.saturating_add(bottom);
+                    cursor.0 >= left
+                        && cursor.0 < right
+                        && cursor.1 >= top
+                        && cursor.1 < bottom
+                };
+                if strips.iter().any(|&rect| hit(rect)) {
                     return false;
                 }
             }
@@ -884,6 +1123,26 @@ fn compute_geometry(
     sync: &VideoSync,
     frame: (i32, i32),
 ) -> (i32, i32, u32, u32) {
+    compute_geometry_with_margin(
+        client_origin,
+        outer_top,
+        scale,
+        sync,
+        frame,
+        overlay_margin(scale),
+    )
+}
+
+/// `compute_geometry` with an explicit margin, so both layouts are testable
+/// without touching the environment of the test process.
+fn compute_geometry_with_margin(
+    client_origin: PhysicalPosition<i32>,
+    outer_top: i32,
+    scale: f64,
+    sync: &VideoSync,
+    frame: (i32, i32),
+    margin: i32,
+) -> (i32, i32, u32, u32) {
     // The controls window must never cover the frameless main window resize
     // band: tao hit-tests SM_CXFRAME/SM_CYFRAME pixels *inside* the window rect,
     // and an owned window on top steals those hits. Leave that band free on
@@ -898,7 +1157,15 @@ fn compute_geometry(
     // top-left corner finally has a window to draw in. Never above the main
     // window and never over its bottom resize band; on a short window the
     // surface shrinks instead of hanging outside the video.
-    let y = (video_top + frame_y).max(outer_top);
+    let y = if margin > 0 {
+        // Margin layout: lift the window so its non-client area sits above the
+        // video rectangle and outside the region. The bottom edge stays where
+        // it was, so only the height grows, by exactly this margin.
+        video_top + frame_y - margin
+    } else {
+        // Default path, byte-for-byte the pre-margin formula.
+        (video_top + frame_y).max(outer_top)
+    };
     let bottom = (video_bottom - frame_y).max(y + 1);
     let height = (bottom - y).max(1) as u32;
     (x, y, width, height)
@@ -947,6 +1214,25 @@ fn resize_frame_px(_scale: f64) -> (i32, i32) {
 
 /// Apply position and size in a single `SetWindowPos` so the bottom-anchored
 /// overlay never paints at an intermediate rectangle while a menu expands.
+/// The window's on-screen rectangle, for the relocation log.
+#[cfg(windows)]
+fn window_rect(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if ok == 0 {
+        return None;
+    }
+    Some((rect.left, rect.top, rect.right, rect.bottom))
+}
+
 fn apply_bounds(controls: &WebviewWindow, geometry: (i32, i32, u32, u32)) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -1025,6 +1311,7 @@ fn apply_region(
     width: u32,
     height: u32,
     bands: Bands,
+    margin: i32,
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -1036,16 +1323,16 @@ fn apply_region(
         // Always a concrete region, even for the whole window: clearing a
         // region makes Windows repaint the entire window, which showed up as a
         // one-frame flash the first time a menu opened.
-        let top_width = bands.top_width.min(width) as i32;
-        let top_height = bands.top_height.min(height) as i32;
-        let bottom_top = height.saturating_sub(bands.bottom_height.min(height)) as i32;
+        let [(top_left, top_top, top_right, top_bottom), (bottom_left, bottom_top, bottom_right, bottom_bottom)] =
+            region_rects(width, height, bands, margin);
         let region = unsafe { CreateRectRgn(0, 0, 0, 0) };
         if region.is_null() {
             return Err("apply_region: CreateRectRgn failed".to_string());
         }
-        let top_rect = unsafe { CreateRectRgn(0, 0, top_width, top_height) };
-        let bottom_rect =
-            unsafe { CreateRectRgn(0, bottom_top, width as i32, height as i32) };
+        let top_rect = unsafe { CreateRectRgn(top_left, top_top, top_right, top_bottom) };
+        let bottom_rect = unsafe {
+            CreateRectRgn(bottom_left, bottom_top, bottom_right, bottom_bottom)
+        };
         if top_rect.is_null() || bottom_rect.is_null() {
             unsafe {
                 DeleteObject(region as _);
@@ -1078,9 +1365,9 @@ fn apply_region(
         // child repaint on every region change is exactly the flash this
         // function was changed to avoid.
         diag::write(&format!(
-            "region: window={}x{} top=0,0,{top_width},{top_height} bottom=0,{bottom_top},{width},{height} SetWindowRgn={ok}",
-            width,
-            height,
+            "region: window={}x{} margin={margin} top={},{},{},{} bottom={},{},{},{} SetWindowRgn={ok}",
+            width, height, top_left, top_top, top_right, top_bottom, bottom_left, bottom_top,
+            bottom_right, bottom_bottom,
         ));
         if ok == 0 {
             unsafe {
@@ -1092,7 +1379,7 @@ fn apply_region(
     }
     #[cfg(not(windows))]
     {
-        let _ = (controls, width, height, bands);
+        let _ = (controls, width, height, bands, margin);
         Ok(())
     }
 }
@@ -1159,6 +1446,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
         let script = format!(
             "(() => {{ const tag = \"embypc-build\"; \
              if (!document.body || document.getElementById(tag)) return; \
+             document.body.style.paddingTop = \"{margin}px\"; \
              const node = document.createElement(\"div\"); \
              node.id = tag; \
              node.textContent = \"build {}\"; \
@@ -1168,6 +1456,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
              document.body.appendChild(node); \
              }})()",
             controls_build_id(),
+            margin = overlay_margin_css(),
         );
         let _ = webview.eval(script);
     })
@@ -2094,6 +2383,94 @@ mod tests {
         );
         assert_eq!((x, y), (104, 54));
         assert_eq!((width, height), (1272, 712));
+    }
+
+    #[test]
+    fn default_layout_is_unchanged_by_the_margin_feature() {
+        // The zero margin is the shipped default; it must reproduce the
+        // pre-margin geometry and region exactly.
+        let literal = compute_geometry(
+            PhysicalPosition::new(100, 50),
+            50,
+            1.0,
+            &video(0.0, 40.0, 1280.0, 720.0),
+            (0, 0),
+        );
+        let explicit = compute_geometry_with_margin(
+            PhysicalPosition::new(100, 50),
+            50,
+            1.0,
+            &video(0.0, 40.0, 1280.0, 720.0),
+            (0, 0),
+            0,
+        );
+        assert_eq!(literal, explicit);
+        assert_eq!(literal, (100, 90, 1280, 720));
+
+        let bands = active_bands(1280, 720, 1.0, false);
+        let [top, bottom] = region_rects(1280, 720, bands, 0);
+        assert_eq!(top, (0, 0, 620, 88));
+        assert_eq!(bottom, (0, 624, 1280, 720));
+    }
+
+    #[test]
+    fn margin_layout_lifts_the_window_and_keeps_the_video_top() {
+        let sync = video(0.0, 0.0, 1280.0, 720.0);
+        let no_margin = compute_geometry_with_margin(
+            PhysicalPosition::new(0, 0),
+            0,
+            1.0,
+            &sync,
+            (0, 0),
+            0,
+        );
+        let with_margin = compute_geometry_with_margin(
+            PhysicalPosition::new(0, 0),
+            0,
+            1.0,
+            &sync,
+            (0, 0),
+            40,
+        );
+        // Same bottom edge, same width, window lifted by exactly the margin.
+        assert_eq!(with_margin.1, no_margin.1 - 40);
+        assert_eq!(with_margin.3, no_margin.3 + 40);
+        assert_eq!(with_margin.2, no_margin.2);
+        assert_eq!(with_margin.1 + with_margin.3 as i32, 720, "bottom edge kept");
+
+        let bands = active_bands(with_margin.2, with_margin.3, 1.0, false);
+        let [top, _] = region_rects(with_margin.2, with_margin.3, bands, 40);
+        // First exposed row = window top + margin = the video's top edge.
+        assert_eq!(top.1, 40);
+        assert_eq!(with_margin.1 + top.1, 0);
+    }
+
+    #[test]
+    fn geometry_hysteresis_ignores_one_pixel_of_jitter() {
+        let target = (10, 20, 300, 200);
+        assert!(geometry_needs_move(None, target));
+        assert!(!geometry_needs_move(Some(target), target));
+        assert!(!geometry_needs_move(Some((11, 21, 299, 201)), target));
+        assert!(geometry_needs_move(Some((12, 20, 300, 200)), target));
+        assert!(geometry_needs_move(Some((10, 22, 300, 200)), target));
+        assert!(geometry_needs_move(Some((10, 20, 302, 200)), target));
+        assert!(geometry_needs_move(Some((10, 20, 300, 202)), target));
+    }
+
+    #[test]
+    fn move_budget_caps_moves_per_second() {
+        let mut budget = MoveBudget::default();
+        let start = Instant::now();
+        let mut allowed = 0;
+        for _ in 0..20 {
+            if budget.allows(start) {
+                budget.record();
+                allowed += 1;
+            }
+        }
+        assert_eq!(allowed, MAX_MOVES_PER_SECOND);
+        // The next second starts a fresh budget.
+        assert!(budget.allows(start + Duration::from_secs(1)));
     }
 
     #[test]
