@@ -185,6 +185,12 @@ struct Inner {
     /// is still faded out. The next state change from the page (or
     /// `WARMUP_FALLBACK`) collapses it back to the bar strip.
     warmup_pending: bool,
+    /// Whether the frame has already been forced to compose again since this
+    /// window was last shown. A caption that was composed into the window
+    /// surface *before* the styles were fixed is not removed by a style change
+    /// alone, so one forced frame + child repaint per show is what actually
+    /// clears it; more than one would only cost a repaint per menu toggle.
+    frame_forced: bool,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -213,6 +219,7 @@ impl OverlayState {
                 interaction_generation: 0,
                 suspended: false,
                 warmup_pending: false,
+                frame_forced: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -222,6 +229,38 @@ impl OverlayState {
         self.inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Force one frame + child repaint per show cycle, and only while the region
+    /// actually exposes the top band.
+    ///
+    /// The flag is reset in `hide()` and set here, so opening a track menu or
+    /// switching between the warm-up and the bar region does not pay for another
+    /// synchronous repaint: only the first composition after a show can still
+    /// carry the stale caption.
+    fn force_frame_once(&self, controls: &WebviewWindow, bands: Bands, reason: &str) {
+        if bands.top_height == 0 || bands.top_width == 0 {
+            return;
+        }
+        {
+            let mut inner = self.lock();
+            if inner.frame_forced {
+                return;
+            }
+            inner.frame_forced = true;
+        }
+        #[cfg(windows)]
+        if let Ok(hwnd) = controls_hwnd(controls) {
+            force_frame_redraw(
+                hwnd,
+                &format!("top={}x{}", bands.top_width, bands.top_height),
+                reason,
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (controls, reason);
+        }
     }
 
     /// Ask the cursor poller to exit. Threads are not joined: the app may be
@@ -550,6 +589,10 @@ impl OverlayState {
             apply_region(&controls, geometry.2, geometry.3, full)?;
             self.lock().last_bands = Some(full);
             show_controls(&controls)?;
+            // The first composition after a show is the only one that can still
+            // contain a caption painted before the styles were fixed; redo it
+            // now, synchronously, so the user never sees that frame.
+            self.force_frame_once(&controls, full, "show");
             {
                 let mut inner = self.lock();
                 inner.controls_shown = true;
@@ -590,6 +633,8 @@ impl OverlayState {
             // Without this the fallback thread could re-present a window the
             // page already left.
             inner.warmup_pending = false;
+            // Each show gets one forced frame repaint (see `force_frame_once`).
+            inner.frame_forced = false;
             shown
         };
         if !was_shown {
@@ -905,6 +950,38 @@ fn apply_bounds(controls: &WebviewWindow, geometry: (i32, i32, u32, u32)) -> Res
             .map_err(|err| format!("set controls position: {err}"))?;
         Ok(())
     }
+}
+
+/// Compose the window frame and every child again, right now.
+///
+/// This is what removes a caption that DWM already composited into the window
+/// surface *before* the style guard existed. Marking the window dirty is not
+/// enough: `InvalidateRect` repaints the client area, while the caption lives
+/// in the non-client frame of the surface the window was last composed with.
+/// `RDW_FRAME | RDW_UPDATENOW | RDW_ALLCHILDREN` re-composes that frame and
+/// the layered surface under it, synchronously, so no frame with the stale
+/// caption is ever presented again.
+///
+/// Evidence: the replay of this bug had the style guard working (no window in
+/// the process carried `WS_CAPTION`) and the white strip still visible until
+/// this call was added back.
+#[cfg(windows)]
+fn force_frame_redraw(hwnd: windows_sys::Win32::Foundation::HWND, region: &str, reason: &str) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
+
+    let result = unsafe {
+        RedrawWindow(
+            hwnd,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        )
+    };
+    diag::write(&format!(
+        "frame forced redraw: region={region} reason={reason} result={result}"
+    ));
 }
 
 /// Clip the controls window to the top-left return/logo strip and the bottom
@@ -1689,10 +1766,12 @@ fn strip_native_caption(hwnd: isize, what: &str) -> Result<(), String> {
             SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
         );
         // A caption that was already composited is not removed by the style write
-        // alone: invalidate the frame so the non-client area is repainted. Without
-        // this, a layered window can keep showing the title bar it was last
-        // composited with even though the style no longer has a caption.
-        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+        // alone: recompose the frame (and every child) right now, otherwise the
+        // surface keeps showing the title bar it was last composed with even
+        // though the style no longer has a caption. `InvalidateRect` alone only
+        // marks the client area dirty and leaves the non-client frame in place,
+        // which is why the strip used to win the style fight and lose the pixel.
+        force_frame_redraw(hwnd, "style", "strip");
         // Read back instead of trusting the write: if some future tao/wry call
         // restores the caption through a path that bypasses the helpers in this
         // file, the bug shows up as a log line on the machine that can reproduce
