@@ -56,7 +56,7 @@
 //! | first-show collapse | sleep 220 ms unconditionally | page's own state change settles it; 400 ms fallback |
 //! | cursor wake | 50 ms fixed poll | 16 ms while over the video, 250 ms elsewhere |
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -1144,6 +1144,207 @@ pub fn harden_main_window_chrome(hwnd: isize) -> Result<(), String> {
     strip_native_caption(hwnd, "main window")
 }
 
+// ---- native caption guard ----------------------------------------------------
+//
+// Why this is a subclass and not another "strip after X" call.
+//
+// The previous attempt stripped `WS_CAPTION` after every Tauri call that was
+// *believed* to rebuild the window style (`show`, `hide`,
+// `set_ignore_cursor_events`). It did not hold, because that strip is a race,
+// not an invariant:
+//
+// * tao rebuilds the whole `GWL_STYLE`/`GWL_EXSTYLE` from its flag set in
+//   `WindowState::apply_diff`, and seventeen public setters reach it
+//   (`set_visible`, `set_focusable`, `set_outer_position`, `set_inner_size`,
+//   `set_resizable`, `set_minimizable`, `set_maximizable`, `set_closable`,
+//   `set_ignore_cursor_events`, `set_minimized`, `set_maximized`,
+//   `set_fullscreen`, `set_decorations`, `set_always_on_bottom`,
+//   `set_always_on_top`, `set_rtl`, `set_undecorated_shadow`), plus one inside
+//   tao's own `WM_DPICHANGED` handler (it clears `MAXIMIZED` when the inner
+//   size changes) that application code can never hook. A list kept from the
+//   outside cannot be complete.
+// * `WebviewWindow::show()` is a request, not a call. tauri-runtime-wry runs
+//   `WindowMessage::Show` inline on the event-loop thread, but posts it from any
+//   other thread, and tao's `set_visible` itself defers through
+//   `EventLoopThreadExecutor`. "Strip right after `show()` returned" is ordered
+//   against machinery that has not run yet.
+// * Even when the strip wins, `WS_CAPTION` had already been installed, so the
+//   non-client area was recalculated and DWM composited a title bar. Clearing
+//   the bit afterwards only schedules *another* recalculation, and the window is
+//   `WS_EX_LAYERED` while it is click-through, so the painted caption can
+//   survive in the layered surface until the frame is explicitly invalidated.
+//
+// So instead of winning the race, the bit is refused. `WM_STYLECHANGING` is
+// sent to the window *before* `SetWindowLong(GWL_STYLE/GWL_EXSTYLE)` takes
+// effect and hands the caller a `STYLESTRUCT` to modify. Clearing the caption
+// there means the caption is never installed, whoever asks, from whichever
+// thread, in whatever order. `WM_STYLECHANGED` is the backstop for a change
+// that was already in flight when the guard went on, and `DwmSetWindowAttribute`
+// stops DWM from rendering a non-client frame at all.
+
+/// `WM_STYLECHANGING` and `WM_STYLECHANGED`; stable ABI values, declared here so
+/// the constants sit next to the handler that depends on them.
+#[cfg(windows)]
+const WM_STYLECHANGING_MSG: u32 = 0x007C;
+#[cfg(windows)]
+const WM_STYLECHANGED_MSG: u32 = 0x007D;
+
+/// `SetWindowSubclass` updates an existing `(proc, id)` pair instead of stacking
+/// a second one, which is what makes installing this idempotent.
+#[cfg(windows)]
+const CHROME_SUBCLASS_ID: usize = 0x454D_4243; // "EMBC"
+
+/// How many refusals to log before going quiet: enough for a bug report, not
+/// enough to flood the log of a session that toggles the bar thousands of times.
+#[cfg(windows)]
+const CAPTION_REFUSAL_LOG_LIMIT: u32 = 12;
+#[cfg(windows)]
+static CAPTION_REFUSALS: AtomicU32 = AtomicU32::new(0);
+/// One-shot flag so the "guard installed" line with the live style values is
+/// printed once per process rather than on every re-assert.
+#[cfg(windows)]
+static CHROME_GUARD_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Print a chrome/style line and, when the opt-in log is enabled, also append it
+/// to `%TEMP%\emby-desktop\chrome-<pid>.log`.
+///
+/// The style values are the only runtime evidence that the caption guard is
+/// doing its job, and a release build has no console at all
+/// (`#![windows_subsystem = "windows"]` drops stderr), so the same lines have to
+/// be reachable as a file the user can send along with a bug report. The switch
+/// is the existing `EMBY_MPV_LOG` opt-in; no new environment variable.
+#[cfg(windows)]
+fn log_chrome(line: &str) {
+    eprintln!("{line}");
+    let Ok(value) = std::env::var(emby_mpv::options::LOG_ENV_VAR) else {
+        return;
+    };
+    if !emby_mpv::options::log_enabled_from(Some(&value)) {
+        return;
+    }
+    let mut dir = std::env::temp_dir();
+    dir.push("emby-desktop");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("chrome-{}.log", std::process::id()));
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    use std::io::Write;
+    let _ = writeln!(file, "{line}");
+}
+
+/// The subclass procedure that owns the window style.
+///
+/// Everything it does not handle is forwarded with `DefSubclassProc`, so tao's
+/// own window procedure (and any other subclass) keeps working unchanged.
+#[cfg(windows)]
+unsafe extern "system" fn caption_guard_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WS_CAPTION, WS_DLGFRAME, WS_EX_WINDOWEDGE,
+    };
+
+    match msg {
+        WM_STYLECHANGING_MSG => {
+            let index = wparam as i32;
+            let styles = lparam as *mut STYLESTRUCT;
+            if !styles.is_null() {
+                if index == GWL_STYLE {
+                    let asked = (*styles).styleNew;
+                    if asked & (WS_CAPTION | WS_DLGFRAME) != 0 {
+                        (*styles).styleNew = asked & !(WS_CAPTION | WS_DLGFRAME);
+                        let seen = CAPTION_REFUSALS.fetch_add(1, Ordering::Relaxed) + 1;
+                        if seen <= CAPTION_REFUSAL_LOG_LIMIT {
+                            log_chrome(&format!(
+                                "[overlay] caption refused: asked 0x{asked:08x}, installed 0x{:08x} (#{seen})",
+                                (*styles).styleNew
+                            ));
+                        }
+                    }
+                } else if index == GWL_EXSTYLE {
+                    let asked = (*styles).styleNew;
+                    if asked & WS_EX_WINDOWEDGE != 0 {
+                        (*styles).styleNew = asked & !WS_EX_WINDOWEDGE;
+                    }
+                }
+            }
+        }
+        WM_STYLECHANGED_MSG => {
+            // Backstop only. If a change was already queued when the guard went
+            // on, the bits can still be present here; take them off again. The
+            // strip re-enters this procedure through WM_STYLECHANGING, which then
+            // refuses the caption, so this terminates.
+            let index = wparam as i32;
+            let styles = lparam as *const STYLESTRUCT;
+            if !styles.is_null()
+                && index == GWL_STYLE
+                && (*styles).styleNew & (WS_CAPTION | WS_DLGFRAME) != 0
+            {
+                log_chrome("[overlay] caption survived a style change; stripping again");
+                let _ = strip_native_caption(hwnd as isize, "controls window");
+            }
+        }
+        _ => {}
+    }
+    windows_sys::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+/// Put the guard on `hwnd` and switch DWM non-client rendering off.
+///
+/// Idempotent: `SetWindowSubclass` with the same `(proc, id)` updates the
+/// existing entry, so the re-asserts further down can call this freely.
+#[cfg(windows)]
+fn install_caption_guard(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+
+    let installed =
+        unsafe { SetWindowSubclass(hwnd, Some(caption_guard_proc), CHROME_SUBCLASS_ID, 0) };
+    if installed == 0 {
+        return Err(format!(
+            "SetWindowSubclass failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    // DWM keeps a non-client frame of its own once one was composited, and this
+    // window is layered while it is click-through. Turning non-client rendering
+    // off makes the frame stop being drawn independently of the client styles.
+    // Best effort: it is not required for the style guard to work, so a failure
+    // (older builds) is ignored on purpose.
+    {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED,
+        };
+        let policy: i32 = DWMNCRP_DISABLED;
+        let _ = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_POLICY as u32,
+                &policy as *const i32 as *const core::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+        };
+    }
+
+    if !CHROME_GUARD_LOGGED.swap(true, Ordering::Relaxed) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE,
+        };
+        let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
+        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        log_chrome(&format!(
+            "[overlay] controls chrome guard installed: style 0x{style:08x} ex 0x{ex_style:08x}"
+        ));
+    }
+    Ok(())
+}
+
 /// Remove the native caption/border bits tao always turns on.
 ///
 /// tao's `WindowFlags::to_window_styles()` starts from
@@ -1187,6 +1388,13 @@ fn strip_native_caption(hwnd: isize, what: &str) -> Result<(), String> {
         if wanted_style != style {
             SetWindowLongPtrW(hwnd, GWL_STYLE, wanted_style as isize);
         }
+        // The actual values, tagged with the moment they were taken: this is the
+        // runtime evidence for "was the window still carrying a caption?", and it
+        // must never print again on the controls window once the guard is on.
+        log_chrome(&format!(
+            "[overlay] {what} caption stripped: style 0x{style:08x} -> 0x{wanted_style:08x}, \
+             ex 0x{ex_style:08x} -> 0x{wanted_ex:08x}"
+        ));
         if wanted_ex != ex_style {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted_ex as isize);
         }
@@ -1202,6 +1410,11 @@ fn strip_native_caption(hwnd: isize, what: &str) -> Result<(), String> {
             0,
             SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
         );
+        // A caption that was already composited is not removed by the style write
+        // alone: invalidate the frame so the non-client area is repainted. Without
+        // this, a layered window can keep showing the title bar it was last
+        // composited with even though the style no longer has a caption.
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
         // Read back instead of trusting the write: if some future tao/wry call
         // restores the caption through a path that bypasses the helpers in this
         // file, the bug shows up as a log line on the machine that can reproduce
@@ -1210,7 +1423,7 @@ fn strip_native_caption(hwnd: isize, what: &str) -> Result<(), String> {
         // because a cosmetic style bit survived would be worse than the strip.
         let check = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
         if check & (WS_CAPTION | WS_DLGFRAME) != 0 {
-            eprintln!("[overlay] {what} still carries a native caption (style 0x{check:08x})");
+            log_chrome(&format!("[overlay] {what} still carries a native caption (style 0x{check:08x})"));
         }
     }
     Ok(())
@@ -1235,8 +1448,17 @@ pub fn harden_main_window_chrome(_hwnd: isize) -> Result<(), String> {
 /// in `apply_region` is offset from the HTML it is supposed to match.
 #[cfg(windows)]
 fn harden_controls_window_chrome(window: &WebviewWindow) -> Result<(), String> {
-    let hwnd = controls_hwnd(window)? as isize;
-    strip_native_caption(hwnd, "controls window")
+    let hwnd = controls_hwnd(window)?;
+    // Order matters: the guard has to be in place *before* the current caption is
+    // removed, so that from the first strip onwards nothing can put it back.
+    // A failure to install it is reported loudly but is *not* fatal: the caller
+    // destroys the controls window on `Err`, and losing the whole transport bar
+    // over a title strip would be far worse than the strip coming back. Without
+    // the guard the strips still run, so the old behaviour is the floor.
+    if let Err(err) = install_caption_guard(hwnd) {
+        log_chrome(&format!("[overlay] caption guard could not be installed: {err}"));
+    }
+    strip_native_caption(hwnd as isize, "controls window")
 }
 
 #[cfg(not(windows))]
@@ -1244,18 +1466,21 @@ fn harden_controls_window_chrome(_window: &WebviewWindow) -> Result<(), String> 
     Ok(())
 }
 
-/// [`harden_controls_window_chrome`], then the same strip again on the main
-/// thread.
+/// Re-assert the controls chrome after a call that makes tao rebuild the window
+/// style (`show`, `hide`, `set_ignore_cursor_events`).
 ///
-/// Call this after anything that makes tao rebuild the window style. Those
-/// calls (`show`, `hide`, `set_ignore_cursor_events`) post their rewrite through
-/// `execute_in_thread`: it runs inline on the event-loop thread but is queued
-/// from any other thread, and the click-through worker really does call in from
-/// its own thread. The inline strip below therefore cannot be the only one.
+/// This is no longer what keeps the caption off — `install_caption_guard` is, by
+/// refusing the bits in `WM_STYLECHANGING` however late the rebuild arrives. The
+/// strip here is a cheap consistency check: it is a no-op once the guard is on,
+/// and when it is *not* a no-op it prints the style it found, which is exactly
+/// the evidence needed if the guard ever misses a path.
+///
+/// Deliberately strip-only. The guard is installed once, from the thread that
+/// created the window (`SetWindowSubclass` may only be called from that thread),
+/// while this runs from wherever the caller happens to be, including the
+/// click-through worker. The write is posted to the window thread so it is
+/// ordered after any rebuild tao queued from the caller's thread.
 fn reassert_controls_chrome(window: &WebviewWindow) {
-    if let Err(err) = harden_controls_window_chrome(window) {
-        eprintln!("[overlay] could not strip the controls caption: {err}");
-    }
     #[cfg(windows)]
     {
         let Ok(hwnd) = controls_hwnd(window).map(|hwnd| hwnd as isize) else {
