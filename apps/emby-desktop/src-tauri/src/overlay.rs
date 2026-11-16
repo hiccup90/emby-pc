@@ -97,6 +97,46 @@ pub fn resume(app: &AppHandle) {
 /// Logical (CSS px) heights of the control surface: the window always has the
 /// expanded height; the collapsed height is the strip the window region leaves
 /// visible and clickable while no menu is open. Keep in sync with
+/// Logical pixels the controls window is lifted above the video rectangle.
+///
+/// Windows paints a window's non-client area at the very top of the window, and
+/// the caption this bug is about lives exactly there. The window *region* is what
+/// decides which window pixels exist at all: everything outside it is neither
+/// painted nor hit-tested. So instead of fighting over style bits, the window is
+/// placed `NC_SAFE_MARGIN` logical pixels above the video rectangle and its
+/// region starts at that margin — the window's top edge, and with it any caption,
+/// is outside the exposed area by construction. The first exposed pixel is the
+/// video's top edge, so the strips keep their exact screen position.
+///
+/// 40 logical px covers a 45-physical-pixel caption on a 200% display with room
+/// to spare, and lets the window's top edge move off-screen when the video starts
+/// at the top of the screen. That is legal and invisible: that part is clipped.
+const NC_SAFE_MARGIN: f64 = 40.0;
+
+/// The safety margin in physical pixels for a given scale factor.
+fn overlay_margin(scale: f64) -> i32 {
+    (NC_SAFE_MARGIN * scale).round().max(1.0) as i32
+}
+
+/// The two rectangles the window region exposes, in window-relative physical
+/// pixels: the top-left corner strip and the bottom bar.
+///
+/// Single source of truth. `apply_region` builds the region from these and
+/// `is_stage_click` maps them back to screen space for hit-testing, so the window
+/// cannot be clipped differently from the way clicks are routed.
+fn region_rects(width: u32, height: u32, bands: Bands, margin: i32) -> [(i32, i32, i32, i32); 2] {
+    let width = width as i32;
+    let height = height as i32;
+    let margin = margin.max(0).min(height.saturating_sub(1));
+    let top_width = bands.top_width.min(width as u32) as i32;
+    let top_bottom = (margin + bands.top_height.min(height as u32) as i32).min(height);
+    let bottom_top = (height - bands.bottom_height.min(height as u32) as i32).max(margin);
+    [
+        (0, margin, top_width, top_bottom),
+        (0, bottom_top, width, height),
+    ]
+}
+
 /// `OVERLAY_BAR_HEIGHT` / `OVERLAY_EXPANDED_HEIGHT` (src/controls/contract.ts)
 /// and `--ov-bar-h` / `--ov-panel-h` (src/controls/overlay.css).
 const COLLAPSED_HEIGHT: f64 = 96.0;
@@ -554,10 +594,11 @@ impl OverlayState {
         let client_origin = main
             .inner_position()
             .map_err(|err| format!("inner position: {err}"))?;
-        let outer_top = main
-            .outer_position()
-            .map_err(|err| format!("outer position: {err}"))?
-            .y;
+        // Physical safety margin between the window's top edge and the video
+        // rectangle; see `NC_SAFE_MARGIN`. Recomputed on every present, so a
+        // scale change, a fullscreen switch or a monitor change all pick up the
+        // right value automatically.
+        let margin = overlay_margin(scale);
         // Reserving the resize band only makes sense while tao actually offers
         // resize hit-testing (windowed, not maximized, not fullscreen).
         let resizable = !main.is_fullscreen().unwrap_or(false)
@@ -570,7 +611,7 @@ impl OverlayState {
         // The window keeps the expanded size; opening or closing a menu only
         // changes the window region (the visible, hit-testable bottom strip),
         // so the webview is never resized and cannot show a stale frame.
-        let geometry = compute_geometry(client_origin, outer_top, scale, &sync, frame);
+        let geometry = compute_geometry(client_origin, scale, &sync, frame);
         let bands = active_bands(geometry.2, geometry.3, scale, expanded);
 
         let (geometry_changed, region_changed) = {
@@ -584,7 +625,7 @@ impl OverlayState {
             self.lock().last_geometry = Some(geometry);
         }
         if region_changed {
-            apply_region(&controls, geometry.2, geometry.3, bands)?;
+            apply_region(&controls, geometry.2, geometry.3, bands, margin)?;
             self.lock().last_bands = Some(bands);
         }
 
@@ -600,12 +641,17 @@ impl OverlayState {
             // page owns the auto-hide timer. The 220 ms sleep this replaces fired
             // whether or not the page had settled, so a bar that the user was
             // already interacting with could be clipped mid-gesture.
+            // Full surface *below the margin*: the warm-up exists so the webview
+            // allocates the taller surface, and the top margin must stay outside
+            // the region even here, or the non-client area becomes exposed exactly
+            // while the window is being shown for the first time.
+            let exposed_height = geometry.3.saturating_sub(margin as u32);
             let full = Bands {
                 top_width: geometry.2,
-                top_height: geometry.3,
-                bottom_height: geometry.3,
+                top_height: exposed_height,
+                bottom_height: exposed_height,
             };
-            apply_region(&controls, geometry.2, geometry.3, full)?;
+            apply_region(&controls, geometry.2, geometry.3, full, margin)?;
             self.lock().last_bands = Some(full);
             show_controls(&controls)?;
             // Every show composes the frame again. The caption is intermittent,
@@ -799,18 +845,25 @@ impl OverlayState {
         // else the window is clipped and the click reaches the video.
         if shown && interactive {
             if let (Some((gx, gy, gw, gh)), Some(bands)) = (geometry, bands) {
-                let bottom = gy.saturating_add(gh as i32);
-                let right = gx.saturating_add(gw as i32);
-                let in_top = cursor.0 >= gx
-                    && cursor.0 < gx.saturating_add(bands.top_width.min(gw) as i32)
-                    && cursor.1 >= gy
-                    && cursor.1 < gy.saturating_add(bands.top_height.min(gh) as i32);
-                let bottom_top = bottom.saturating_sub(bands.bottom_height.min(gh) as i32);
-                let in_bottom = cursor.0 >= gx
-                    && cursor.0 < right
-                    && cursor.1 >= bottom_top
-                    && cursor.1 < bottom;
-                if in_top || in_bottom {
+                // Same rectangles the region exposes, mapped to screen space.
+                // Reusing `region_rects` is what keeps clipping and hit-testing
+                // from drifting apart: the top strip starts at the margin, not at
+                // the window's top edge.
+                let margin = overlay_margin(scale);
+                let strips = region_rects(gw, gh, bands, margin);
+                let hit = |strips: &[(i32, i32, i32, i32); 2]| {
+                    strips.iter().any(|&(left, top, right, bottom)| {
+                        let left = gx.saturating_add(left);
+                        let top = gy.saturating_add(top);
+                        let right = gx.saturating_add(right);
+                        let bottom = gy.saturating_add(bottom);
+                        cursor.0 >= left
+                            && cursor.0 < right
+                            && cursor.1 >= top
+                            && cursor.1 < bottom
+                    })
+                };
+                if hit(&strips) {
                     return false;
                 }
             }
@@ -879,7 +932,6 @@ impl OverlayState {
 
 fn compute_geometry(
     client_origin: PhysicalPosition<i32>,
-    outer_top: i32,
     scale: f64,
     sync: &VideoSync,
     frame: (i32, i32),
@@ -889,16 +941,19 @@ fn compute_geometry(
     // and an owned window on top steals those hits. Leave that band free on
     // every edge the surface touches.
     let (frame_x, frame_y) = frame;
+    let margin = overlay_margin(scale);
     let x = client_origin.x + (sync.x * scale).round() as i32 + frame_x;
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
     let width = ((sync.w * scale).round() as i32 - frame_x * 2).max(1) as u32;
     let video_bottom = video_top + (sync.h * scale).round().max(0.0) as i32;
-    // Cover the whole video rectangle: the top-left return/logo strip and the
-    // bottom transport surface are two regions of the same window, so the
-    // top-left corner finally has a window to draw in. Never above the main
-    // window and never over its bottom resize band; on a short window the
-    // surface shrinks instead of hanging outside the video.
-    let y = (video_top + frame_y).max(outer_top);
+    // The window's top edge sits `margin` px *above* the video, so its
+    // non-client area is outside the window region and is never painted (see
+    // `NC_SAFE_MARGIN`). The bottom edge is where it always was, so the height
+    // grows by exactly that margin and the exposed strips keep their screen
+    // position. No clamp against the main window's top: clamping would move the
+    // exposed strips down by the clamped amount, and the top edge of this window
+    // is invisible and click-through anyway because it is outside the region.
+    let y = video_top + frame_y - margin;
     let bottom = (video_bottom - frame_y).max(y + 1);
     let height = (bottom - y).max(1) as u32;
     (x, y, width, height)
@@ -1025,6 +1080,7 @@ fn apply_region(
     width: u32,
     height: u32,
     bands: Bands,
+    margin: i32,
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -1036,16 +1092,16 @@ fn apply_region(
         // Always a concrete region, even for the whole window: clearing a
         // region makes Windows repaint the entire window, which showed up as a
         // one-frame flash the first time a menu opened.
-        let top_width = bands.top_width.min(width) as i32;
-        let top_height = bands.top_height.min(height) as i32;
-        let bottom_top = height.saturating_sub(bands.bottom_height.min(height)) as i32;
+        let [(top_left, top_top, top_right, top_bottom), (bottom_left, bottom_top, bottom_right, bottom_bottom)] =
+            region_rects(width, height, bands, margin);
         let region = unsafe { CreateRectRgn(0, 0, 0, 0) };
         if region.is_null() {
             return Err("apply_region: CreateRectRgn failed".to_string());
         }
-        let top_rect = unsafe { CreateRectRgn(0, 0, top_width, top_height) };
-        let bottom_rect =
-            unsafe { CreateRectRgn(0, bottom_top, width as i32, height as i32) };
+        let top_rect = unsafe { CreateRectRgn(top_left, top_top, top_right, top_bottom) };
+        let bottom_rect = unsafe {
+            CreateRectRgn(bottom_left, bottom_top, bottom_right, bottom_bottom)
+        };
         if top_rect.is_null() || bottom_rect.is_null() {
             unsafe {
                 DeleteObject(region as _);
@@ -1078,9 +1134,9 @@ fn apply_region(
         // child repaint on every region change is exactly the flash this
         // function was changed to avoid.
         diag::write(&format!(
-            "region: window={}x{} top=0,0,{top_width},{top_height} bottom=0,{bottom_top},{width},{height} SetWindowRgn={ok}",
-            width,
-            height,
+            "region: window={}x{} margin={margin} top={},{},{},{} bottom={},{},{},{} SetWindowRgn={ok}",
+            width, height, top_left, top_top, top_right, top_bottom, bottom_left, bottom_top,
+            bottom_right, bottom_bottom,
         ));
         if ok == 0 {
             unsafe {
@@ -1152,6 +1208,14 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     // "built from the fixed commit" can be checked from one screenshot. Injected
     // from here because the page is a separate, otherwise untouched webview.
     .on_page_load(|webview, _payload| {
+        // The page has to move down by the same margin the region was pushed
+        // down (see `NC_SAFE_MARGIN`): the window's client area still starts at
+        // the window's top edge, while the region starts `margin` px below it.
+        // Without this padding the page's first `margin` px would simply be
+        // clipped away and every strip would sit `margin` px too high. CSS pixels
+        // are logical pixels, so the value is the constant itself, in px, at any
+        // display scale.
+        //
         // One line of small print with the build id. It is the cheapest way to
         // tell a "still broken" report from a stale install: a screenshot carries
         // the commit that produced it. Deliberately faint, pointer-transparent
@@ -1159,6 +1223,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
         let script = format!(
             "(() => {{ const tag = \"embypc-build\"; \
              if (!document.body || document.getElementById(tag)) return; \
+             document.body.style.paddingTop = \"{margin}px\"; \
              const node = document.createElement(\"div\"); \
              node.id = tag; \
              node.textContent = \"build {}\"; \
@@ -1168,6 +1233,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
              document.body.appendChild(node); \
              }})()",
             controls_build_id(),
+            margin = NC_SAFE_MARGIN,
         );
         let _ = webview.eval(script);
     })
@@ -2058,6 +2124,12 @@ pub fn overlay_drag_window(app: AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Screen row of the video's top edge for a geometry produced by
+    /// `compute_geometry`: window top + the margin that was added to it.
+    fn margin_offset(window_y: i32, scale: f64) -> i32 {
+        window_y + overlay_margin(scale)
+    }
+
     fn video(x: f64, y: f64, w: f64, h: f64) -> VideoSync {
         VideoSync {
             seq: 1,
@@ -2071,29 +2143,63 @@ mod tests {
     }
 
     #[test]
-    fn geometry_covers_the_whole_video_rect() {
+    fn geometry_lifts_the_window_by_the_safety_margin() {
+        // The window is `margin` px taller than the video and starts that far
+        // above it; the bottom edge stays on the video's bottom edge.
         let (x, y, width, height) = compute_geometry(
             PhysicalPosition::new(100, 50),
-            50,
             1.0,
             &video(0.0, 40.0, 1280.0, 720.0),
             (0, 0),
         );
-        assert_eq!((x, y), (100, 90));
-        assert_eq!((width, height), (1280, 720));
+        assert_eq!((x, y), (100, 50));
+        assert_eq!((width, height), (1280, 760));
+        assert_eq!(margin_offset(y, 1.0), 90, "video top is at 90");
     }
 
     #[test]
     fn geometry_leaves_the_resize_band_free() {
         let (x, y, width, height) = compute_geometry(
             PhysicalPosition::new(100, 50),
-            50,
             1.0,
             &video(0.0, 0.0, 1280.0, 720.0),
             (4, 4),
         );
-        assert_eq!((x, y), (104, 54));
-        assert_eq!((width, height), (1272, 712));
+        assert_eq!((x, y), (104, 14));
+        assert_eq!((width, height), (1272, 760 - 4 - 4));
+    }
+
+    #[test]
+    fn region_starts_below_the_safety_margin() {
+        let bands = active_bands(1280, 760, 1.0, false);
+        let [top, bottom] = region_rects(1280, 760, bands, 40);
+        // The first exposed row is the margin itself: the window's top edge, and
+        // any caption drawn there, is outside the region.
+        assert_eq!(top, (0, 40, 620, 128));
+        assert_eq!(bottom, (0, 664, 1280, 760));
+    }
+
+    #[test]
+    fn margin_covers_the_caption_at_any_dpi() {
+        assert_eq!(overlay_margin(1.0), 40);
+        assert_eq!(overlay_margin(1.5), 60);
+        // 45 px was the measured caption height on the 200% display.
+        assert_eq!(overlay_margin(2.0), 80);
+        assert!(overlay_margin(2.0) > 45);
+    }
+
+    #[test]
+    fn exposed_top_strip_keeps_the_video_top_edge_on_screen() {
+        let scale = 2.0;
+        let sync = video(0.0, 0.0, 800.0, 450.0);
+        let (_, y, width, height) =
+            compute_geometry(PhysicalPosition::new(0, 0), scale, &sync, (0, 0));
+        assert_eq!(y, -80, "the window starts above the screen");
+        let margin = overlay_margin(scale);
+        let bands = active_bands(width, height, scale, false);
+        let [top, _] = region_rects(width, height, bands, margin);
+        // Screen row of the first exposed pixel: window top + margin.
+        assert_eq!(y + top.1, 0, "first exposed pixel is the video's top edge");
     }
 
     #[test]
