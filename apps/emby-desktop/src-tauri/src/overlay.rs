@@ -56,7 +56,7 @@
 //! | first-show collapse | sleep 220 ms unconditionally | page's own state change settles it; 400 ms fallback |
 //! | cursor wake | 50 ms fixed poll | 16 ms while over the video, 250 ms elsewhere |
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -285,11 +285,6 @@ impl OverlayState {
         let main = app
             .get_webview_window(MAIN_LABEL)
             .ok_or_else(|| "player_ui_mode: missing main window".to_string())?;
-        // A mode switch is one of the transitions that can rebuild the controls
-        // window; check the handle before the rest of this function acts on it.
-        if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
-            ensure_chrome(&controls, "mode");
-        }
 
         // The main window keeps its frameless configuration in both modes, so
         // only the background and the overlay visibility change here. The mode
@@ -473,29 +468,18 @@ impl OverlayState {
                     inner.cursor_ignored = Some(ignore);
                     inner.interaction_generation
                 };
-                // `set_ignore_cursor_events` rebuilds the whole style from tao's
-                // window flags and installs `WS_CAPTION` while doing it, so the
-                // style right here — before anything of ours touches it — is
-                // what decides hypothesis A: a caption bit at `phase=pre-strip`
-                // means some path added it behind the guard.
-                #[cfg(windows)]
-                if let Ok(hwnd) = controls_hwnd(controls) {
-                    log_interactive_transition(hwnd, !ignore, "pre-strip");
-                }
+                // `set_ignore_cursor_events` rebuilds the whole style from
+                // tao's window flags, so the caption strip has to run again.
                 reassert_controls_chrome(controls);
-                // Same read after the strip. Both phases clean means the strip,
-                // if it is visible, is a composed frame (hypothesis B).
-                #[cfg(windows)]
-                if let Ok(hwnd) = controls_hwnd(controls) {
-                    log_interactive_transition(hwnd, !ignore, "post-strip");
-                }
-                // Every interaction transition composes the frame once more: the
-                // region does not change on an auto-hide cycle, so this is the
-                // only point that can guarantee a clean frame for the bar.
-                if let Some(bands) = self.lock().last_bands {
-                    let signature = format!("interactive-{generation}-{ignore}");
-                    let reason = if ignore { "interactive-off" } else { "interactive" };
-                    self.force_frame_if_changed(controls, bands, &signature, reason);
+                // Every wake (the bar coming back from auto-hide) composes the
+                // frame once more before the bar is shown again. The region
+                // does not change on an auto-hide cycle, so this is the only
+                // point that can guarantee a clean frame for a wake.
+                if !ignore {
+                    if let Some(bands) = self.lock().last_bands {
+                        let signature = format!("wake-{generation}");
+                        self.force_frame_if_changed(controls, bands, &signature, "wake");
+                    }
                 }
             }
             Err(err) => eprintln!("[overlay] could not set click-through to {ignore}: {err}"),
@@ -630,9 +614,6 @@ impl OverlayState {
             // the first visible frame of this show carries no stale caption.
             let shown_signature = format!("{}x{} full", geometry.2, geometry.3);
             self.force_frame_if_changed(&controls, full, &shown_signature, "show");
-            // Anything that could have re-created the window is a chance for the
-            // guard to be on a stale handle; check it right after a show.
-            ensure_chrome(&controls, "show");
             {
                 let mut inner = self.lock();
                 inner.controls_shown = true;
@@ -669,7 +650,6 @@ impl OverlayState {
                 geometry.2, geometry.3, bands.top_width, bands.top_height, bands.bottom_height
             );
             self.force_frame_if_changed(&controls, bands, &signature, "region");
-            ensure_chrome(&controls, "region");
         }
         Ok(())
     }
@@ -700,7 +680,6 @@ impl OverlayState {
                 // strip now so the next `present` cannot expose a caption that
                 // was silently re-added while the window was invisible.
                 reassert_controls_chrome(&controls);
-                ensure_chrome(&controls, "hide");
             }
             // The hidden window keeps its ex-style; mark the click-through
             // state unknown so the next show re-applies it.
@@ -717,9 +696,6 @@ impl OverlayState {
         }
         self.lock().suspended = true;
         eprintln!("[overlay] suspend (fullscreen transition)");
-        if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
-            ensure_chrome(&controls, "fullscreen-suspend");
-        }
         self.hide(app);
     }
 
@@ -739,9 +715,6 @@ impl OverlayState {
         eprintln!("[overlay] resume");
         if let Err(err) = self.present(app, None) {
             eprintln!("[overlay] could not re-present controls after fullscreen: {err}");
-        }
-        if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
-            ensure_chrome(&controls, "fullscreen-resume");
         }
     }
 
@@ -1028,12 +1001,7 @@ fn force_frame_redraw(hwnd: windows_sys::Win32::Foundation::HWND, region: &str, 
     use windows_sys::Win32::Graphics::Gdi::{
         RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
 
-    // `visible` is part of this line on purpose: a repaint requested while the
-    // window is still hidden cannot clear the frame that is about to be
-    // composed for the show, so the log has to say which one this was.
-    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
     let result = unsafe {
         RedrawWindow(
             hwnd,
@@ -1043,7 +1011,7 @@ fn force_frame_redraw(hwnd: windows_sys::Win32::Foundation::HWND, region: &str, 
         )
     };
     diag::write(&format!(
-        "frame forced redraw: region={region} reason={reason} visible={visible} result={result}"
+        "frame forced redraw: region={region} reason={reason} result={result}"
     ));
 }
 
@@ -1167,6 +1135,8 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     // reappearing is painted by Windows from exactly this string, so a
     // screenshot of the bug also proves which build produced it. `diag` puts the
     // same id in the log and into a small badge inside the controls page.
+    // The build id stays in the title: it is what a screenshot of any future
+    // chrome problem would show, without asking the user which binary they run.
     .title(format!("Emby Controls · {}", controls_build_id()))
     .transparent(true)
     .decorations(false)
@@ -1221,10 +1191,6 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
         diag::describe("controls", controls_raw);
         diag::region("controls", controls_raw);
     }
-    // One-shot diagnosis for the paused repro: ten samples, ten minutes, then
-    // it stops for good. See `spawn_paused_probe`.
-    #[cfg(windows)]
-    spawn_paused_probe(app.clone());
     Ok(window)
 }
 
@@ -1233,29 +1199,6 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
 /// Also shown inside the controls page and used in the window title, so a
 /// screenshot of a broken build can be matched against a commit without asking
 /// the user anything. A source tree without git degrades to `unknown`.
-/// `EMBY_CONTROLS_TOOLWINDOW` — whether the controls window is pinned out of
-/// Alt+Tab with `WS_EX_TOOLWINDOW`.
-///
-/// Pinning it is the only behavioural change between the build that showed no
-/// strip and the build that started showing it, so it is an independent
-/// variable until the diagnosis says otherwise. `1` (or unset) keeps the
-/// current behaviour, `0`/`false`/`off` leaves the extended style to tao.
-/// Read once; no dependency, no per-call lookup.
-fn controls_toolwindow_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        match std::env::var("EMBY_CONTROLS_TOOLWINDOW") {
-            Ok(value) => {
-                let value = value.trim();
-                !(value == "0"
-                    || value.eq_ignore_ascii_case("false")
-                    || value.eq_ignore_ascii_case("off"))
-            }
-            Err(_) => true,
-        }
-    })
-}
-
 fn controls_build_id() -> &'static str {
     option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
 }
@@ -1302,9 +1245,6 @@ fn apply_tool_window_style(window: &WebviewWindow) -> Result<(), String> {
         GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
 
-    if !controls_toolwindow_enabled() {
-        return Ok(());
-    }
     let hwnd = controls_hwnd(window)?;
     unsafe {
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -1464,10 +1404,9 @@ mod diag {
             None => "<no app config dir>".to_string(),
         };
         write(&format!(
-            "=== controls diag start pid={} build={} toolwindow={} file={shown} ===",
+            "=== controls diag start pid={} build={} file={shown} ===",
             std::process::id(),
             build_id(),
-            super::controls_toolwindow_enabled() as u8,
         ));
     }
 
@@ -1656,14 +1595,6 @@ static CAPTION_REFUSALS: AtomicU32 = AtomicU32::new(0);
 #[cfg(windows)]
 static CHROME_GUARD_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// The `HWND` the caption guard was actually installed on, or `0` before it was
-/// ever armed. Both the subclass and the DWM attribute are bound to one specific
-/// window handle, so this is the value every `ensure_chrome` call compares
-/// against: if the controls window is ever re-created, the new handle starts
-/// unguarded and this is what notices it.
-#[cfg(windows)]
-static GUARDED_HWND: AtomicIsize = AtomicIsize::new(0);
-
 /// Print a chrome/style line and, when the opt-in log is enabled, also append it
 /// to `%TEMP%\emby-desktop\chrome-<pid>.log`.
 ///
@@ -1712,13 +1643,9 @@ unsafe extern "system" fn caption_guard_proc(
                     // `WS_EX_TOOLWINDOW` keeps the helper window out of
                     // Alt+Tab. tao has no flag for it, so every rebuild drops
                     // it; forcing it here is what makes the one-time
-                    // `apply_tool_window_style` stick. `EMBY_CONTROLS_TOOLWINDOW=0`
-                    // turns the pinning off at runtime so the same build can
-                    // A/B it (see `controls_toolwindow_enabled`).
-                    (*styles).styleNew &= !WS_EX_WINDOWEDGE;
-                    if controls_toolwindow_enabled() {
-                        (*styles).styleNew |= WS_EX_TOOLWINDOW;
-                    }
+                    // `apply_tool_window_style` stick.
+                    (*styles).styleNew =
+                        ((*styles).styleNew & !WS_EX_WINDOWEDGE) | WS_EX_TOOLWINDOW;
                 }
                 let applied = (*styles).styleNew;
                 if applied != asked {
@@ -1805,7 +1732,6 @@ fn install_caption_guard(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(
         "guard: SetWindowSubclass -> {installed} (last_error={:?})",
         std::io::Error::last_os_error().raw_os_error()
     ));
-    GUARDED_HWND.store(hwnd as isize, Ordering::Relaxed);
 
     let hr = disable_dwm_nc_rendering(hwnd);
     diag::write(&format!("guard: DwmSetWindowAttribute(NCRENDERING_POLICY) hr=0x{hr:08x}"));
@@ -1929,242 +1855,6 @@ pub fn harden_main_window_chrome(_hwnd: isize) -> Result<(), String> {
 /// taller, so the WebView2 client rect starts below the caption and every band
 /// in `apply_region` is offset from the HTML it is supposed to match.
 #[cfg(windows)]
-// ---- one-shot paused-state probe (delete once A/B is decided) -----------------
-//
-// The white strip is now reproducible: it appears as soon as playback is
-// paused, while the bar is visible and interactive. Two hypotheses are left and
-// they are mutually exclusive:
-//
-//   A) something installs `WS_CAPTION` at that moment, behind the guard's back
-//      (window re-created, subclass lost, or a style path that bypasses
-//      `SetWindowLongW`), or
-//   B) the style is clean and the strip is a frame that was composed earlier and
-//      is being recomposed or revealed at that moment.
-//
-// One line settles it, because it carries both halves: the *pixel that is
-// actually on screen* and the *style bits at that instant*. White pixel plus a
-// clean style cannot be A, and a caption bit cannot be B.
-//
-// Everything below is temporary: it runs only for the first ten minutes after
-// launch, only while the window is visible and interactive, stops after ten
-// samples, and is meant to be deleted once the answer is recorded.
-
-/// 0x00C00000: `WS_CAPTION` (`WS_BORDER | WS_DLGFRAME`).
-#[cfg(windows)]
-const STYLE_CAPTION_BITS: u32 = 0x00c0_0000;
-
-/// Log the full window state at an interactive-transition point.
-///
-/// One line per transition: the style is what decides between A and B, and the
-/// foreground/region values are there to catch a composition that happens only
-/// when the app is active or the window is clipped a certain way.
-#[cfg(windows)]
-fn log_interactive_transition(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    interactive: bool,
-    phase: &str,
-) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextW, GWL_EXSTYLE, GWL_STYLE,
-        GW_OWNER, IsWindowVisible,
-    };
-
-    let mut title = [0u16; 128];
-    let (style, ex_style, visible, owner, foreground) = unsafe {
-        let _ = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
-        (
-            GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
-            IsWindowVisible(hwnd) != 0,
-            GetWindow(hwnd, GW_OWNER),
-            GetForegroundWindow(),
-        )
-    };
-    let fg = foreground == hwnd || (!owner.is_null() && foreground == owner);
-    let title_len = title.iter().position(|unit| *unit == 0).unwrap_or(0);
-    diag::write(&format!(
-        "interactive transition: phase={phase} interactive={interactive} visible={visible} fg={} style=0x{style:08x} ex=0x{ex_style:08x} caption={} title={:?}",
-        if fg { 1 } else { 0 },
-        style & STYLE_CAPTION_BITS != 0,
-        String::from_utf16_lossy(&title[..title_len]),
-    ));
-    diag::region("interactive", hwnd);
-}
-
-/// Sample the pixel the strip would occupy, together with the style bits.
-///
-/// `offset` is relative to the controls window's top-left corner; (400, 22) is
-/// inside the top band on a 200% display and inside it on 100% too, so one
-/// sample covers both.
-#[cfg(windows)]
-fn sample_paused_band(hwnd: windows_sys::Win32::Foundation::HWND, index: u32) {
-    use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, GWL_EXSTYLE, GWL_STYLE,
-        GW_OWNER, IsWindowVisible,
-    };
-
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    unsafe {
-        let _ = GetWindowRect(hwnd, &mut rect);
-    }
-    let point = POINT {
-        x: rect.left + 400,
-        y: rect.top + 22,
-    };
-    let mut colour = "<clr_invalid>".to_string();
-    unsafe {
-        let dc = GetDC(std::ptr::null_mut());
-        if !dc.is_null() {
-            let value = GetPixel(dc, point.x, point.y);
-            ReleaseDC(std::ptr::null_mut(), dc);
-            if value != u32::MAX {
-                colour = format!(
-                    "#{:02x}{:02x}{:02x}",
-                    value & 0xff,
-                    (value >> 8) & 0xff,
-                    (value >> 16) & 0xff
-                );
-            }
-        }
-    }
-    let (style, ex_style, visible, foreground, owner) = unsafe {
-        (
-            GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
-            IsWindowVisible(hwnd) != 0,
-            GetForegroundWindow(),
-            GetWindow(hwnd, GW_OWNER),
-        )
-    };
-    let fg = foreground == hwnd || (!owner.is_null() && foreground == owner);
-    // Colour and style on the same line: that pairing is the whole point.
-    diag::write(&format!(
-        "paused-probe: colour={colour} style=0x{style:08x} ex=0x{ex_style:08x} fg={} visible={visible} at=({},{}) n={index} caption={}",
-        if fg { 1 } else { 0 },
-        point.x,
-        point.y,
-        style & STYLE_CAPTION_BITS != 0,
-    ));
-}
-
-/// Temporary sampler: ten samples, one per second, only while the window is
-/// visible and interactive, and only within the first ten minutes of the
-/// process. Delete together with `sample_paused_band` once A/B is decided.
-#[cfg(windows)]
-pub fn spawn_paused_probe(app: AppHandle) {
-    std::thread::spawn(move || {
-        use std::time::Instant;
-
-        let started = Instant::now();
-        let mut taken = 0u32;
-        while started.elapsed() < std::time::Duration::from_secs(600) && taken < 10 {
-            std::thread::sleep(Duration::from_millis(1000));
-            if taken >= 10 {
-                break;
-            }
-            let Some(controls) = app.get_webview_window(CONTROLS_LABEL) else {
-                continue;
-            };
-            let Ok(hwnd) = controls_hwnd(&controls) else {
-                continue;
-            };
-            let (visible, interactive) = {
-                let Some(state) = app.try_state::<OverlayState>() else {
-                    return;
-                };
-                let interactive = state.lock().interactive;
-                let visible = unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd)
-                } != 0;
-                (visible, interactive)
-            };
-            if !visible || !interactive {
-                continue;
-            }
-            taken += 1;
-            sample_paused_band(hwnd, taken);
-        }
-        diag::write(&format!("paused-probe: finished after {taken} samples"));
-    });
-}
-/// Verify that the window we armed is still the window Windows is compositing,
-/// and re-arm it if it is not.
-///
-/// Both `SetWindowSubclass` and `DwmSetWindowAttribute` are bound to one
-/// specific `HWND`, and both were installed once, at creation. If anything ever
-/// re-creates the controls window — a tao rebuild, a mode transition, a
-/// fullscreen switch — the new handle starts unguarded and shows its caption,
-/// intermittently, which is exactly the shape of the report. Every moment that
-/// could plausibly do that now compares the live handle with the armed one here.
-///
-/// Cheap and silent in the normal case: one handle comparison and two
-/// `GetWindowLongPtr` reads. It only writes a style, subclasses anything, or
-/// repaints when the handle changed or a caption bit is actually installed.
-#[cfg(windows)]
-fn ensure_chrome(controls: &WebviewWindow, moment: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION,
-        WS_DLGFRAME,
-    };
-
-    let Ok(hwnd) = controls_hwnd(controls) else {
-        diag::write(&format!("controls identity: moment={moment} hwnd=<unavailable>"));
-        return;
-    };
-    let armed = GUARDED_HWND.load(Ordering::Relaxed);
-    let (style, ex_style, tid) = unsafe {
-        (
-            GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
-            GetWindowThreadProcessId(hwnd, std::ptr::null_mut()),
-        )
-    };
-    let caption = style & (WS_CAPTION | WS_DLGFRAME) != 0;
-    diag::write(&format!(
-        "controls identity: moment={moment} hwnd=0x{:x} tid={tid} armed=0x{armed:x} style=0x{style:08x} ex=0x{ex_style:08x} caption={caption}",
-        hwnd as isize
-    ));
-    if armed == hwnd as isize && !caption {
-        return;
-    }
-    if armed != hwnd as isize {
-        diag::write(&format!(
-            "CONTROLS HWND CHANGED: old=0x{armed:x} new=0x{:x} tid={tid} moment={moment} style=0x{style:08x} ex=0x{ex_style:08x} caption={caption}",
-            hwnd as isize
-        ));
-        diag::describe(&format!("controls-changed[{moment}]"), hwnd);
-    } else {
-        diag::write(&format!(
-            "CONTROLS STYLE DRIFT: hwnd=0x{:x} moment={moment} style=0x{style:08x} ex=0x{ex_style:08x} (a caption was installed and the guard did not intercept)",
-            hwnd as isize
-        ));
-    }
-    // Re-arm on the window's thread: the subclass, the DWM policy and the strip
-    // all belong there, and then one forced composition so the new (or drifted)
-    // surface cannot keep a caption it already painted.
-    let raw = hwnd as isize;
-    let moment = moment.to_string();
-    let _ = controls.run_on_main_thread(move || {
-        let hwnd = raw as windows_sys::Win32::Foundation::HWND;
-        if let Err(err) = install_caption_guard(hwnd) {
-            log_chrome(&format!("[overlay] re-arm (moment={moment}) failed: {err}"));
-        }
-        if let Err(err) = strip_native_caption(hwnd as isize, "controls window") {
-            log_chrome(&format!("[overlay] re-arm strip (moment={moment}) failed: {err}"));
-        }
-        force_frame_redraw(hwnd, "rearm", &moment);
-    });
-}
-
-#[cfg(not(windows))]
-fn ensure_chrome(_controls: &WebviewWindow, _moment: &str) {}
 fn harden_controls_window_chrome(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = controls_hwnd(window)?;
     // Order matters: the guard has to be in place *before* the current caption is
