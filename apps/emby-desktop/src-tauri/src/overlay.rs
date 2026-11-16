@@ -600,10 +600,6 @@ impl OverlayState {
                 eprintln!("[overlay] could not hide controls: {err}");
             } else {
                 eprintln!("[overlay] controls hidden");
-                #[cfg(windows)]
-                if let Ok(hwnd) = controls_hwnd(&controls) {
-                    diag::describe("after-hide", hwnd);
-                }
                 // `hide` rewrites the style from tao's flags just like `show`;
                 // strip now so the next `present` cannot expose a caption that
                 // was silently re-added while the window was invisible.
@@ -925,8 +921,7 @@ fn apply_region(
     #[cfg(windows)]
     {
         use windows_sys::Win32::Graphics::Gdi::{
-            CombineRgn, CreateRectRgn, DeleteObject, RedrawWindow, SetWindowRgn,
-            RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR,
+            CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR,
         };
 
         let hwnd = controls_hwnd(controls)?;
@@ -969,19 +964,13 @@ fn apply_region(
         // `bRedraw = 0`: the region only clips the existing WebView2 surface;
         // forcing a repaint here is what flashed the bar.
         let ok = unsafe { SetWindowRgn(hwnd, region, 0) };
-        // A caption that was ever composited is not removed by changing the
-        // region; re-render the frame and every child so the window cannot keep
-        // showing pixels from a surface composed before the styles were fixed.
-        let redrawn = unsafe {
-            RedrawWindow(
-                hwnd,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-                RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW | RDW_ALLCHILDREN,
-            )
-        };
+        // No forced `RedrawWindow` here. The strip in `strip_native_caption` is
+        // what repaints a frame that was already composited, and it only runs
+        // when there is actually something to remove; forcing a full frame +
+        // child repaint on every region change is exactly the flash this
+        // function was changed to avoid.
         diag::write(&format!(
-            "region: window={}x{} top=0,0,{top_width},{top_height} bottom=0,{bottom_top},{width},{height} SetWindowRgn={ok} RedrawWindow={redrawn}",
+            "region: window={}x{} top=0,0,{top_width},{top_height} bottom=0,{bottom_top},{width},{height} SetWindowRgn={ok}",
             width,
             height,
         ));
@@ -1038,13 +1027,9 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     // reappearing is painted by Windows from exactly this string, so a
     // screenshot of the bug also proves which build produced it. `diag` puts the
     // same id in the log and into a small badge inside the controls page.
-    // Marker on purpose: if the white strip is this window's native caption,
-    // its text is exactly this title, so a screenshot decides the question.
-    .title(format!(
-        "Emby Controls · {} ZZZ-{}",
-        controls_build_id(),
-        probe_token()
-    ))
+    // The build id stays in the title: it is what a screenshot of any future
+    // chrome problem would show, without asking the user which binary they run.
+    .title(format!("Emby Controls · {}", controls_build_id()))
     .transparent(true)
     .decorations(false)
     .skip_taskbar(true)
@@ -1059,35 +1044,22 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     // "built from the fixed commit" can be checked from one screenshot. Injected
     // from here because the page is a separate, otherwise untouched webview.
     .on_page_load(|webview, _payload| {
-        // Two experiments in one injection:
-        //
-        // 1. The whole page background is forced to opaque magenta. If the white
-        //    strip is the controls *page* (a broken transparent background, an
-        //    unpainted band, a CSS mistake), it turns magenta with everything
-        //    else. If the strip stays white while the rest of the exposed
-        //    surface is magenta, the strip is painted outside the webview.
-        // 2. A badge with the build id and the title marker, so one screenshot
-        //    proves which binary and which window title were live.
+        // One line of small print with the build id. It is the cheapest way to
+        // tell a "still broken" report from a stale install: a screenshot carries
+        // the commit that produced it. Deliberately faint, pointer-transparent
+        // and outside the interactive rows.
         let script = format!(
             "(() => {{ const tag = \"embypc-build\"; \
-             if (!document.body) return; \
-             if (!document.getElementById(\"embypc-probe-style\")) {{ \
-             const style = document.createElement(\"style\"); \
-             style.id = \"embypc-probe-style\"; \
-             style.textContent = \"html,body{{background:#ff00ff !important}}\
-             .overlay__top{{background:#ff00ff !important}}\"; \
-             (document.head || document.documentElement).appendChild(style); }} \
-             if (document.getElementById(tag)) return; \
+             if (!document.body || document.getElementById(tag)) return; \
              const node = document.createElement(\"div\"); \
              node.id = tag; \
-             node.textContent = \"build {} ZZZ-{}\"; \
+             node.textContent = \"build {}\"; \
              node.style.cssText = \"position:fixed;left:8px;bottom:2px;z-index:2147483647;\
-             pointer-events:none;font:9px/1.2 monospace;color:rgba(255,255,255,.6);\
-             text-shadow:0 0 2px rgba(0,0,0,.85);\"; \
+             pointer-events:none;font:9px/1.2 monospace;color:rgba(255,255,255,.28);\
+             text-shadow:0 0 2px rgba(0,0,0,.6);\"; \
              document.body.appendChild(node); \
              }})()",
             controls_build_id(),
-            probe_token(),
         );
         let _ = webview.eval(script);
     })
@@ -1106,32 +1078,11 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     #[cfg(windows)]
     if let (Ok(controls_raw), Ok(main_raw)) = (controls_hwnd(&window), main.hwnd()) {
         let main_raw = main_raw.0 as isize as windows_sys::Win32::Foundation::HWND;
-        diag::write("--- window survey ---");
+        diag::write("--- window survey (once per launch) ---");
         diag::describe("main", main_raw);
-        diag::region("main", main_raw);
-        diag::children("main-child", main_raw);
         diag::describe("controls", controls_raw);
         diag::region("controls", controls_raw);
-        // The metrics the screenshot arithmetic needs: without them the
-        // "44 px tall strip" cannot be compared against a caption height.
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let (caption_height, frame_x, frame_y) = unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetSystemMetrics, SM_CXFRAME, SM_CXSIZEFRAME, SM_CYCAPTION, SM_CYFRAME,
-                SM_CYSIZEFRAME,
-            };
-            (
-                GetSystemMetrics(SM_CYCAPTION),
-                GetSystemMetrics(SM_CXSIZEFRAME).max(GetSystemMetrics(SM_CXFRAME)),
-                GetSystemMetrics(SM_CYSIZEFRAME).max(GetSystemMetrics(SM_CYFRAME)),
-            )
-        };
-        diag::write(&format!(
-            "survey: scale={scale} sm_cycaption={caption_height} sm_cxsizeframe={frame_x} sm_cysizeframe={frame_y}",
-        ));
     }
-    #[cfg(windows)]
-    spawn_chrome_probe(app.clone());
     Ok(window)
 }
 
@@ -1144,34 +1095,6 @@ fn controls_build_id() -> &'static str {
     option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
 }
 
-/// A random marker that goes into the controls window title.
-///
-/// The whole point is to be un-guessable: if the white strip is a native
-/// caption, its text is *this* title, so a screenshot either shows the marker
-/// (the strip belongs to this window, live) or shows the stale string "Emby
-/// Controls" (the strip comes from somewhere else, or from a cached surface
-/// painted before this build existed). No `rand` dependency: the process id,
-/// the clock and the address of a local are enough for a 4-character
-/// diagnostic token.
-fn probe_token() -> &'static str {
-    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    TOKEN.get_or_init(|| {
-        const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_nanos())
-            .unwrap_or(0);
-        let seed = nanos as u64 ^ ((std::process::id() as u64) << 17) ^ (&nanos as *const _ as u64);
-        let mut value = seed;
-        let mut token = String::new();
-        for _ in 0..4 {
-            let index = (value % ALPHABET.len() as u64) as usize;
-            token.push(ALPHABET[index] as char);
-            value /= ALPHABET.len() as u64;
-        }
-        token
-    })
-}
 
 fn configure_controls_window(window: &WebviewWindow) -> Result<(), String> {
     // Invisible until a video rect is known; do not intercept the mouse while
@@ -1180,11 +1103,11 @@ fn configure_controls_window(window: &WebviewWindow) -> Result<(), String> {
         .set_ignore_cursor_events(true)
         .map_err(|err| format!("controls click-through: {err}"))?;
 
-    // One-time style fix. `focusable(false)` already keeps the window
-    // non-activating through Tauri, so only WS_EX_TOOLWINDOW (keep the helper
-    // out of Alt+Tab) is set here. It is never re-applied afterwards: `set_ignore_cursor_events` and
-    // `show` rebuild the ex-style from Tauri's flags and re-adding flags after
-    // each call would force extra frame refreshes.
+    // `focusable(false)` already keeps the window non-activating through
+    // Tauri, so only `WS_EX_TOOLWINDOW` (keep the helper out of Alt+Tab) is
+    // set here. tao has no flag for it and drops it on every rebuild, so the
+    // caption guard re-adds it inside `WM_STYLECHANGING` instead of patching it
+    // back after each call.
     #[cfg(windows)]
     apply_tool_window_style(window)?;
 
@@ -1235,11 +1158,6 @@ fn show_controls(window: &WebviewWindow) -> Result<(), String> {
     // Tauri keeps its own VISIBLE flag in sync; calling `ShowWindow` directly
     // would desynchronise it. Activation stays suppressed by focusable(false).
     window.show().map_err(|err| format!("show controls: {err}"))?;
-    #[cfg(windows)]
-    if let Ok(hwnd) = controls_hwnd(window) {
-        diag::describe("after-show", hwnd);
-        diag::region("after-show", hwnd);
-    }
     // `show` goes through tao's `WindowState::apply_diff`, which rebuilds
     // GWL_STYLE/GWL_EXSTYLE from the window flag set and puts `WS_CAPTION`
     // back (`to_window_styles` seeds it unconditionally for owned windows).
@@ -1491,170 +1409,11 @@ mod diag {
         ));
     }
 
-    /// Describe every child window of `parent`. The native video host and the
-    /// WebView2 surfaces are children of the main window, so this is what rules
-    /// them out as the source of a visible artifact.
-    pub fn children(tag: &str, parent: windows_sys::Win32::Foundation::HWND) {
-        use windows_sys::Win32::Foundation::{HWND, LPARAM};
-        use windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows;
-
-        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> i32 {
-            let out = lparam as *mut Vec<HWND>;
-            if !out.is_null() && !hwnd.is_null() {
-                (*out).push(hwnd);
-            }
-            1
-        }
-
-        let mut found: Vec<HWND> = Vec::new();
-        let ok = unsafe { EnumChildWindows(parent, Some(collect), &mut found as *mut _ as isize) };
-        write(&format!("{tag}: EnumChildWindows -> {ok} ({} children)", found.len()));
-        for child in found {
-            describe(tag, child);
-        }
-    }
 
     /// `GetClassNameW`/`GetWindowTextW` fill a UTF-16 buffer.
     fn utf16(units: &[u16]) -> String {
         String::from_utf16_lossy(units)
     }
-}
-
-// ---- pixel and window probes -------------------------------------------------
-
-/// Sample where the white strip would be, and report who owns that pixel.
-///
-/// The style log proves what the window *style* says; this proves what is
-/// actually *painted*:
-///   `WindowFromPoint` -> which window owns the pixel under the strip,
-///   `GetPixel` from the screen DC -> the colour that is really on screen,
-///   and the owner window's class/title/style/rect for identification.
-///
-/// `offset` is relative to the controls window's own top-left corner.
-#[cfg(windows)]
-fn probe_point(hwnd: windows_sys::Win32::Foundation::HWND, offset: (i32, i32), tag: &str) {
-    use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, WindowFromPoint};
-
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    unsafe {
-        let _ = GetWindowRect(hwnd, &mut rect);
-    }
-    let point = POINT {
-        x: rect.left + offset.0,
-        y: rect.top + offset.1,
-    };
-    let owner;
-    let colour;
-    unsafe {
-        owner = WindowFromPoint(point);
-        let dc = GetDC(std::ptr::null_mut());
-        let mut value = u32::MAX;
-        if !dc.is_null() {
-            value = GetPixel(dc, point.x, point.y);
-            ReleaseDC(std::ptr::null_mut(), dc);
-        }
-        colour = if value == u32::MAX {
-            "<clr_invalid>".to_string()
-        } else {
-            format!(
-                "#{:02x}{:02x}{:02x}",
-                value & 0xff,
-                (value >> 8) & 0xff,
-                (value >> 16) & 0xff
-            )
-        };
-    }
-    let owner_label = if owner.is_null() {
-        "none".to_string()
-    } else {
-        format!("0x{:x}", owner as isize)
-    };
-    // The owner's ex-style is logged with it: a click-through window is skipped
-    // by `WindowFromPoint`, so "owner=none" is itself a finding.
-    diag::write(&format!(
-        "probe[{tag}]: screen=({},{}) colour={colour} owner={owner_label}",
-        point.x, point.y
-    ));
-    if !owner.is_null() {
-        diag::describe(&format!("probe[{tag}]-owner"), owner);
-    }
-}
-
-/// Hide the controls window for a moment and sample the same screen pixel.
-///
-/// This is the A/B that settles the question without any further guessing: a
-/// strip that is still there while the controls window is hidden cannot have
-/// been painted by the controls window.
-#[cfg(windows)]
-fn probe_hidden_comparison(hwnd: windows_sys::Win32::Foundation::HWND) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE};
-
-    diag::write("=== probe A/B: controls window hidden for 150 ms ===");
-    probe_point(hwnd, (400, 22), "ab-visible");
-    probe_point(hwnd, (400, 22), "ab-visible-b");
-    unsafe {
-        ShowWindow(hwnd, SW_HIDE);
-    }
-    std::thread::sleep(Duration::from_millis(150));
-    probe_point(hwnd, (400, 22), "ab-hidden");
-    unsafe {
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    }
-    std::thread::sleep(Duration::from_millis(150));
-    probe_point(hwnd, (400, 22), "ab-restored");
-    diag::write("=== probe A/B done ===");
-}
-
-/// Sample the caption row, the middle of the top band and the video below it,
-/// plus one hidden-window comparison, from a background thread.
-///
-/// Samples every two seconds while the window is visible and gives up after
-/// fifteen minutes: long enough for a repro that needs a minute of playback,
-/// bounded so the log cannot grow into the 512 KB rotation while nobody is
-/// looking.
-#[cfg(windows)]
-pub fn spawn_chrome_probe(app: AppHandle) {
-    std::thread::spawn(move || {
-        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
-
-        diag::write(&format!(
-            "probe: thread started, title marker ZZZ-{}",
-            probe_token()
-        ));
-        let mut compared = false;
-        for tick in 0..450u64 {
-            std::thread::sleep(Duration::from_millis(2000));
-            let Some(controls) = app.get_webview_window(CONTROLS_LABEL) else {
-                diag::write("probe: controls window is gone");
-                return;
-            };
-            let Ok(hwnd) = controls_hwnd(&controls) else {
-                return;
-            };
-            let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-            if !visible {
-                continue;
-            }
-            // The caption row sits in the first ~46 physical px of the region
-            // band; 110 and 200 sample the band itself and the video under it.
-            probe_point(hwnd, (400, 22), &format!("t{tick}"));
-            probe_point(hwnd, (1000, 22), &format!("t{tick}"));
-            probe_point(hwnd, (400, 110), &format!("t{tick}"));
-            probe_point(hwnd, (400, 200), &format!("t{tick}"));
-            if !compared && tick >= 8 {
-                compared = true;
-                probe_hidden_comparison(hwnd);
-            }
-        }
-        diag::write("probe: sampling window closed");
-    });
 }
 
 // ---- native caption guard ----------------------------------------------------
@@ -1745,7 +1504,8 @@ unsafe extern "system" fn caption_guard_proc(
     _data: usize,
 ) -> isize {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WS_CAPTION, WS_DLGFRAME, WS_EX_WINDOWEDGE,
+        GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WS_CAPTION, WS_DLGFRAME, WS_EX_TOOLWINDOW,
+        WS_EX_WINDOWEDGE,
     };
 
     match msg {
@@ -1758,22 +1518,25 @@ unsafe extern "system" fn caption_guard_proc(
                 if index == GWL_STYLE {
                     (*styles).styleNew &= !(WS_CAPTION | WS_DLGFRAME);
                 } else if index == GWL_EXSTYLE {
-                    (*styles).styleNew &= !WS_EX_WINDOWEDGE;
+                    // `WS_EX_TOOLWINDOW` keeps the helper window out of
+                    // Alt+Tab. tao has no flag for it, so every rebuild drops
+                    // it; forcing it here is what makes the one-time
+                    // `apply_tool_window_style` stick.
+                    (*styles).styleNew =
+                        ((*styles).styleNew & !WS_EX_WINDOWEDGE) | WS_EX_TOOLWINDOW;
                 }
                 let applied = (*styles).styleNew;
-                let refused = applied != asked;
-                if refused {
-                    CAPTION_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                if applied != asked {
+                    let seen = CAPTION_REFUSALS.fetch_add(1, Ordering::Relaxed) + 1;
+                    // Only the first one: it proves the guard is installed and
+                    // running, and after that a line per rebuild would be log
+                    // spam on a window that toggles the bar all session.
+                    if seen == 1 {
+                        log_chrome(&format!(
+                            "[overlay] caption guard active: old=0x{old:08x} refused 0x{asked:08x} -> 0x{applied:08x} (idx={index}, further refusals not logged)"
+                        ));
+                    }
                 }
-                // Every single one, unfiltered: this line is the proof that the
-                // guard is actually installed and actually runs, and it names
-                // the caller's intent (`asked`) next to what Windows then
-                // installs (`applied`).
-                diag::write(&format!(
-                    "STYLECHANGING idx={index} old=0x{old:08x} asked=0x{asked:08x} \
-                     applied=0x{applied:08x}{}",
-                    if refused { " REFUSED" } else { "" }
-                ));
             }
         }
         WM_STYLECHANGED_MSG => {
