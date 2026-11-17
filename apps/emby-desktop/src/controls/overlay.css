@@ -92,6 +92,14 @@ input:focus:not(:focus-visible) {
   outline: none;
 }
 
+/* Seek and volume are full-width range inputs: the usual focus outline draws
+   a full-width amber line right under the bar as soon as a keyboard key is
+   pressed while the input is focused. Keyboard focus is shown on the thumb
+   (ring below) instead. */
+.ov-slider__input:focus-visible {
+  outline: none;
+}
+
 .overlay {
   position: relative;
   height: 100%;
@@ -562,6 +570,15 @@ input:focus:not(:focus-visible) {
   background: #ffffff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
   transition: transform 0.12s ease;
+}
+
+/* Focus ring on the thumb instead of an outline around the whole slider. */
+.ov-slider__input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(229, 160, 13, 0.35), 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.ov-slider__input:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(229, 160, 13, 0.35), 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 
 .ov-slider:has(.ov-slider__input:disabled) {
