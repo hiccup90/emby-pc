@@ -129,6 +129,12 @@
   min-width: 0;
 }
 
+/* A `poster-card` is a button: without this it shrinks to its title width
+   inside the tile instead of filling the grid column. */
+.search-result .poster-card {
+  width: 100%;
+}
+
 .search-result__play {
   position: absolute;
   top: 38%;

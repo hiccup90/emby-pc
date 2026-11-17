@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { EmbyLibraryItem } from "../emby/useEmby";
+import { itemEpisodeLabel } from "../emby/format";
 import { isPlayableItemType } from "../emby/library";
 import { useSearch } from "../emby/useSearch";
 import { ErrorNotice, Icon } from "./shared";
@@ -124,22 +125,33 @@ export default function SearchScreen({
             <p className="empty-state">没有找到与「{search.debouncedQuery}」相关的内容。</p>
           ) : (
             <div className="poster-grid">
-              {search.items.map((item) => (
-                <div className="search-result" key={item.id}>
-                  <PosterCard item={item} landscape={false} onSelect={onOpen} />
-                  {isPlayableItemType(item.type) && (
-                    <button
-                      type="button"
-                      className="search-result__play"
-                      onClick={() => onPlay(item)}
-                      aria-label={`播放《${item.name}》`}
-                      title="播放"
-                    >
-                      <Icon name="play" size={16} />
-                    </button>
-                  )}
-                </div>
-              ))}
+              {search.items.map((item) => {
+                const episodeContext =
+                  item.type === "Episode"
+                    ? [item.seriesName, itemEpisodeLabel(item)].filter(Boolean).join(" · ")
+                    : null;
+                return (
+                  <div className="search-result" key={item.id}>
+                    <PosterCard
+                      item={item}
+                      landscape={false}
+                      onSelect={onOpen}
+                      subtitle={episodeContext}
+                    />
+                    {isPlayableItemType(item.type) && (
+                      <button
+                        type="button"
+                        className="search-result__play"
+                        onClick={() => onPlay(item)}
+                        aria-label={`播放《${item.name}》`}
+                        title="播放"
+                      >
+                        <Icon name="play" size={16} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>

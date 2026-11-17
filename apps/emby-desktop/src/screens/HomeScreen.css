@@ -18,6 +18,12 @@
   font-size: 13px;
 }
 
+/* Sections are separate blocks; the empty/error variants need the same rhythm
+   as a full hub row. */
+.home-hub {
+  margin: 0 0 40px;
+}
+
 /* Placeholder row while the first request is in flight. */
 .home-skeleton {
   pointer-events: none;

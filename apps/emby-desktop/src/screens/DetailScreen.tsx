@@ -74,6 +74,13 @@ function castAndCrew(people: EmbyPerson[]): EmbyPerson[] {
     .slice(0, 30);
 }
 
+/** Compact "S1E8" for the series resume button; falls back to the name. */
+function compactEpisodeLabel(episode: EmbyLibraryItem): string {
+  const { parentIndexNumber, indexNumber } = episode;
+  if (parentIndexNumber === null || indexNumber === null) return episode.name;
+  return `S${parentIndexNumber}E${indexNumber}`;
+}
+
 function personRole(person: EmbyPerson): string | null {
   if (person.kind === "Actor") return person.role;
   if (person.kind === "GuestStar") return person.role ?? ROLE_LABELS.GuestStar;
@@ -244,6 +251,7 @@ function EpisodeSection({
   episodes,
   seriesName,
   focusEpisodeId,
+  nextEpisodeId,
   pendingId,
   playbackPending,
   onPlay,
@@ -251,6 +259,7 @@ function EpisodeSection({
   episodes: EmbyLibraryItem[];
   seriesName: string;
   focusEpisodeId: string | null;
+  nextEpisodeId: string | null;
   pendingId: string | null;
   playbackPending: boolean;
   onPlay: (episode: EmbyLibraryItem) => void;
@@ -268,9 +277,19 @@ function EpisodeSection({
     return group?.key ?? null;
   }, [focusEpisodeId, groups]);
 
+  // Open the season that holds the "next up" episode so its chip is visible
+  // without hunting through the season tabs.
+  const nextGroupKey = useMemo(() => {
+    if (!nextEpisodeId) return null;
+    return (
+      groups.find((group) => group.episodes.some((episode) => episode.id === nextEpisodeId))
+        ?.key ?? null
+    );
+  }, [groups, nextEpisodeId]);
+
   const activeKey = groups.some((group) => group.key === selected)
     ? selected
-    : focusSeasonKey ?? defaultSeason(groups);
+    : focusSeasonKey ?? nextGroupKey ?? defaultSeason(groups);
   const active = groups.find((group) => group.key === activeKey) ?? groups[0];
 
   // Scroll the focused row from its callback ref: the node exists by then, so
@@ -323,7 +342,13 @@ function EpisodeSection({
             <li
               key={episode.id}
               ref={focused ? scrollFocusedRow : undefined}
-              className={focused ? "episode-list__item episode-list__item--focused" : "episode-list__item"}
+              className={[
+                "episode-list__item",
+                focused ? "episode-list__item--focused" : "",
+                nextEpisodeId === episode.id ? "episode-list__item--next" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
             >
               <button
                 type="button"
@@ -346,6 +371,7 @@ function EpisodeSection({
                   {progress > 0 && <ProgressBar value={progress} className="episode-row__progress" />}
                 </span>
                 <span className="episode-row__state">
+                  {nextEpisodeId === episode.id && <span className="next-chip">下一集</span>}
                   {pending ? (
                     <span className="spinner spinner--small" aria-label="正在准备" />
                   ) : episode.userData.played ? (
@@ -381,6 +407,8 @@ export default function DetailScreen({
   const detail = useEmbyDetail(itemId, seed, desktop && Boolean(session));
   const playback = usePlaybackLauncher();
   const headingRef = useRef<HTMLHeadingElement>(null);
+  /** Scroll target for the series page's "选择剧集" link. */
+  const episodesRef = useRef<HTMLElement>(null);
   const [pendingEpisodeId, setPendingEpisodeId] = useState<string | null>(null);
   const [watchedOverride, setWatchedOverride] = useState<boolean | null>(null);
   const [pendingAction, setPendingAction] = useState<"played" | "favorite" | null>(null);
@@ -392,6 +420,21 @@ export default function DetailScreen({
   const favoriteState = item?.userData.favorite === true;
   const isSeries = item?.type === "Series";
   const episodes = useEmbyEpisodes(isSeries ? item.id : null, desktop && Boolean(session));
+  /**
+   * Series page's primary action, Plex/Emby style: resume the episode with a
+   * saved position, otherwise the first unplayed one, otherwise start over.
+   * The full episode list is already loaded, so no extra request is needed.
+   */
+  const nextEpisode = useMemo(() => {
+    if (!isSeries || episodes.items.length === 0) return null;
+    const inProgress = episodes.items.find(
+      (entry) => !entry.userData.played && itemProgress(entry) > 0,
+    );
+    if (inProgress) return { episode: inProgress, mode: "resume" as const };
+    const firstUnplayed = episodes.items.find((entry) => !entry.userData.played);
+    if (firstUnplayed) return { episode: firstUnplayed, mode: "play" as const };
+    return { episode: episodes.items[0], mode: "restart" as const };
+  }, [isSeries, episodes.items]);
   const similar = useEmbySimilar(
     item && (item.type === "Movie" || item.type === "Series") ? item.id : null,
     desktop && Boolean(session),
@@ -568,6 +611,23 @@ export default function DetailScreen({
           {item.genres.length > 0 && <p className="detail-genres">{item.genres.join(" · ")}</p>}
 
           <div className="detail-actions">
+            {isSeries && nextEpisode && (
+              <button
+                className="button button--primary button--large"
+                type="button"
+                onClick={() => void playEpisode(nextEpisode.episode)}
+                disabled={playback.pending || Boolean(pendingEpisodeId) || episodes.loading}
+              >
+                {playback.pending || pendingEpisodeId ? (
+                  <span className="spinner spinner--small spinner--dark" aria-hidden="true" />
+                ) : (
+                  <Icon name="play" size={18} />
+                )}
+                {episodes.loading
+                  ? "正在读取剧集…"
+                  : `${nextEpisode.mode === "resume" ? "继续播放" : nextEpisode.mode === "restart" ? "重新播放" : "播放"} ${compactEpisodeLabel(nextEpisode.episode)} · ${nextEpisode.episode.name}`}
+              </button>
+            )}
             {playable && (
               <button
                 className="button button--primary button--large"
@@ -621,7 +681,23 @@ export default function DetailScreen({
                 {remaining ?? `已观看 ${Math.round(progress * 100)}%`}
               </span>
             )}
-            {isSeries && <span className="detail-hint">在下方选择剧集播放</span>}
+            {isSeries && (
+              <button
+                type="button"
+                className="detail-link"
+                onClick={() =>
+                  episodesRef.current?.scrollIntoView({
+                    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+                      ? "auto"
+                      : "smooth",
+                    block: "start",
+                  })
+                }
+              >
+                选择剧集
+                <Icon name="chevron-down" size={14} />
+              </button>
+            )}
             {item.type === "MusicAlbum" && <span className="detail-hint">音乐专辑暂不支持播放。</span>}
           </div>
 
@@ -635,11 +711,16 @@ export default function DetailScreen({
       </section>
 
       {isSeries && (
-        <section className="episodes" aria-labelledby="episodes-title">
+        <section className="episodes" aria-labelledby="episodes-title" ref={episodesRef}>
           <div className="section-header">
             <h2 className="section-title" id="episodes-title">
               剧集
             </h2>
+            {episodes.items.length > 0 && (
+              <span className="section-summary">
+                {episodes.items.length} 集 · 已看 {episodes.items.filter((entry) => entry.userData.played).length}
+              </span>
+            )}
           </div>
           {episodes.loading && (
             <p className="status-line">
@@ -653,6 +734,7 @@ export default function DetailScreen({
               episodes={episodes.items}
               seriesName={item.name}
               focusEpisodeId={focusEpisodeId ?? null}
+              nextEpisodeId={nextEpisode && nextEpisode.mode !== "restart" ? nextEpisode.episode.id : null}
               pendingId={pendingEpisodeId}
               playbackPending={playback.pending}
               onPlay={(next) => void playEpisode(next)}

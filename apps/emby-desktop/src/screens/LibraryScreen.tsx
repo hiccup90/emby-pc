@@ -98,7 +98,7 @@ export default function LibraryScreen({
       {library.resumable.length > 0 && (
         <HubRow title="继续观看" count={library.resumable.length}>
           {library.resumable.map((item) => (
-            <ContinueCard key={item.id} item={item} onPlay={onPlay} />
+            <ContinueCard key={item.id} item={item} onPlay={onPlay} onDetails={onOpen} />
           ))}
         </HubRow>
       )}

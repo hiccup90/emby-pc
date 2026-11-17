@@ -446,6 +446,25 @@ button:disabled {
 
 .page {
   padding: 28px var(--page-x) 56px;
+  animation: page-in 0.2s ease both;
+}
+
+/* New screens fade in slightly instead of snapping (respects reduced motion). */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page {
+    animation: none;
+  }
 }
 
 .page-header {
@@ -638,7 +657,14 @@ button:disabled {
 
 /* ---- cards ------------------------------------------------------------------- */
 
-.continue-card,
+.continue-card {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  align-content: start;
+}
+
+.continue-card__play,
 .poster-card {
   display: grid;
   min-width: 0;
@@ -651,9 +677,23 @@ button:disabled {
   text-align: left;
 }
 
-.continue-card:focus-visible,
+.continue-card__play {
+  width: 100%;
+}
+
+.continue-card__play:focus-visible,
 .poster-card:focus-visible {
   outline: none;
+}
+
+.continue-card,
+.poster-card {
+  transition: transform 0.18s ease;
+}
+
+.continue-card:hover,
+.poster-card:hover {
+  transform: translateY(-2px);
 }
 
 .continue-card__frame,
@@ -682,9 +722,67 @@ button:disabled {
 
 .continue-card:hover .continue-card__frame,
 .poster-card:hover .poster-card__frame,
-.continue-card:focus-visible .continue-card__frame,
+.continue-card__play:focus-visible .continue-card__frame,
 .poster-card:focus-visible .poster-card__frame {
-  box-shadow: 0 0 0 2px var(--accent), 0 0 4px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 2px var(--accent), 0 12px 26px rgba(0, 0, 0, 0.45);
+}
+
+/* Play affordance: the card already plays on click, show it on hover. */
+.continue-card__play-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: rgba(229, 160, 13, 0.92);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.9);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+
+.continue-card:hover .continue-card__play-hint,
+.continue-card:focus-within .continue-card__play-hint {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* Secondary entry point on a continue card: play stays the primary action. */
+.continue-card__details {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px 5px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(18, 18, 18, 0.62);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+.continue-card:hover .continue-card__details,
+.continue-card:focus-within .continue-card__details {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.continue-card__details:hover,
+.continue-card__details:focus-visible {
+  border-color: rgba(229, 160, 13, 0.5);
+  background: rgba(18, 18, 18, 0.82);
 }
 
 .continue-card__title,
@@ -705,6 +803,24 @@ button:disabled {
   font-size: 13px;
   line-height: 20px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.continue-card__meta {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.continue-card__meta-main {
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.continue-card__meta-sub {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -800,6 +916,15 @@ button:disabled {
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .continue-card,
+  .poster-card,
+  .continue-card__play-hint,
+  .continue-card__details {
+    transition: none;
+  }
 }
 
 /* ---- library grid -------------------------------------------------------------- */
@@ -933,7 +1058,8 @@ button:disabled {
 
 .button--primary {
   color: var(--accent-ink);
-  background: var(--accent);
+  background: linear-gradient(180deg, #f0b026, var(--accent));
+  box-shadow: 0 4px 14px rgba(229, 160, 13, 0.18);
 }
 
 .button--primary:hover:not(:disabled) {
@@ -1159,6 +1285,27 @@ button:disabled {
   font-size: 14px;
 }
 
+/* Secondary "选择剧集" link: scrolls to the episode list instead of a grey hint. */
+.detail-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 2px;
+  border: 0;
+  color: var(--text-2);
+  background: transparent;
+  font-size: 13.5px;
+  transition: color 0.15s ease;
+}
+
+.detail-link:hover {
+  color: var(--accent);
+}
+
+.detail-link svg {
+  opacity: 0.8;
+}
+
 .detail-overview {
   max-width: 750px;
   margin: 8px 0 0;
@@ -1224,6 +1371,7 @@ button:disabled {
 
 .episodes {
   margin-top: 44px;
+  scroll-margin-top: 20px;
 }
 
 .section-header {
@@ -1237,6 +1385,13 @@ button:disabled {
   margin: 0;
   font-size: 20px;
   font-weight: 700;
+}
+
+.section-summary {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Underline tabs, like Plex Web's "Recommended / Library" switcher. */
@@ -1402,11 +1557,39 @@ button:disabled {
 }
 
 .episode-row__state {
+  display: flex;
   min-width: 44px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
   color: var(--text-2);
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+/* The series page's "next up" row: subtly marked so the CTA has a target. */
+.next-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid rgba(229, 160, 13, 0.5);
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(229, 160, 13, 0.1);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  white-space: nowrap;
+}
+
+.episode-list__item--next .episode-row {
+  border-radius: var(--radius);
+  background: rgba(229, 160, 13, 0.05);
+  box-shadow: inset 3px 0 0 rgba(229, 160, 13, 0.55);
+}
+
+.episode-list__item--next .episode-row:hover:not(:disabled) {
+  background: rgba(229, 160, 13, 0.1);
 }
 
 .watched-mark {

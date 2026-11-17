@@ -150,20 +150,22 @@ export default function HomeScreen({
         </button>
       </header>
 
-      <HomeSection
-        title="继续观看"
-        count={resume.length}
-        variant="landscape"
-        status={resumeStatus}
-        error={resumeError}
-        onRetry={onRetryResume}
-        emptyLabel="还没有正在观看的内容。"
-        skeletonCount={4}
-      >
-        {resume.map((item) => (
-          <ContinueCard key={item.id} item={item} onPlay={onPlay} />
-        ))}
-      </HomeSection>
+      {!(resumeStatus === "ready" && resume.length === 0) && (
+        <HomeSection
+          title="继续观看"
+          count={resume.length}
+          variant="landscape"
+          status={resumeStatus}
+          error={resumeError}
+          onRetry={onRetryResume}
+          emptyLabel="还没有正在观看的内容。"
+          skeletonCount={4}
+        >
+          {resume.map((item) => (
+            <ContinueCard key={item.id} item={item} onPlay={onPlay} onDetails={onOpen} />
+          ))}
+        </HomeSection>
+      )}
 
       <HomeSection
         title="最近添加"

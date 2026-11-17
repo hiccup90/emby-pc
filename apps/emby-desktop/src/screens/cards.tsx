@@ -15,16 +15,19 @@ export function PosterCard({
   item,
   landscape,
   onSelect,
+  subtitle: subtitleOverride,
 }: {
   item: EmbyLibraryItem;
   landscape: boolean;
   onSelect: (item: EmbyLibraryItem) => void;
+  /** Overrides the default year/type line (e.g. series + episode for search hits). */
+  subtitle?: string | null;
 }) {
   const progress = itemProgress(item);
   const isSeries = item.type === "Series";
   const unplayedCount = isSeries ? item.userData.unplayedItemCount ?? 0 : 0;
   const unwatched = !isSeries && !item.userData.played && progress === 0 && item.type !== "Video";
-  const subtitle = itemYearLabel(item) ?? itemKindLabel(item);
+  const subtitle = subtitleOverride ?? itemYearLabel(item) ?? itemKindLabel(item);
 
   return (
     <button
@@ -51,34 +54,57 @@ export function PosterCard({
 
 /**
  * 16:9 continue-watching card: backdrop with the amber progress bar, the series
- * name for episodes and the resume point underneath. Clicking resumes playback.
+ * name for episodes and the resume point underneath. Clicking resumes playback;
+ * the hover "详情" pill opens the item's detail page instead.
  */
 export function ContinueCard({
   item,
   onPlay,
+  onDetails,
 }: {
   item: EmbyLibraryItem;
   onPlay: (item: EmbyLibraryItem) => void;
+  onDetails?: (item: EmbyLibraryItem) => void;
 }) {
   const progress = itemProgress(item);
   const episode = item.type === "Episode";
   const title = episode && item.seriesName ? item.seriesName : item.name;
   const lead = episode ? itemEpisodeLabel(item) : itemYearLabel(item);
   const remaining = formatRemainingTicks(item);
-  const meta = [lead, remaining].filter(Boolean).join(" · ");
+  const metaMain = (episode ? [lead, item.name] : [lead]).filter(Boolean).join(" · ");
   const label = episode
     ? `继续观看《${title}》${lead ? ` ${lead}` : ""} ${item.name}`
     : `继续观看《${title}》`;
 
   return (
-    <button type="button" className="continue-card" onClick={() => onPlay(item)} aria-label={label}>
-      <span className="continue-card__frame">
-        <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
-        <ProgressBar value={progress} className="continue-card__progress" />
-      </span>
-      <span className="continue-card__title">{title}</span>
-      <span className="continue-card__meta">{meta || "继续观看"}</span>
-    </button>
+    <div className="continue-card">
+      <button type="button" className="continue-card__play" onClick={() => onPlay(item)} aria-label={label}>
+        <span className="continue-card__frame">
+          <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
+          <ProgressBar value={progress} className="continue-card__progress" />
+          <span className="continue-card__play-hint" aria-hidden="true">
+            <Icon name="play" size={20} />
+          </span>
+        </span>
+        <span className="continue-card__title">{title}</span>
+        <span className="continue-card__meta">
+          <span className="continue-card__meta-main">{metaMain || "继续观看"}</span>
+          {remaining && <span className="continue-card__meta-sub">{remaining}</span>}
+        </span>
+      </button>
+      {onDetails && (
+        <button
+          type="button"
+          className="continue-card__details"
+          onClick={() => onDetails(item)}
+          aria-label={`查看《${title}》详情`}
+          title="详情"
+        >
+          <Icon name="info" size={14} />
+          详情
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -118,6 +144,27 @@ export function HubRow({
       track.removeEventListener("scroll", measure);
       observer.disconnect();
     };
+  }, [count]);
+
+  // Vertical wheel over a hub row pans it horizontally until the row hits an
+  // edge; after that the page scrolls normally again. The listener must be
+  // non-passive to be able to preventDefault.
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return undefined;
+    const onWheel = (event: WheelEvent) => {
+      const max = track.scrollWidth - track.clientWidth;
+      if (max <= 0) return;
+      const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+      if (delta === 0) return;
+      const atStart = track.scrollLeft <= 0;
+      const atEnd = track.scrollLeft >= max - 1;
+      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return;
+      event.preventDefault();
+      track.scrollLeft = Math.min(max, Math.max(0, track.scrollLeft + delta));
+    };
+    track.addEventListener("wheel", onWheel, { passive: false });
+    return () => track.removeEventListener("wheel", onWheel);
   }, [count]);
 
   const page = (direction: 1 | -1) => {

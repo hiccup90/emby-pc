@@ -161,7 +161,7 @@ export default function App() {
     const previous = previousScreenRef.current;
     previousScreenRef.current = route.screen;
     if (
-      route.screen === "library" &&
+      (route.screen === "library" || route.screen === "home") &&
       (previous === "detail" || previous === "player")
     ) {
       refreshResume();
