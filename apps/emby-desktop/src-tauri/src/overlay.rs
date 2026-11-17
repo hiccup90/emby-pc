@@ -56,7 +56,7 @@
 //! | first-show collapse | sleep 220 ms unconditionally | page's own state change settles it; 400 ms fallback |
 //! | cursor wake | 50 ms fixed poll | 16 ms while over the video, 250 ms elsewhere |
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -206,10 +206,10 @@ fn geometry_needs_move(
 
 /// Relocation budget: at most [`MAX_MOVES_PER_SECOND`] window moves per second.
 ///
-/// Only used when the margin layout is on. It is the last line of defence: even
-/// if some event source keeps reporting a geometry that needs a move, the window
-/// stops being moved and the log says so instead of spinning the UI thread.
-const MAX_MOVES_PER_SECOND: u32 = 8;
+/// Only used when the margin layout is on. One move per frame lets the overlay
+/// follow a normal drag; a runaway event source is still capped and the skipped
+/// move is logged instead of spinning the UI thread.
+const MAX_MOVES_PER_SECOND: u32 = 60;
 
 #[derive(Debug, Default)]
 struct MoveBudget {
@@ -332,21 +332,14 @@ struct Inner {
     /// show and every distinct region gets one forced composition. `None` after
     /// a hide, which makes the next show force it again.
     forced_region: Option<String>,
-    /// Relocation budget for the margin layout: at most a handful of window
-    /// moves per second, so no event source can spin the UI thread.
+    /// Relocation budget for the margin layout: at most one move per frame,
+    /// so a runaway event source cannot spin the UI thread.
     move_budget: MoveBudget,
     /// Set while `present` is inside a Win32 geometry call. Window events that
     /// arrive re-entrantly are dropped instead of starting another placement:
     /// this is the feedback-loop guard, and it is only consulted when the
     /// margin layout is on.
     applying_geometry: bool,
-    /// Whether the controls window (and its WebView2 children) carry the
-    /// resize-band hit-test subclass. The children only exist after WebView2
-    /// initializes, so installation is retried from `present`.
-    resize_hit_test_ready: bool,
-    /// A main-thread install is queued. Prevents `present` from posting one
-    /// closure per resize event while the WebView2 child is still absent.
-    resize_hit_test_pending: bool,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -378,8 +371,6 @@ impl OverlayState {
                 forced_region: None,
                 move_budget: MoveBudget::default(),
                 applying_geometry: false,
-                resize_hit_test_ready: false,
-                resize_hit_test_pending: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -795,53 +786,6 @@ impl OverlayState {
             .outer_position()
             .map_err(|err| format!("outer position: {err}"))?
             .y;
-        // Reserving the resize band only makes sense while tao actually offers
-        // resize hit-testing (windowed, not maximized, not fullscreen).
-        let resizable = !main.is_fullscreen().unwrap_or(false)
-            && !main.is_maximized().unwrap_or(false);
-        let frame = if resizable {
-            resize_frame_px(scale)
-        } else {
-            (0, 0)
-        };
-        // The hit-test subclass keeps the outer resize band click-through; the
-        // overlay itself can therefore stay flush with the video rectangle.
-        set_resize_band(frame);
-        #[cfg(windows)]
-        {
-            // Read under a short-lived guard: keeping the MutexGuard from an
-            // `if` condition alive into the body would deadlock on the second
-            // lock below.
-            let (hit_test_ready, hit_test_pending) = {
-                let inner = self.lock();
-                (inner.resize_hit_test_ready, inner.resize_hit_test_pending)
-            };
-            if !hit_test_ready && !hit_test_pending {
-                self.lock().resize_hit_test_pending = true;
-                let app_for_install = app.clone();
-                let controls_for_install = controls.clone();
-                let dispatched = controls.run_on_main_thread(move || {
-                    let Ok(hwnd) = controls_hwnd(&controls_for_install) else {
-                        if let Some(state) = app_for_install.try_state::<OverlayState>() {
-                            state.lock().resize_hit_test_pending = false;
-                        }
-                        return;
-                    };
-                    let count = install_resize_hit_test(hwnd);
-                    if let Some(state) = app_for_install.try_state::<OverlayState>() {
-                        let mut inner = state.lock();
-                        inner.resize_hit_test_pending = false;
-                        if count > 0 {
-                            inner.resize_hit_test_ready = true;
-                        }
-                    }
-                });
-                if let Err(err) = dispatched {
-                    eprintln!("[overlay] resize hit-test install dispatch failed: {err}");
-                    self.lock().resize_hit_test_pending = false;
-                }
-            }
-        }
         // The window keeps the expanded size; opening or closing a menu only
         // changes the window region (the visible, hit-testable bottom strip),
         // so the webview is never resized and cannot show a stale frame.
@@ -1185,9 +1129,9 @@ fn compute_geometry_with_margin(
     margin: i32,
 ) -> (i32, i32, u32, u32) {
     // The window covers the whole video rectangle. The main window's resize
-    // band is kept free by the WM_NCHITTEST pass-through in
-    // `resize_band_proc`, not by shrinking the overlay: an inset window left a
-    // visible gutter on every edge the surface touched.
+    // band is handled by the HTML edge handles in the controls page, which
+    // start a native resize of the main window; the overlay itself stays
+    // full-bleed so the bar has no visible gutter.
     let x = client_origin.x + (sync.x * scale).round() as i32;
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
     let width = (sync.w * scale).round().max(1.0) as u32;
@@ -1227,28 +1171,6 @@ fn active_bands(window_width: u32, window_height: u32, scale: f64, expanded: boo
         top_height,
         bottom_height: bottom,
     }
-}
-
-/// Physical thickness of the resize band tao hit-tests for an undecorated,
-/// resizable window (it uses `SM_CXFRAME`/`SM_CYFRAME`, scaled by the monitor
-/// DPI). Zero outside Windows.
-#[cfg(windows)]
-fn resize_frame_px(scale: f64) -> (i32, i32) {
-    use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SM_CXFRAME, SM_CYFRAME};
-
-    let dpi = (96.0 * scale).round().clamp(48.0, 480.0) as u32;
-    unsafe {
-        (
-            GetSystemMetricsForDpi(SM_CXFRAME, dpi).max(0),
-            GetSystemMetricsForDpi(SM_CYFRAME, dpi).max(0),
-        )
-    }
-}
-
-#[cfg(not(windows))]
-fn resize_frame_px(_scale: f64) -> (i32, i32) {
-    (0, 0)
 }
 
 /// Apply position and size in a single `SetWindowPos` so the bottom-anchored
@@ -1940,41 +1862,6 @@ const WM_STYLECHANGED_MSG: u32 = 0x007D;
 #[cfg(windows)]
 const CHROME_SUBCLASS_ID: usize = 0x454D_4243; // "EMBC"
 
-/// `WM_NCHITTEST`; stable ABI value, next to the resize-band handler.
-#[cfg(windows)]
-const WM_NCHITTEST_MSG: u32 = 0x0084;
-
-/// `SetWindowSubclass` id for the resize-band pass-through, distinct from the
-/// caption guard so both can live on the same HWND.
-#[cfg(windows)]
-const RESIZE_SUBCLASS_ID: usize = 0x454D_4252; // "EMBR"
-
-/// Physical thickness of the main window's resize band, mirrored for the
-/// controls-window hit test. Zero while the main window is not resizable
-/// (fullscreen/maximized) or outside Windows.
-static RESIZE_BAND_X: AtomicI32 = AtomicI32::new(0);
-static RESIZE_BAND_Y: AtomicI32 = AtomicI32::new(0);
-
-fn set_resize_band(frame: (i32, i32)) {
-    RESIZE_BAND_X.store(frame.0.max(0), Ordering::Relaxed);
-    RESIZE_BAND_Y.store(frame.1.max(0), Ordering::Relaxed);
-}
-
-/// Whether `(x, y)` is inside `rect` and within `band` of any edge. Screen
-/// coordinates; right/bottom are exclusive. Used by the controls window's
-/// `WM_NCHITTEST` so the resize band falls through to the main window.
-fn in_resize_band(x: i32, y: i32, rect: (i32, i32, i32, i32), band: (i32, i32)) -> bool {
-    let (left, top, right, bottom) = rect;
-    let (band_x, band_y) = band;
-    if band_x <= 0 && band_y <= 0 {
-        return false;
-    }
-    if x < left || x >= right || y < top || y >= bottom {
-        return false;
-    }
-    (x - left) < band_x || (right - x) <= band_x || (y - top) < band_y || (bottom - y) <= band_y
-}
-
 #[cfg(windows)]
 static CAPTION_REFUSALS: AtomicU32 = AtomicU32::new(0);
 /// One-shot flag so the "guard installed" line with the live style values is
@@ -2067,124 +1954,6 @@ unsafe extern "system" fn caption_guard_proc(
         _ => {}
     }
     windows_sys::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam)
-}
-
-/// `WM_NCHITTEST` for the controls window and its WebView2 descendants.
-///
-/// The controls window is an owned top-level window laid over the main
-/// window's client area. If it covers the main window's `SM_CXFRAME` /
-/// `SM_CYFRAME` resize band, the hit is swallowed by the overlay and the
-/// frameless main window cannot be resized from that edge. Returning
-/// `HTTRANSPARENT` only in the band lets Windows continue the hit-test through
-/// the windows below (same thread), where tao's resize logic takes over.
-///
-/// Installed on the controls HWND and every child because the WebView2 child
-/// covers the whole client and is the window that receives the hit-test for
-/// the bar pixels.
-#[cfg(windows)]
-unsafe extern "system" fn resize_band_proc(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: usize,
-    lparam: isize,
-    _id: usize,
-    _data: usize,
-) -> isize {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::Shell::DefSubclassProc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetAncestor, GetWindowRect, HTTRANSPARENT, GA_ROOTOWNER,
-    };
-
-    if msg == WM_NCHITTEST_MSG {
-        let band = (
-            RESIZE_BAND_X.load(Ordering::Relaxed),
-            RESIZE_BAND_Y.load(Ordering::Relaxed),
-        );
-        if band.0 > 0 || band.1 > 0 {
-            let owner = GetAncestor(hwnd, GA_ROOTOWNER);
-            if !owner.is_null() {
-                let mut rect = RECT::default();
-                if GetWindowRect(owner, &mut rect) != 0 {
-                    let x = (lparam as u32 & 0xffff) as i16 as i32;
-                    let y = ((lparam as u32 >> 16) & 0xffff) as i16 as i32;
-                    if in_resize_band(
-                        x,
-                        y,
-                        (rect.left, rect.top, rect.right, rect.bottom),
-                        band,
-                    ) {
-                        return HTTRANSPARENT as isize;
-                    }
-                }
-            }
-        }
-    }
-    DefSubclassProc(hwnd, msg, wparam, lparam)
-}
-
-#[cfg(windows)]
-struct ResizeHitTestInstall {
-    count: usize,
-    all_ok: bool,
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn enum_resize_child(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    lparam: isize,
-) -> i32 {
-    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
-
-    let install = lparam as *mut ResizeHitTestInstall;
-    if !install.is_null() {
-        (*install).count += 1;
-        if SetWindowSubclass(hwnd, Some(resize_band_proc), RESIZE_SUBCLASS_ID, 0) == 0 {
-            (*install).all_ok = false;
-        }
-    }
-    1
-}
-
-/// Install the resize-band pass-through on the controls window and every
-/// WebView2 child. Returns the number of descendants found (zero means the
-/// WebView2 child is not created yet; `present` retries on the next placement).
-#[cfg(windows)]
-fn install_resize_hit_test(hwnd: windows_sys::Win32::Foundation::HWND) -> usize {
-    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
-    use windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows;
-
-    let top_ok = unsafe {
-        SetWindowSubclass(hwnd, Some(resize_band_proc), RESIZE_SUBCLASS_ID, 0)
-    } != 0;
-    if !top_ok {
-        log_chrome("[overlay] resize hit-test: top-level SetWindowSubclass failed");
-        return 0;
-    }
-
-    let mut install = ResizeHitTestInstall {
-        count: 0,
-        all_ok: true,
-    };
-    unsafe {
-        EnumChildWindows(
-            hwnd,
-            Some(enum_resize_child),
-            &mut install as *mut ResizeHitTestInstall as isize,
-        );
-    }
-    if install.count == 0 {
-        return 0;
-    }
-    if !install.all_ok {
-        log_chrome("[overlay] resize hit-test: child SetWindowSubclass failed");
-        return 0;
-    }
-    log_chrome(&format!(
-        "[overlay] resize hit-test installed on controls + {} child HWND(s)",
-        install.count
-    ));
-    install.count
 }
 
 /// Ask DWM not to render a non-client frame for this window at all.
@@ -2658,19 +2427,6 @@ mod tests {
     }
 
     #[test]
-    fn resize_band_only_covers_the_outer_frame() {
-        let rect = (100, 50, 1380, 770);
-        assert!(in_resize_band(100, 300, rect, (4, 4)));
-        assert!(in_resize_band(1379, 300, rect, (4, 4)));
-        assert!(in_resize_band(700, 50, rect, (4, 4)));
-        assert!(in_resize_band(700, 769, rect, (4, 4)));
-        assert!(!in_resize_band(110, 300, rect, (4, 4)));
-        assert!(!in_resize_band(700, 60, rect, (4, 4)));
-        assert!(!in_resize_band(2000, 300, rect, (4, 4)));
-        assert!(!in_resize_band(100, 300, rect, (0, 0)));
-    }
-
-    #[test]
     fn geometry_hysteresis_ignores_one_pixel_of_jitter() {
         let target = (10, 20, 300, 200);
         assert!(geometry_needs_move(None, target));
@@ -2687,7 +2443,7 @@ mod tests {
         let mut budget = MoveBudget::default();
         let start = Instant::now();
         let mut allowed = 0;
-        for _ in 0..20 {
+        for _ in 0..MAX_MOVES_PER_SECOND + 10 {
             if budget.allows(start) {
                 budget.record();
                 allowed += 1;

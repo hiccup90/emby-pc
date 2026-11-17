@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { Window as TauriWindow } from "@tauri-apps/api/window";
 import type { PlaybackMeta, PlayerSnapshot, PlayerStats } from "../player/contract";
 import type {
   OverlayAction,
@@ -10,6 +11,7 @@ import type {
 } from "./contract";
 
 type TauriAwareWindow = Window & { __TAURI_INTERNALS__?: unknown };
+type ResizeDirection = Parameters<TauriWindow["startResizeDragging"]>[0];
 
 export function hasTauriRuntime(): boolean {
   if (typeof window === "undefined") return false;
@@ -37,6 +39,35 @@ export async function setOverlayInteractive(interactive: boolean): Promise<void>
 /** Overlay window: start moving the main window from a blank bar area. */
 export async function dragOverlayWindow(): Promise<void> {
   await invoke<void>("overlay_drag_window");
+}
+
+export type ResizeEdge =
+  | "top"
+  | "right"
+  | "bottom"
+  | "left"
+  | "top-left"
+  | "bottom-left"
+  | "bottom-right";
+
+const RESIZE_DIRECTION: Record<ResizeEdge, ResizeDirection> = {
+  top: "North",
+  bottom: "South",
+  left: "West",
+  right: "East",
+  "top-left": "NorthWest",
+  "bottom-left": "SouthWest",
+  "bottom-right": "SouthEast",
+};
+
+/** Overlay window: start a native resize of the main window from an edge. */
+export async function resizeOverlayWindow(edge: ResizeEdge): Promise<void> {
+  const main = await TauriWindow.getByLabel("main");
+  if (!main) throw new Error("main window not found");
+  // The player bar stays visible in fullscreen; resizing there would fight
+  // the fullscreen window state, so only windowed/maximized-free resizes run.
+  if ((await main.isFullscreen()) || (await main.isMaximized())) return;
+  await main.startResizeDragging(RESIZE_DIRECTION[edge]);
 }
 
 /** Overlay window: hand a player intent to the main window. */

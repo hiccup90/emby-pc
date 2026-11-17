@@ -752,3 +752,83 @@ input:focus:not(:focus-visible) {
     animation-duration: 2.4s;
   }
 }
+/* ---- native resize handles ------------------------------------------------ */
+/* The controls window is an owned overlay above the frameless main window, so
+   its edges cover the main window's resize band. These invisible strips turn a
+   pointer-down into Tauri's native startResizeDragging on the main window
+   instead of shrinking the overlay and leaving a visible gutter. */
+.ov-resize {
+  position: absolute;
+  z-index: 30;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.ov-resize--top {
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.ov-resize--bottom {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.ov-resize--left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.ov-resize--right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+/* Do not steal the seek rail's first/last 4 px: side handles in the bar start
+   below the 24 px seek row. The top-left band's side handle stays full height. */
+.overlay__bar .ov-resize--left,
+.overlay__bar .ov-resize--right {
+  top: var(--ov-seek-h);
+}
+
+.ov-resize--top-left,
+.ov-resize--bottom-left,
+.ov-resize--bottom-right {
+  z-index: 31;
+  width: 8px;
+  height: 8px;
+}
+
+.ov-resize--top-left {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.ov-resize--bottom-left {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.ov-resize--bottom-right {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
+.overlay[data-visible="false"] .ov-resize {
+  pointer-events: none;
+}

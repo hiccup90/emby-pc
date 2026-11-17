@@ -12,6 +12,8 @@ import {
   createPreviewStats,
   dragOverlayWindow,
   hasTauriRuntime,
+  resizeOverlayWindow,
+  type ResizeEdge,
   onOverlayState,
   onOverlayWake,
   requestOverlayState,
@@ -673,6 +675,17 @@ export default function Overlay() {
     });
   };
 
+  const handleResizeStart =
+    (edge: ResizeEdge) => (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!desktop || event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      event.stopPropagation();
+      wake();
+      void resizeOverlayWindow(edge).catch((reason) => {
+        console.warn("[overlay] could not start the window resize", reason);
+      });
+    };
+
   // ---- overlay keyboard ----------------------------------------------------
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -877,6 +890,24 @@ export default function Overlay() {
       {/* Return + media logo: same DOM tree as the bar, so the existing
           auto-hide group fades both together (no second timer). */}
       <div className="overlay__top" onPointerDown={handleDragStart}>
+        <div
+          className="ov-resize ov-resize--top"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("top")}
+        />
+        <div
+          className="ov-resize ov-resize--left"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("left")}
+        />
+        <div
+          className="ov-resize ov-resize--top-left"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("top-left")}
+        />
         <button
           className="ov-btn ov-btn--back"
           type="button"
@@ -916,6 +947,36 @@ export default function Overlay() {
       </div>
 
       <div className="overlay__bar" onPointerDown={handleDragStart}>
+        <div
+          className="ov-resize ov-resize--bottom"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("bottom")}
+        />
+        <div
+          className="ov-resize ov-resize--left"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("left")}
+        />
+        <div
+          className="ov-resize ov-resize--right"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("right")}
+        />
+        <div
+          className="ov-resize ov-resize--bottom-left"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("bottom-left")}
+        />
+        <div
+          className="ov-resize ov-resize--bottom-right"
+          data-no-drag="true"
+          aria-hidden="true"
+          onPointerDown={handleResizeStart("bottom-right")}
+        />
         <div className="ov-bar__band" aria-hidden="true" />
 
         <div className="ov-seek">
