@@ -152,6 +152,12 @@ input:focus:not(:focus-visible) {
   animation: ov-pop 0.14s ease-out;
 }
 
+/* Playback info is label/value text with long codec and pixel-format strings;
+   give it a little more room than the track pickers. */
+.ov-menu[data-kind="info"] {
+  width: min(360px, calc(100% - 24px));
+}
+
 .ov-menu__head {
   display: flex;
   min-height: 40px;
@@ -192,6 +198,7 @@ input:focus:not(:focus-visible) {
   min-height: 0;
   flex-direction: column;
   padding: 6px 0;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
@@ -294,10 +301,37 @@ input:focus:not(:focus-visible) {
   background: rgba(255, 255, 255, 0.4);
 }
 
-/* Read-only rows in the playback-info panel. */
+/* Read-only rows in the playback-info panel. Label and value wrap instead of
+   forcing a horizontal scrollbar when a codec or pixel format is long. */
 .ov-menu__option--static {
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 0;
+  padding: 7px 12px 7px 14px;
   cursor: default;
   pointer-events: none;
+}
+
+.ov-menu__option--static .ov-menu__title {
+  flex: 0 0 72px;
+  overflow: visible;
+  color: var(--ov-text-2);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.ov-menu__option--static .ov-menu__detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ov-text);
+  font-size: 12px;
+  letter-spacing: 0;
+  line-height: 1.45;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .ov-controls {

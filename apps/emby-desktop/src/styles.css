@@ -658,13 +658,16 @@ button:disabled {
 /* ---- cards ------------------------------------------------------------------- */
 
 .continue-card {
+  /* frame + 8px margin + 24px title + 20px meta: the play button centres on
+     the artwork, not on the whole card including its text. */
+  --continue-card-text-h: 52px;
   position: relative;
   display: grid;
   min-width: 0;
   align-content: start;
 }
 
-.continue-card__play,
+.continue-card__open,
 .poster-card {
   display: grid;
   min-width: 0;
@@ -677,11 +680,11 @@ button:disabled {
   text-align: left;
 }
 
-.continue-card__play {
+.continue-card__open {
   width: 100%;
 }
 
-.continue-card__play:focus-visible,
+.continue-card__open:focus-visible,
 .poster-card:focus-visible {
   outline: none;
 }
@@ -722,20 +725,24 @@ button:disabled {
 
 .continue-card:hover .continue-card__frame,
 .poster-card:hover .poster-card__frame,
-.continue-card__play:focus-visible .continue-card__frame,
+.continue-card__open:focus-visible .continue-card__frame,
 .poster-card:focus-visible .poster-card__frame {
   box-shadow: 0 0 0 2px var(--accent), 0 12px 26px rgba(0, 0, 0, 0.45);
 }
 
-/* Play affordance: the card already plays on click, show it on hover. */
-.continue-card__play-hint {
+/* Play action: the card itself opens the detail page; this is the only control
+   that resumes playback. Hidden until hover/focus so the card stays calm. */
+.continue-card__play {
   position: absolute;
-  top: 50%;
+  top: calc((100% - var(--continue-card-text-h)) / 2);
   left: 50%;
+  z-index: 1;
   display: grid;
   width: 48px;
   height: 48px;
   place-items: center;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
   color: var(--accent-ink);
   background: rgba(229, 160, 13, 0.92);
@@ -746,43 +753,11 @@ button:disabled {
   pointer-events: none;
 }
 
-.continue-card:hover .continue-card__play-hint,
-.continue-card:focus-within .continue-card__play-hint {
+.continue-card:hover .continue-card__play,
+.continue-card:focus-within .continue-card__play {
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
-}
-
-/* Secondary entry point on a continue card: play stays the primary action. */
-.continue-card__details {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px 5px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  color: rgba(255, 255, 255, 0.9);
-  background: rgba(18, 18, 18, 0.62);
-  backdrop-filter: blur(10px);
-  font-size: 12px;
-  font-weight: 500;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.16s ease, background 0.16s ease, border-color 0.16s ease;
-}
-
-.continue-card:hover .continue-card__details,
-.continue-card:focus-within .continue-card__details {
-  opacity: 1;
   pointer-events: auto;
-}
-
-.continue-card__details:hover,
-.continue-card__details:focus-visible {
-  border-color: rgba(229, 160, 13, 0.5);
-  background: rgba(18, 18, 18, 0.82);
 }
 
 .continue-card__title,
@@ -921,8 +896,7 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .continue-card,
   .poster-card,
-  .continue-card__play-hint,
-  .continue-card__details {
+  .continue-card__play {
     transition: none;
   }
 }

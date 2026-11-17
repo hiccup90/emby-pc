@@ -783,7 +783,7 @@ export default function Overlay() {
         onPointerDown={handlePanelPointerDown}
       >
         {menu !== null && (
-          <section className="ov-menu" aria-label={`${menuLabel}选择`} data-no-drag="true">
+          <section className="ov-menu" data-kind={menu} aria-label={`${menuLabel}选择`} data-no-drag="true">
             <div className="ov-menu__head">
               <span className="ov-menu__heading">{menuLabel}</span>
               <button

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
 import type { PlaybackMeta } from "../player/contract";
 import type { EmbyLibraryItem } from "../emby/useEmby";
@@ -27,7 +27,7 @@ import { ErrorNotice, Icon, MediaArtwork, ProgressBar, useEscape } from "./share
 interface DetailScreenProps {
   itemId: string;
   seed: EmbyLibraryItem | null;
-  /** Episode to reveal after returning from the player (series pages only). */
+  /** Episode to mark as current after returning from the player (series pages only). */
   focusEpisodeId?: string | null;
   session: EmbySession | null;
   desktop: boolean;
@@ -266,7 +266,6 @@ function EpisodeSection({
 }) {
   const groups = useMemo(() => groupSeasons(episodes), [episodes]);
   const [selected, setSelected] = useState<string | null>(null);
-  const scrolledRef = useRef<string | null>(null);
 
   // Return from the player: open the season that holds the episode on screen.
   const focusSeasonKey = useMemo(() => {
@@ -291,23 +290,6 @@ function EpisodeSection({
     ? selected
     : focusSeasonKey ?? nextGroupKey ?? defaultSeason(groups);
   const active = groups.find((group) => group.key === activeKey) ?? groups[0];
-
-  // Scroll the focused row from its callback ref: the node exists by then, so
-  // no timer is needed to wait for the season switch to render.
-  const scrollKey = focusEpisodeId && active ? `${focusEpisodeId}:${active.key}` : null;
-  const scrollFocusedRow = useCallback(
-    (node: HTMLLIElement | null) => {
-      if (!node || !scrollKey || scrolledRef.current === scrollKey) return;
-      scrolledRef.current = scrollKey;
-      node.scrollIntoView({
-        block: "center",
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "auto"
-          : "smooth",
-      });
-    },
-    [scrollKey],
-  );
 
   if (!active) return null;
 
@@ -341,7 +323,6 @@ function EpisodeSection({
           return (
             <li
               key={episode.id}
-              ref={focused ? scrollFocusedRow : undefined}
               className={[
                 "episode-list__item",
                 focused ? "episode-list__item--focused" : "",

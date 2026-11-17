@@ -14,7 +14,6 @@ export type IconName =
   | "chevron-left"
   | "chevron-right"
   | "chevron-down"
-  | "info"
   | "check"
   | "logout"
   | "home"
@@ -97,13 +96,6 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     "chevron-left": <path d="m14.5 18-6-6 6-6" />,
     "chevron-right": <path d="m9.5 18 6-6-6-6" />,
     "chevron-down": <path d="m6 9.5 6 6 6-6" />,
-    info: (
-      <>
-        <circle cx="12" cy="12" r="8.5" />
-        <path d="M12 11.2V16" />
-        <path d="M12 8.2v.1" />
-      </>
-    ),
     check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
     logout: (
       <>

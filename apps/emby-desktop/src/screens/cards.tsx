@@ -54,8 +54,8 @@ export function PosterCard({
 
 /**
  * 16:9 continue-watching card: backdrop with the amber progress bar, the series
- * name for episodes and the resume point underneath. Clicking resumes playback;
- * the hover "详情" pill opens the item's detail page instead.
+ * name for episodes and the resume point underneath. Clicking anywhere opens
+ * the detail page; the centred play button resumes playback.
  */
 export function ContinueCard({
   item,
@@ -64,7 +64,7 @@ export function ContinueCard({
 }: {
   item: EmbyLibraryItem;
   onPlay: (item: EmbyLibraryItem) => void;
-  onDetails?: (item: EmbyLibraryItem) => void;
+  onDetails: (item: EmbyLibraryItem) => void;
 }) {
   const progress = itemProgress(item);
   const episode = item.type === "Episode";
@@ -78,13 +78,15 @@ export function ContinueCard({
 
   return (
     <div className="continue-card">
-      <button type="button" className="continue-card__play" onClick={() => onPlay(item)} aria-label={label}>
+      <button
+        type="button"
+        className="continue-card__open"
+        onClick={() => onDetails(item)}
+        aria-label={`查看《${title}》详情`}
+      >
         <span className="continue-card__frame">
           <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
           <ProgressBar value={progress} className="continue-card__progress" />
-          <span className="continue-card__play-hint" aria-hidden="true">
-            <Icon name="play" size={20} />
-          </span>
         </span>
         <span className="continue-card__title">{title}</span>
         <span className="continue-card__meta">
@@ -92,18 +94,15 @@ export function ContinueCard({
           {remaining && <span className="continue-card__meta-sub">{remaining}</span>}
         </span>
       </button>
-      {onDetails && (
-        <button
-          type="button"
-          className="continue-card__details"
-          onClick={() => onDetails(item)}
-          aria-label={`查看《${title}》详情`}
-          title="详情"
-        >
-          <Icon name="info" size={14} />
-          详情
-        </button>
-      )}
+      <button
+        type="button"
+        className="continue-card__play"
+        onClick={() => onPlay(item)}
+        aria-label={label}
+        title="继续播放"
+      >
+        <Icon name="play" size={20} />
+      </button>
     </div>
   );
 }
