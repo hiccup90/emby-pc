@@ -56,7 +56,7 @@
 //! | first-show collapse | sleep 220 ms unconditionally | page's own state change settles it; 400 ms fallback |
 //! | cursor wake | 50 ms fixed poll | 16 ms while over the video, 250 ms elsewhere |
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -340,6 +340,13 @@ struct Inner {
     /// this is the feedback-loop guard, and it is only consulted when the
     /// margin layout is on.
     applying_geometry: bool,
+    /// Whether the controls window (and its WebView2 children) carry the
+    /// resize-band hit-test subclass. The children only exist after WebView2
+    /// initializes, so installation is retried from `present`.
+    resize_hit_test_ready: bool,
+    /// A main-thread install is queued. Prevents `present` from posting one
+    /// closure per resize event while the WebView2 child is still absent.
+    resize_hit_test_pending: bool,
 }
 
 /// Managed state shared by the overlay commands, the window event handler and
@@ -371,6 +378,8 @@ impl OverlayState {
                 forced_region: None,
                 move_budget: MoveBudget::default(),
                 applying_geometry: false,
+                resize_hit_test_ready: false,
+                resize_hit_test_pending: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -795,11 +804,49 @@ impl OverlayState {
         } else {
             (0, 0)
         };
+        // The hit-test subclass keeps the outer resize band click-through; the
+        // overlay itself can therefore stay flush with the video rectangle.
+        set_resize_band(frame);
+        #[cfg(windows)]
+        {
+            // Read under a short-lived guard: keeping the MutexGuard from an
+            // `if` condition alive into the body would deadlock on the second
+            // lock below.
+            let (hit_test_ready, hit_test_pending) = {
+                let inner = self.lock();
+                (inner.resize_hit_test_ready, inner.resize_hit_test_pending)
+            };
+            if !hit_test_ready && !hit_test_pending {
+                self.lock().resize_hit_test_pending = true;
+                let app_for_install = app.clone();
+                let controls_for_install = controls.clone();
+                let dispatched = controls.run_on_main_thread(move || {
+                    let Ok(hwnd) = controls_hwnd(&controls_for_install) else {
+                        if let Some(state) = app_for_install.try_state::<OverlayState>() {
+                            state.lock().resize_hit_test_pending = false;
+                        }
+                        return;
+                    };
+                    let count = install_resize_hit_test(hwnd);
+                    if let Some(state) = app_for_install.try_state::<OverlayState>() {
+                        let mut inner = state.lock();
+                        inner.resize_hit_test_pending = false;
+                        if count > 0 {
+                            inner.resize_hit_test_ready = true;
+                        }
+                    }
+                });
+                if let Err(err) = dispatched {
+                    eprintln!("[overlay] resize hit-test install dispatch failed: {err}");
+                    self.lock().resize_hit_test_pending = false;
+                }
+            }
+        }
         // The window keeps the expanded size; opening or closing a menu only
         // changes the window region (the visible, hit-testable bottom strip),
         // so the webview is never resized and cannot show a stale frame.
         let margin = overlay_margin(scale);
-        let geometry = compute_geometry(client_origin, outer_top, scale, &sync, frame);
+        let geometry = compute_geometry(client_origin, outer_top, scale, &sync);
         let bands = active_bands(geometry.2, geometry.3, scale, expanded);
 
         let (geometry_changed, region_changed) = {
@@ -1124,16 +1171,8 @@ fn compute_geometry(
     outer_top: i32,
     scale: f64,
     sync: &VideoSync,
-    frame: (i32, i32),
 ) -> (i32, i32, u32, u32) {
-    compute_geometry_with_margin(
-        client_origin,
-        outer_top,
-        scale,
-        sync,
-        frame,
-        overlay_margin(scale),
-    )
+    compute_geometry_with_margin(client_origin, outer_top, scale, sync, overlay_margin(scale))
 }
 
 /// `compute_geometry` with an explicit margin, so both layouts are testable
@@ -1143,33 +1182,30 @@ fn compute_geometry_with_margin(
     outer_top: i32,
     scale: f64,
     sync: &VideoSync,
-    frame: (i32, i32),
     margin: i32,
 ) -> (i32, i32, u32, u32) {
-    // The controls window must never cover the frameless main window resize
-    // band: tao hit-tests SM_CXFRAME/SM_CYFRAME pixels *inside* the window rect,
-    // and an owned window on top steals those hits. Leave that band free on
-    // every edge the surface touches.
-    let (frame_x, frame_y) = frame;
-    let x = client_origin.x + (sync.x * scale).round() as i32 + frame_x;
+    // The window covers the whole video rectangle. The main window's resize
+    // band is kept free by the WM_NCHITTEST pass-through in
+    // `resize_band_proc`, not by shrinking the overlay: an inset window left a
+    // visible gutter on every edge the surface touched.
+    let x = client_origin.x + (sync.x * scale).round() as i32;
     let video_top = client_origin.y + (sync.y * scale).round() as i32;
-    let width = ((sync.w * scale).round() as i32 - frame_x * 2).max(1) as u32;
+    let width = (sync.w * scale).round().max(1.0) as u32;
     let video_bottom = video_top + (sync.h * scale).round().max(0.0) as i32;
     // Cover the whole video rectangle: the top-left return/logo strip and the
     // bottom transport surface are two regions of the same window, so the
     // top-left corner finally has a window to draw in. Never above the main
-    // window and never over its bottom resize band; on a short window the
-    // surface shrinks instead of hanging outside the video.
+    // window and never outside its bottom edge; on a short window the surface
+    // shrinks instead of hanging outside the video.
     let y = if margin > 0 {
         // Margin layout: lift the window so its non-client area sits above the
         // video rectangle and outside the region. The bottom edge stays where
         // it was, so only the height grows, by exactly this margin.
-        video_top + frame_y - margin
+        video_top - margin
     } else {
-        // Default path, byte-for-byte the pre-margin formula.
-        (video_top + frame_y).max(outer_top)
+        video_top.max(outer_top)
     };
-    let bottom = (video_bottom - frame_y).max(y + 1);
+    let bottom = video_bottom.max(y + 1);
     let height = (bottom - y).max(1) as u32;
     (x, y, width, height)
 }
@@ -1904,6 +1940,41 @@ const WM_STYLECHANGED_MSG: u32 = 0x007D;
 #[cfg(windows)]
 const CHROME_SUBCLASS_ID: usize = 0x454D_4243; // "EMBC"
 
+/// `WM_NCHITTEST`; stable ABI value, next to the resize-band handler.
+#[cfg(windows)]
+const WM_NCHITTEST_MSG: u32 = 0x0084;
+
+/// `SetWindowSubclass` id for the resize-band pass-through, distinct from the
+/// caption guard so both can live on the same HWND.
+#[cfg(windows)]
+const RESIZE_SUBCLASS_ID: usize = 0x454D_4252; // "EMBR"
+
+/// Physical thickness of the main window's resize band, mirrored for the
+/// controls-window hit test. Zero while the main window is not resizable
+/// (fullscreen/maximized) or outside Windows.
+static RESIZE_BAND_X: AtomicI32 = AtomicI32::new(0);
+static RESIZE_BAND_Y: AtomicI32 = AtomicI32::new(0);
+
+fn set_resize_band(frame: (i32, i32)) {
+    RESIZE_BAND_X.store(frame.0.max(0), Ordering::Relaxed);
+    RESIZE_BAND_Y.store(frame.1.max(0), Ordering::Relaxed);
+}
+
+/// Whether `(x, y)` is inside `rect` and within `band` of any edge. Screen
+/// coordinates; right/bottom are exclusive. Used by the controls window's
+/// `WM_NCHITTEST` so the resize band falls through to the main window.
+fn in_resize_band(x: i32, y: i32, rect: (i32, i32, i32, i32), band: (i32, i32)) -> bool {
+    let (left, top, right, bottom) = rect;
+    let (band_x, band_y) = band;
+    if band_x <= 0 && band_y <= 0 {
+        return false;
+    }
+    if x < left || x >= right || y < top || y >= bottom {
+        return false;
+    }
+    (x - left) < band_x || (right - x) <= band_x || (y - top) < band_y || (bottom - y) <= band_y
+}
+
 #[cfg(windows)]
 static CAPTION_REFUSALS: AtomicU32 = AtomicU32::new(0);
 /// One-shot flag so the "guard installed" line with the live style values is
@@ -1996,6 +2067,124 @@ unsafe extern "system" fn caption_guard_proc(
         _ => {}
     }
     windows_sys::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+/// `WM_NCHITTEST` for the controls window and its WebView2 descendants.
+///
+/// The controls window is an owned top-level window laid over the main
+/// window's client area. If it covers the main window's `SM_CXFRAME` /
+/// `SM_CYFRAME` resize band, the hit is swallowed by the overlay and the
+/// frameless main window cannot be resized from that edge. Returning
+/// `HTTRANSPARENT` only in the band lets Windows continue the hit-test through
+/// the windows below (same thread), where tao's resize logic takes over.
+///
+/// Installed on the controls HWND and every child because the WebView2 child
+/// covers the whole client and is the window that receives the hit-test for
+/// the bar pixels.
+#[cfg(windows)]
+unsafe extern "system" fn resize_band_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::Shell::DefSubclassProc;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetWindowRect, HTTRANSPARENT, GA_ROOTOWNER,
+    };
+
+    if msg == WM_NCHITTEST_MSG {
+        let band = (
+            RESIZE_BAND_X.load(Ordering::Relaxed),
+            RESIZE_BAND_Y.load(Ordering::Relaxed),
+        );
+        if band.0 > 0 || band.1 > 0 {
+            let owner = GetAncestor(hwnd, GA_ROOTOWNER);
+            if !owner.is_null() {
+                let mut rect = RECT::default();
+                if GetWindowRect(owner, &mut rect) != 0 {
+                    let x = (lparam as u32 & 0xffff) as i16 as i32;
+                    let y = ((lparam as u32 >> 16) & 0xffff) as i16 as i32;
+                    if in_resize_band(
+                        x,
+                        y,
+                        (rect.left, rect.top, rect.right, rect.bottom),
+                        band,
+                    ) {
+                        return HTTRANSPARENT as isize;
+                    }
+                }
+            }
+        }
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(windows)]
+struct ResizeHitTestInstall {
+    count: usize,
+    all_ok: bool,
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn enum_resize_child(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    lparam: isize,
+) -> i32 {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+
+    let install = lparam as *mut ResizeHitTestInstall;
+    if !install.is_null() {
+        (*install).count += 1;
+        if SetWindowSubclass(hwnd, Some(resize_band_proc), RESIZE_SUBCLASS_ID, 0) == 0 {
+            (*install).all_ok = false;
+        }
+    }
+    1
+}
+
+/// Install the resize-band pass-through on the controls window and every
+/// WebView2 child. Returns the number of descendants found (zero means the
+/// WebView2 child is not created yet; `present` retries on the next placement).
+#[cfg(windows)]
+fn install_resize_hit_test(hwnd: windows_sys::Win32::Foundation::HWND) -> usize {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows;
+
+    let top_ok = unsafe {
+        SetWindowSubclass(hwnd, Some(resize_band_proc), RESIZE_SUBCLASS_ID, 0)
+    } != 0;
+    if !top_ok {
+        log_chrome("[overlay] resize hit-test: top-level SetWindowSubclass failed");
+        return 0;
+    }
+
+    let mut install = ResizeHitTestInstall {
+        count: 0,
+        all_ok: true,
+    };
+    unsafe {
+        EnumChildWindows(
+            hwnd,
+            Some(enum_resize_child),
+            &mut install as *mut ResizeHitTestInstall as isize,
+        );
+    }
+    if install.count == 0 {
+        return 0;
+    }
+    if !install.all_ok {
+        log_chrome("[overlay] resize hit-test: child SetWindowSubclass failed");
+        return 0;
+    }
+    log_chrome(&format!(
+        "[overlay] resize hit-test installed on controls + {} child HWND(s)",
+        install.count
+    ));
+    install.count
 }
 
 /// Ask DWM not to render a non-client frame for this window at all.
@@ -2389,13 +2578,12 @@ mod tests {
         // The margin layout is the shipped default: the window is lifted by
         // `NC_SAFE_MARGIN` logical pixels and grows by exactly that much.
         let sync = video(0.0, 40.0, 1280.0, 720.0);
-        let shipped = compute_geometry(PhysicalPosition::new(100, 50), 50, 1.0, &sync, (0, 0));
+        let shipped = compute_geometry(PhysicalPosition::new(100, 50), 50, 1.0, &sync);
         let explicit = compute_geometry_with_margin(
             PhysicalPosition::new(100, 50),
             50,
             1.0,
             &sync,
-            (0, 0),
             NC_SAFE_MARGIN as i32,
         );
         assert_eq!(shipped, explicit);
@@ -2420,20 +2608,18 @@ mod tests {
             50,
             1.0,
             &video(0.0, 40.0, 1280.0, 720.0),
-            (0, 0),
             0,
         );
         assert_eq!(plain, (100, 90, 1280, 720));
 
-        let framed = compute_geometry_with_margin(
+        let full_bleed = compute_geometry_with_margin(
             PhysicalPosition::new(100, 50),
             50,
             1.0,
             &video(0.0, 0.0, 1280.0, 720.0),
-            (4, 4),
             0,
         );
-        assert_eq!(framed, (104, 54, 1272, 712));
+        assert_eq!(full_bleed, (100, 50, 1280, 720));
 
         let bands = active_bands(1280, 720, 1.0, false);
         let [top, bottom] = region_rects(1280, 720, bands, 0);
@@ -2449,7 +2635,6 @@ mod tests {
             0,
             1.0,
             &sync,
-            (0, 0),
             0,
         );
         let with_margin = compute_geometry_with_margin(
@@ -2457,7 +2642,6 @@ mod tests {
             0,
             1.0,
             &sync,
-            (0, 0),
             40,
         );
         // Same bottom edge, same width, window lifted by exactly the margin.
@@ -2471,6 +2655,19 @@ mod tests {
         // First exposed row = window top + margin = the video's top edge.
         assert_eq!(top.1, 40);
         assert_eq!(with_margin.1 + top.1, 0);
+    }
+
+    #[test]
+    fn resize_band_only_covers_the_outer_frame() {
+        let rect = (100, 50, 1380, 770);
+        assert!(in_resize_band(100, 300, rect, (4, 4)));
+        assert!(in_resize_band(1379, 300, rect, (4, 4)));
+        assert!(in_resize_band(700, 50, rect, (4, 4)));
+        assert!(in_resize_band(700, 769, rect, (4, 4)));
+        assert!(!in_resize_band(110, 300, rect, (4, 4)));
+        assert!(!in_resize_band(700, 60, rect, (4, 4)));
+        assert!(!in_resize_band(2000, 300, rect, (4, 4)));
+        assert!(!in_resize_band(100, 300, rect, (0, 0)));
     }
 
     #[test]
