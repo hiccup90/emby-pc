@@ -385,6 +385,25 @@ fn read_stats(core: &MpvCore<'_>) -> PlayerStats {
     }
 }
 
+/// `start` option value for the file about to be loaded.
+///
+/// mpv has to know the start position *before* it opens the file: seeking when
+/// `MPV_EVENT_FILE_LOADED` arrives lets the file's first frame reach the screen
+/// first, so resuming used to flash the episode opening and then jump. `none`
+/// clears the start a previous file left behind — `start` is a plain option,
+/// not a per-file one, so without it every later file would begin at the old
+/// resume point.
+///
+/// Checked against mpv 0.40 over IPC with a burnt-in timecode: with
+/// `start=30` the first rendered frame is `00:00:30.000`; after `start=none`
+/// the next file starts at `00:00:00.000` again.
+fn start_option_value(start_seconds: Option<f64>) -> String {
+    match start_seconds.filter(|seconds| seconds.is_finite() && *seconds > 0.0) {
+        Some(seconds) => format!("{seconds:.3}"),
+        None => "none".to_string(),
+    }
+}
+
 fn handle_open(
     core: &MpvCore<'_>,
     assembler: &mut SnapshotAssembler,
@@ -395,6 +414,17 @@ fn handle_open(
     // A previous `ended` (keep-open) leaves pause=true; clear it so the next
     // file actually starts.
     core.set_property_string("pause", "no")?;
+    // Set the start seek before `loadfile` so mpv positions the demuxer at the
+    // resume point instead of rendering frame 0 and seeking afterwards.
+    let start = start_seconds.filter(|value| value.is_finite() && *value > 0.0);
+    if let Err(err) = core.set_property_string("start", &start_option_value(start_seconds)) {
+        // Never trade playback for the seek: fall back to the post-load seek,
+        // which is correct apart from the one-frame flash.
+        eprintln!("[emby-mpv] could not set start before loading: {err}");
+        if let Some(seconds) = start {
+            assembler.set_pending_seek(seconds);
+        }
+    }
     core.command(&["loadfile", &url])?;
     Ok(())
 }
@@ -800,6 +830,18 @@ mod tests {
         let err = cstring("command argument", "hello\0world").unwrap_err();
         assert!(matches!(err, MpvError::InteriorNul { .. }));
         assert!(cstring("command argument", "hello world").is_ok());
+    }
+
+    #[test]
+    fn start_option_carries_the_resume_point_and_is_cleared_otherwise() {
+        assert_eq!(start_option_value(Some(90.0)), "90.000");
+        assert_eq!(start_option_value(Some(1234.5678)), "1234.568");
+        // `none` must clear the option for the next file; setting "0.000"
+        // would also work, but mpv documents `none` as the way to unset it.
+        assert_eq!(start_option_value(None), "none");
+        assert_eq!(start_option_value(Some(0.0)), "none");
+        assert_eq!(start_option_value(Some(-10.0)), "none");
+        assert_eq!(start_option_value(Some(f64::NAN)), "none");
     }
 
     #[test]

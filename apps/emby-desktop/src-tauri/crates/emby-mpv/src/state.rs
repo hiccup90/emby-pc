@@ -191,7 +191,13 @@ impl SnapshotAssembler {
         self.duration = 0.0;
         self.buffering = false;
         self.error = None;
-        self.pending_seek = if start > 0.0 { Some(start) } else { None };
+        // The start position is applied by mpv itself, before the first frame
+        // (see `handle_open`). A post-load seek here would decode the same
+        // position twice and was the reason resume flashed frame 0 first.
+        // `pending_seek` is reserved for `seek` commands that arrive while the
+        // file is still loading. Clearing it also drops a stale seek left by
+        // an open that failed before FILE_LOADED.
+        self.pending_seek = None;
         self.video_width = 0;
         self.video_height = 0;
         self.audio_tracks.clear();
@@ -579,11 +585,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_seek_from_open_request_is_applied_once() {
+    fn an_open_leaves_no_post_load_seek_behind() {
         let mut asm = SnapshotAssembler::new();
         asm.begin_open(Some(90.0));
         assert_eq!(asm.build().position_seconds, 90.0);
-        assert_eq!(asm.take_pending_seek(), Some(90.0));
+        // mpv starts the file at that position itself (`start` option); a
+        // second seek after FILE_LOADED would only re-decode the same spot.
         assert_eq!(asm.take_pending_seek(), None);
 
         let mut negative = SnapshotAssembler::new();
@@ -593,19 +600,36 @@ mod tests {
     }
 
     #[test]
-    fn replacing_the_current_file_keeps_the_pending_start_seek() {
+    fn a_new_open_drops_the_previous_seek() {
+        let mut asm = SnapshotAssembler::new();
+        asm.begin_open(None);
+        asm.set_pending_seek(10.0);
+        // The previous open never reached FILE_LOADED; the next file must not
+        // inherit its seek.
+        asm.begin_open(Some(30.0));
+        assert_eq!(asm.take_pending_seek(), None);
+    }
+
+    #[test]
+    fn a_seek_while_loading_survives_the_replaced_file() {
         let mut asm = SnapshotAssembler::new();
         asm.begin_open(Some(120.0));
+        // The user dragged the bar while the file was still loading.
+        asm.set_pending_seek(300.0);
         // mpv stops the previous playlist entry while the new one loads.
         asm.on_end_file(crate::ffi::MPV_END_FILE_REASON_STOP, None);
         assert_eq!(asm.status(), PlayerStatus::Loading);
-        assert_eq!(asm.take_pending_seek(), Some(120.0));
 
         // A queued eof/idle notification from the old file is ignored too.
         asm.set_eof_reached(true);
         asm.set_idle_active(true);
         assert_eq!(asm.status(), PlayerStatus::Loading);
+
+        // FILE_LOADED applies the seek exactly once.
+        assert_eq!(asm.take_pending_seek(), Some(300.0));
         assert_eq!(asm.take_pending_seek(), None);
+        asm.on_file_loaded();
+        assert_eq!(asm.status(), PlayerStatus::Playing);
     }
 
     #[test]
