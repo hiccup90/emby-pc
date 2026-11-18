@@ -8,6 +8,7 @@
 //! whose quality preset is the historical low-overhead `profile=fast` so an
 //! upgrade does not silently change playback quality.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -47,6 +48,21 @@ impl VideoQuality {
     }
 }
 
+/// Card shape chosen for one library view. Stored per Emby view id so each
+/// library keeps its own poster/thumbnail choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryViewMode {
+    Poster,
+    Thumbnail,
+}
+
+impl Default for LibraryViewMode {
+    fn default() -> Self {
+        Self::Poster
+    }
+}
+
 /// Settings shared with the frontend through the `settings_*` commands.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -54,6 +70,9 @@ pub struct AppSettings {
     pub video_quality: VideoQuality,
     pub auto_play: bool,
     pub page_size: u32,
+    /// Per-library card shape. Missing ids use the view's own default in the UI.
+    #[serde(default)]
+    pub library_view_modes: BTreeMap<String, LibraryViewMode>,
 }
 
 impl Default for AppSettings {
@@ -62,6 +81,7 @@ impl Default for AppSettings {
             video_quality: VideoQuality::default(),
             auto_play: true,
             page_size: DEFAULT_PAGE_SIZE,
+            library_view_modes: BTreeMap::new(),
         }
     }
 }
@@ -72,6 +92,8 @@ impl AppSettings {
         if self.page_size == 0 {
             self.page_size = DEFAULT_PAGE_SIZE;
         }
+        self.library_view_modes
+            .retain(|view_id, _| !view_id.trim().is_empty());
         self
     }
 }
@@ -219,10 +241,13 @@ mod tests {
     #[test]
     fn round_trip_persists_camel_case_values() {
         let (store, dir) = temp_store("roundtrip");
+        let mut library_view_modes = BTreeMap::new();
+        library_view_modes.insert("library-1".to_string(), LibraryViewMode::Thumbnail);
         let settings = AppSettings {
             video_quality: VideoQuality::Default,
             auto_play: false,
             page_size: 60,
+            library_view_modes,
         };
         store.save(&settings).expect("save settings");
         assert_eq!(store.load(), settings);
@@ -231,6 +256,8 @@ mod tests {
         assert!(text.contains("\"videoQuality\": \"default\""), "{text}");
         assert!(text.contains("\"autoPlay\": false"), "{text}");
         assert!(text.contains("\"pageSize\": 60"), "{text}");
+        assert!(text.contains("\"libraryViewModes\""), "{text}");
+        assert!(text.contains("\"thumbnail\""), "{text}");
         let _ = fs::remove_dir_all(dir);
     }
 

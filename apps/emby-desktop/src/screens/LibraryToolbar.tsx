@@ -4,6 +4,7 @@ import type {
   EmbyLibrarySortBy,
 } from "../emby/useEmby";
 import { DEFAULT_LIBRARY_QUERY, isDefaultLibraryQuery } from "../emby/useEmby";
+import type { LibraryViewMode } from "../settings/tauri";
 import { Icon } from "./shared";
 import "./LibraryToolbar.css";
 
@@ -47,6 +48,9 @@ export interface LibraryToolbarProps {
   showTypeFilter: boolean;
   /** Query results are loading; the toolbar stays usable but is marked busy. */
   busy?: boolean;
+  /** Current library's card shape. */
+  viewMode: LibraryViewMode;
+  onViewModeChange: (mode: LibraryViewMode) => void;
 }
 
 /**
@@ -59,6 +63,8 @@ export default function LibraryToolbar({
   onChange,
   showTypeFilter,
   busy = false,
+  viewMode,
+  onViewModeChange,
 }: LibraryToolbarProps) {
   const descending = value.sortOrder === "Descending";
   const patch = (next: Partial<EmbyLibraryQuery>) => onChange({ ...value, ...next });
@@ -137,6 +143,30 @@ export default function LibraryToolbar({
           </div>
         </div>
       )}
+
+      <div className="library-toolbar__group">
+        <span className="library-toolbar__label">视图</span>
+        <div className="library-toolbar__segments" role="group" aria-label="卡片视图">
+          <button
+            type="button"
+            className={`library-toolbar__segment${viewMode === "poster" ? " is-active" : ""}`}
+            aria-pressed={viewMode === "poster"}
+            title="海报（2:3）"
+            onClick={() => onViewModeChange("poster")}
+          >
+            海报
+          </button>
+          <button
+            type="button"
+            className={`library-toolbar__segment${viewMode === "thumbnail" ? " is-active" : ""}`}
+            aria-pressed={viewMode === "thumbnail"}
+            title="缩略图（16:9）"
+            onClick={() => onViewModeChange("thumbnail")}
+          >
+            缩略图
+          </button>
+        </div>
+      </div>
 
       {!isDefaultLibraryQuery(value) && (
         <button

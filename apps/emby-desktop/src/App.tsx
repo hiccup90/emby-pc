@@ -28,8 +28,8 @@ import type { TitleBarAccount } from "./screens/TitleBar";
 import { BrandMark, ErrorNotice, PageBackdrop } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import type { PlaybackMeta } from "./player/contract";
-import { DEFAULT_APP_SETTINGS, getSettings } from "./settings/tauri";
-import type { AppSettings } from "./settings/tauri";
+import { DEFAULT_APP_SETTINGS, getSettings, saveSettings } from "./settings/tauri";
+import type { AppSettings, LibraryViewMode } from "./settings/tauri";
 import "./styles.css";
 
 if (typeof document !== "undefined" && !document.querySelector('link[rel="icon"]')) {
@@ -212,6 +212,24 @@ export default function App() {
     contentRef.current?.scrollTo({ top: 0 });
     setQuery(next);
   }, []);
+
+  /** Persist the card shape for the library currently on screen. */
+  const changeLibraryViewMode = useCallback(
+    (mode: LibraryViewMode) => {
+      const viewId = library.view?.id;
+      if (!viewId) return;
+      const next: AppSettings = {
+        ...settings,
+        libraryViewModes: { ...settings.libraryViewModes, [viewId]: mode },
+      };
+      setSettings(next);
+      if (!desktop) return;
+      void saveSettings(next).catch((reason: unknown) => {
+        console.warn("[settings] could not persist the library view mode", reason);
+      });
+    },
+    [desktop, library.view?.id, settings],
+  );
 
   const chooseView = useCallback(
     (viewId: string) => {
@@ -708,6 +726,8 @@ export default function App() {
               library={library}
               query={query}
               onQueryChange={changeQuery}
+              viewModes={settings.libraryViewModes}
+              onViewModeChange={changeLibraryViewMode}
               onOpen={openItem}
               onPlay={resumeItem}
             />

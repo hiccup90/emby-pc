@@ -4,11 +4,16 @@ import { hasTauriRuntime } from "../emby/client";
 /** Player quality preset; matches the Rust `VideoQuality` enum. */
 export type VideoQuality = "default" | "low";
 
+/** Card shape for one library; matches the Rust `LibraryViewMode` enum. */
+export type LibraryViewMode = "poster" | "thumbnail";
+
 /** Persisted application settings, shared with the Rust `settings_*` commands. */
 export interface AppSettings {
   videoQuality: VideoQuality;
   autoPlay: boolean;
   pageSize: number;
+  /** Per Emby view id; absent means the library's own default. */
+  libraryViewModes: Record<string, LibraryViewMode>;
 }
 
 /**
@@ -19,6 +24,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   videoQuality: "low",
   autoPlay: true,
   pageSize: 120,
+  libraryViewModes: {},
 };
 
 export function hasSettingsRuntime(): boolean {

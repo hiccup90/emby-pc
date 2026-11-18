@@ -6,6 +6,7 @@ import type {
   EmbyLibraryQuery,
 } from "../emby/useEmby";
 import { collectionTypeOf } from "../emby/library";
+import type { LibraryViewMode } from "../settings/tauri";
 import { ErrorNotice } from "./shared";
 import { ContinueCard, HubRow, PosterCard } from "./cards";
 import LibraryToolbar from "./LibraryToolbar";
@@ -20,6 +21,9 @@ export interface LibraryScreenProps {
   /** Toolbar value; the query itself lives in the library data layer. */
   query: EmbyLibraryQuery;
   onQueryChange: (query: EmbyLibraryQuery) => void;
+  /** Persisted per-view card shape, keyed by Emby view id. */
+  viewModes: Record<string, LibraryViewMode>;
+  onViewModeChange: (mode: LibraryViewMode) => void;
 }
 
 const SKELETON_COUNT = 14;
@@ -49,11 +53,18 @@ export default function LibraryScreen({
   onPlay,
   query,
   onQueryChange,
+  viewModes,
+  onViewModeChange,
 }: LibraryScreenProps) {
   const previewMode = !session || !desktop;
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { hasMore, loadMore, loadingMore, status, view } = library;
-  const landscape = collectionTypeOf(view) === "homevideos";
+  // Home videos have always been landscape; every other library defaults to
+  // posters. A stored per-library choice wins over both.
+  const defaultViewMode: LibraryViewMode =
+    collectionTypeOf(view) === "homevideos" ? "thumbnail" : "poster";
+  const viewMode = (view ? viewModes[view.id] : undefined) ?? defaultViewMode;
+  const landscape = viewMode === "thumbnail";
 
   useEffect(() => {
     const node = sentinelRef.current;
@@ -131,6 +142,8 @@ export default function LibraryScreen({
             value={query}
             onChange={onQueryChange}
             showTypeFilter={library.supportsTypeFilter}
+            viewMode={viewMode}
+            onViewModeChange={onViewModeChange}
             busy={refetching}
           />
 

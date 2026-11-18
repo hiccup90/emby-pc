@@ -354,6 +354,7 @@ const DEFAULT_MOCK_SETTINGS: AppSettings = {
   videoQuality: "low",
   autoPlay: true,
   pageSize: 120,
+  libraryViewModes: {},
 };
 
 function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): AppSettings {
@@ -361,10 +362,15 @@ function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): 
     typeof value?.pageSize === "number" && Number.isFinite(value.pageSize) && value.pageSize > 0
       ? Math.round(value.pageSize)
       : DEFAULT_MOCK_SETTINGS.pageSize;
+  const libraryViewModes: AppSettings["libraryViewModes"] = {};
+  for (const [viewId, mode] of Object.entries(value?.libraryViewModes ?? {})) {
+    if (viewId && (mode === "poster" || mode === "thumbnail")) libraryViewModes[viewId] = mode;
+  }
   return {
     videoQuality: value?.videoQuality === "default" ? "default" : "low",
     autoPlay: value?.autoPlay !== false,
     pageSize,
+    libraryViewModes,
   };
 }
 
