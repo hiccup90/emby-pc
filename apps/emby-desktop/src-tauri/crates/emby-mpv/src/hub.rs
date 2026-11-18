@@ -109,7 +109,18 @@ impl SnapshotHub {
         };
         sink.publish(snapshot.clone());
         if !sink.is_alive() {
-            self.lock().sink = None;
+            // A page reload can install a new sink while this publish is in
+            // flight. Only clear the sink that actually failed; otherwise the
+            // healthy replacement is dropped and the player goes silent until
+            // the page remounts.
+            let mut inner = self.lock();
+            if inner
+                .sink
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, sink))
+            {
+                inner.sink = None;
+            }
         }
     }
 
