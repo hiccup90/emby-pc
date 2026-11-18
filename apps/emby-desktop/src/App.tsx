@@ -729,7 +729,6 @@ export default function App() {
               viewModes={settings.libraryViewModes}
               onViewModeChange={changeLibraryViewMode}
               onOpen={openItem}
-              onPlay={resumeItem}
             />
           )}
 

@@ -8,7 +8,7 @@ import type {
 import { collectionTypeOf } from "../emby/library";
 import type { LibraryViewMode } from "../settings/tauri";
 import { ErrorNotice } from "./shared";
-import { ContinueCard, HubRow, PosterCard } from "./cards";
+import { PosterCard } from "./cards";
 import LibraryToolbar from "./LibraryToolbar";
 
 export interface LibraryScreenProps {
@@ -16,8 +16,6 @@ export interface LibraryScreenProps {
   desktop: boolean;
   library: EmbyLibraryController;
   onOpen: (item: EmbyLibraryItem) => void;
-  /** Continue-watching cards start playback directly instead of opening details. */
-  onPlay: (item: EmbyLibraryItem) => void;
   /** Toolbar value; the query itself lives in the library data layer. */
   query: EmbyLibraryQuery;
   onQueryChange: (query: EmbyLibraryQuery) => void;
@@ -50,7 +48,6 @@ export default function LibraryScreen({
   desktop,
   library,
   onOpen,
-  onPlay,
   query,
   onQueryChange,
   viewModes,
@@ -106,14 +103,6 @@ export default function LibraryScreen({
 
   return (
     <main className="page">
-      {library.resumable.length > 0 && (
-        <HubRow title="继续观看" count={library.resumable.length}>
-          {library.resumable.map((item) => (
-            <ContinueCard key={item.id} item={item} onPlay={onPlay} onDetails={onOpen} />
-          ))}
-        </HubRow>
-      )}
-
       {booting ? (
         <>
           <div className="page-header">
