@@ -159,7 +159,6 @@ export default function PlayerPage({
     snapshot,
     status,
     error,
-    sourceUrl,
     isFullscreen,
     open,
     togglePlayback,
@@ -534,11 +533,9 @@ export default function PlayerPage({
   );
 
   const retryPlayback = useCallback(() => {
-    const url = sourceUrl ?? playback?.url;
-    if (!url) return;
-    const resumeAt = snapshot?.positionSeconds ?? 0;
-    void open(url, resumeAt);
-  }, [open, playback?.url, snapshot?.positionSeconds, sourceUrl]);
+    if (!playback) return;
+    void open(playback.url, playback.startSeconds);
+  }, [open, playback]);
 
   /**
    * Run one previous/next press and keep its outcome.
@@ -571,7 +568,7 @@ export default function PlayerPage({
     (action: OverlayAction) => {
       switch (action.type) {
         case "toggle-play":
-          void togglePlayback();
+          void togglePlayback(playback?.url);
           break;
         case "seek":
           handleSeek(action.seconds);
@@ -614,6 +611,7 @@ export default function PlayerPage({
       toggleFullscreen,
       toggleMuted,
       togglePlayback,
+      playback?.url,
     ],
   );
 
@@ -858,7 +856,7 @@ export default function PlayerPage({
 
       if (event.code === "Space") {
         event.preventDefault();
-        void togglePlayback();
+        void togglePlayback(playback?.url);
         return;
       }
 
@@ -888,6 +886,7 @@ export default function PlayerPage({
     handleSeek,
     leavePlayer,
     snapshot,
+    playback?.url,
     toggleFullscreen,
     toggleMuted,
     togglePlayback,

@@ -80,7 +80,6 @@ export function usePlayer() {
     isDesktop ? null : createIdleSnapshot(),
   );
   const [error, setError] = useState<string | null>(null);
-  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const mountedRef = useRef(true);
   const lastSeqRef = useRef(-1);
@@ -168,7 +167,6 @@ export function usePlayer() {
           );
           return { ...base, seq: (previous?.seq ?? 0) + 1 };
         });
-        setSourceUrl(url);
         return true;
       }
 
@@ -176,7 +174,6 @@ export function usePlayer() {
       try {
         const next = await invokePlayerOpen({ url, startSeconds: resumeAt });
         if (mountedRef.current) {
-          setSourceUrl(url);
           if (next.seq >= lastSeqRef.current) {
             lastSeqRef.current = next.seq;
             setSnapshot(next);
@@ -193,41 +190,56 @@ export function usePlayer() {
     [isDesktop],
   );
 
-  const togglePlayback = useCallback(async () => {
-    if (!snapshot || snapshot.status === "idle" || snapshot.status === "error") {
-      setError("请先输入并打开播放地址。");
-      return;
-    }
-
-    const nextPaused = snapshot.status === "playing" || snapshot.status === "loading";
-    setError(null);
-
-    if (!isDesktop) {
-      setSnapshot((previous) =>
-        previous
-          ? {
-              ...previous,
-              seq: previous.seq + 1,
-              status: nextPaused ? "paused" : "playing",
-              buffering: false,
-            }
-          : previous,
-      );
-      return;
-    }
-
-    try {
-      await invokePlayerSetPaused(nextPaused);
-      if (!mountedRef.current) return;
-      setSnapshot((previous) =>
-        previous ? { ...previous, status: nextPaused ? "paused" : "playing" } : previous,
-      );
-    } catch (reason) {
-      if (mountedRef.current) {
-        setError(describeError(reason, nextPaused ? "暂停失败" : "播放失败"));
+  const togglePlayback = useCallback(
+    async (replayUrl?: string) => {
+      if (!snapshot || snapshot.status === "idle" || snapshot.status === "error") {
+        setError("请先输入并打开播放地址。");
+        return;
       }
-    }
-  }, [isDesktop, snapshot]);
+
+      // `ended` is parked at the last frame; only a new open leaves that
+      // state. Seeking back to 0 is not enough: the assembler ignores
+      // position/pause changes while it is `Ended`.
+      if (snapshot.status === "ended") {
+        if (!replayUrl) {
+          setError("播放已结束，无法重新开始。");
+          return;
+        }
+        await open(replayUrl, 0);
+        return;
+      }
+
+      const nextPaused = snapshot.status === "playing" || snapshot.status === "loading";
+      setError(null);
+
+      if (!isDesktop) {
+        setSnapshot((previous) =>
+          previous
+            ? {
+                ...previous,
+                seq: previous.seq + 1,
+                status: nextPaused ? "paused" : "playing",
+                buffering: false,
+              }
+            : previous,
+        );
+        return;
+      }
+
+      try {
+        await invokePlayerSetPaused(nextPaused);
+        if (!mountedRef.current) return;
+        setSnapshot((previous) =>
+          previous ? { ...previous, status: nextPaused ? "paused" : "playing" } : previous,
+        );
+      } catch (reason) {
+        if (mountedRef.current) {
+          setError(describeError(reason, nextPaused ? "暂停失败" : "播放失败"));
+        }
+      }
+    },
+    [isDesktop, open, snapshot],
+  );
 
   const seek = useCallback(
     async (seconds: number): Promise<boolean> => {
@@ -387,7 +399,6 @@ export function usePlayer() {
     snapshot,
     status: snapshot?.status ?? "idle",
     error,
-    sourceUrl,
     isFullscreen,
     open,
     togglePlayback,
