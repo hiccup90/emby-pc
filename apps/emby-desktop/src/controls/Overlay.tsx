@@ -397,10 +397,10 @@ export default function Overlay() {
     void onOverlayState((state) => {
       if (state.stamp <= lastStamp) return;
       lastStamp = state.stamp;
-      if (state.snapshot) {
-        snapshotRef.current = state.snapshot;
-        setSnapshot(state.snapshot);
-      }
+      // `snapshot: null` is the teardown signal: the player left and the
+      // controls must not keep the previous item's time/tracks on screen.
+      snapshotRef.current = state.snapshot;
+      setSnapshot(state.snapshot);
       setMeta(state.meta);
       setStats(state.stats);
       setPlayerError(state.error);
