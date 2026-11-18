@@ -138,6 +138,10 @@ impl SessionBoot {
 enum ProbeOutcome {
     Valid,
     TokenRejected,
+    /// The user record is missing (404). This can be a deleted user, a changed
+    /// reverse-proxy path, or a different server behind the same URL. Keep the
+    /// stored session: it is the only copy of the token.
+    NotFound,
     /// Server-side or network trouble: worth retrying, and the stored session
     /// must be kept so a later launch can sign in without the password.
     Transient(SessionReason),
@@ -342,6 +346,14 @@ async fn boot_session(
                     None,
                 );
             }
+            ProbeOutcome::NotFound => {
+                // 404 is not proof that the token is invalid. Do not delete the
+                // only stored credential because a proxy path or server changed.
+                return (
+                    SessionBoot::signed_out(SessionReason::ServerError, Some(&session)),
+                    None,
+                );
+            }
             ProbeOutcome::Transient(reason) => {
                 final_reason = reason;
                 if attempt + 1 < BOOT_ATTEMPTS {
@@ -361,14 +373,15 @@ async fn boot_session(
 ///
 /// Every outcome comes from [`ApiErrorKind`]; the app never inspects an HTTP
 /// status. `Forbidden` means the token works but this user may not read the
-/// user record, so it still counts as valid. `NotFound` means the stored user
-/// id no longer exists on that server: a definite verdict, handled like an
-/// expired token (the session is cleared instead of being retried forever).
+/// user record, so it still counts as valid. `NotFound` is kept separate from
+/// `TokenExpired`: a 404 can also come from a proxy/path change or a different
+/// server, so it must not delete the stored session.
 async fn probe_token(client: &EmbyClient, session: &StoredSession) -> ProbeOutcome {
     match client.current_user(&session.user_id).await {
         Ok(()) => ProbeOutcome::Valid,
         Err(err) => match err.kind() {
-            ApiErrorKind::TokenExpired | ApiErrorKind::NotFound => ProbeOutcome::TokenRejected,
+            ApiErrorKind::TokenExpired => ProbeOutcome::TokenRejected,
+            ApiErrorKind::NotFound => ProbeOutcome::NotFound,
             ApiErrorKind::Forbidden => ProbeOutcome::Valid,
             ApiErrorKind::Network => ProbeOutcome::Transient(SessionReason::Unreachable),
             ApiErrorKind::InvalidCredentials
@@ -687,13 +700,14 @@ mod tests {
     }
 
     #[test]
-    fn probe_404_means_the_stored_user_is_gone() {
-        // A definite verdict (clear the session), not a transient retry.
+    fn probe_404_is_not_an_expired_token() {
+        // A 404 can come from a deleted user, a changed proxy path, or a
+        // different server. It must not delete the only stored credential.
         let (url, server) = spawn_status_server("404 Not Found");
         let client = test_client(&url);
         let session = test_session(&url);
         let result = tauri::async_runtime::block_on(probe_token(&client, &session));
-        assert_eq!(result, ProbeOutcome::TokenRejected);
+        assert_eq!(result, ProbeOutcome::NotFound);
         let _ = server.join();
     }
 
@@ -717,6 +731,22 @@ mod tests {
         assert_eq!(boot.reason, SessionReason::TokenRejected);
         assert!(memory.is_none());
         assert!(!store.session_path().exists());
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn boot_404_keeps_the_persisted_session() {
+        let (url, server) = spawn_status_server("404 Not Found");
+        let (store, dir) = temp_store("boot-404");
+        let session = test_session(&url);
+        store.save(&session).unwrap();
+        let http = emby_api::default_http_client().unwrap();
+        let (boot, memory) = tauri::async_runtime::block_on(boot_session(&store, &http, "test"));
+        assert_eq!(boot.status, SessionStatus::SignedOut);
+        assert_eq!(boot.reason, SessionReason::ServerError);
+        assert!(memory.is_none());
+        assert!(store.session_path().exists(), "sign-in credentials must be retained");
         let _ = server.join();
         let _ = std::fs::remove_dir_all(dir);
     }

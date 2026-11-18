@@ -190,8 +190,8 @@ impl SessionStore {
     }
 
     /// Persists the session using one temp file + rename. On Windows the JSON
-    /// is DPAPI-encrypted; a protection failure falls back to an unencrypted
-    /// file so login still succeeds, and the reason is logged without secrets.
+    /// is DPAPI-encrypted; if protection fails the save fails instead of
+    /// silently writing the token as plain text.
     pub fn save(&self, session: &StoredSession) -> ApiResult<()> {
         self.ensure_dir()?;
         let json = serde_json::to_vec_pretty(session)
@@ -206,8 +206,9 @@ impl SessionStore {
             }
             Ok(None) => json,
             Err(err) => {
-                eprintln!("[emby] session protection failed ({err}); storing unencrypted session");
-                json
+                return Err(storage_error(format!(
+                    "无法加密会话文件，已放弃保存：{err}"
+                )));
             }
         };
 
@@ -383,10 +384,12 @@ pub fn generate_device_id() -> String {
     )
 }
 
-/// Writes a private file via a sibling temp file and rename. The temp file
-/// shares the legacy `session.json.tmp` name for session writes, but it is
-/// removed by rename on success and by the error path on failure.
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Writes `bytes` through a sibling `.tmp` file and renames it into place, so
+/// a crash cannot leave a truncated primary file. The temp name is derived
+/// from the target (`session.json` -> `session.json.tmp`), which also matches
+/// the legacy session temp file; it is removed by rename on success or by the
+/// error path on failure. On Unix the file is created with mode `0o600`.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

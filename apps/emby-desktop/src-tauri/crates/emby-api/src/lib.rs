@@ -39,5 +39,5 @@ pub use model::{
     EmbyMediaStream, EmbyPerson, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest,
     EmbyResumeRequest, EmbySession, EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
 };
-pub use session::{SessionStore, StoredSession, SESSION_VERSION};
+pub use session::{write_atomic, SessionStore, StoredSession, SESSION_VERSION};
 pub use url::normalize_server_url;
