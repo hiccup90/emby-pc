@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use emby_api::write_atomic;
+
 use crate::player::PlayerService;
 
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -195,7 +197,7 @@ impl SettingsStore {
         fs::create_dir_all(&self.dir)?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        fs::write(self.path(), bytes)
+        write_atomic(&self.path(), &bytes)
     }
 }
 
