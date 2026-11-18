@@ -411,9 +411,6 @@ fn handle_open(
     start_seconds: Option<f64>,
 ) -> Result<(), MpvError> {
     assembler.begin_open(start_seconds);
-    // A previous `ended` (keep-open) leaves pause=true; clear it so the next
-    // file actually starts.
-    core.set_property_string("pause", "no")?;
     // Set the start seek before `loadfile` so mpv positions the demuxer at the
     // resume point instead of rendering frame 0 and seeking afterwards.
     let start = start_seconds.filter(|value| value.is_finite() && *value > 0.0);
@@ -426,6 +423,12 @@ fn handle_open(
         }
     }
     core.command(&["loadfile", &url])?;
+    // `keep-open=yes` parks the previous file at EOF with pause=true. A
+    // pause=no before `loadfile` is not enough: mpv re-applies the parked
+    // pause state while replacing the playlist entry, leaving the next
+    // episode on frame 0. Clear it after the new file has been requested;
+    // this also covers the normal resume/open paths.
+    core.set_property_string("pause", "no")?;
     Ok(())
 }
 
