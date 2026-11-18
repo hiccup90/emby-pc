@@ -37,7 +37,12 @@ export function PosterCard({
       aria-label={`查看《${item.name}》详情`}
     >
       <span className="poster-card__frame">
-        <MediaArtwork src={item.posterUrl} alt="" title={item.name} loading="lazy" />
+        <MediaArtwork
+          src={landscape ? item.thumbUrl ?? item.posterUrl : item.posterUrl}
+          alt=""
+          title={item.name}
+          loading="lazy"
+        />
         {unwatched && <span className="badge-unwatched" aria-hidden="true" />}
         {unplayedCount > 0 && (
           <span className="badge-count" aria-hidden="true">

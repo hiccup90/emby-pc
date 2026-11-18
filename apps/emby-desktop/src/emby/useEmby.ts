@@ -35,6 +35,8 @@ import {
 
 export interface EmbyLibraryItem extends EmbyItem {
   posterUrl: string | null;
+  /** Emby's 16:9 thumbnail image; null when the item has no `Thumb` tag. */
+  thumbUrl: string | null;
   backdropUrl: string | null;
 }
 
@@ -249,11 +251,15 @@ function emptyStore(): LibraryStore {
 
 async function safeImageUrl(
   item: EmbyItem,
-  imageType: "Primary" | "Backdrop",
+  imageType: "Primary" | "Thumb" | "Backdrop",
   maxWidth: number,
 ): Promise<string | null> {
   const tag =
-    imageType === "Primary" ? item.imageTags.Primary : item.backdropImageTags[0];
+    imageType === "Primary"
+      ? item.imageTags.Primary
+      : imageType === "Thumb"
+        ? item.imageTags.Thumb
+        : item.backdropImageTags[0];
   if (!tag) return null;
   const request = {
     itemId: item.id,
@@ -275,12 +281,14 @@ async function decorateItem(
   item: EmbyItem,
   includeBackdrop: boolean,
   posterWidth = 400,
+  includeThumb = false,
 ): Promise<EmbyLibraryItem> {
-  const [posterUrl, backdropUrl] = await Promise.all([
+  const [posterUrl, thumbUrl, backdropUrl] = await Promise.all([
     safeImageUrl(item, "Primary", posterWidth),
+    includeThumb ? safeImageUrl(item, "Thumb", 640) : Promise.resolve(null),
     includeBackdrop ? safeImageUrl(item, "Backdrop", 1280) : Promise.resolve(null),
   ]);
-  return { ...item, posterUrl, backdropUrl };
+  return { ...item, posterUrl, thumbUrl, backdropUrl };
 }
 
 /** One image URL per cast/crew member that has a primary image. */
@@ -307,7 +315,7 @@ async function personPhotoUrls(people: EmbyPerson[]): Promise<Record<string, str
 }
 
 function plainLibraryItem(item: EmbyItem): EmbyLibraryItem {
-  return { ...item, posterUrl: null, backdropUrl: null };
+  return { ...item, posterUrl: null, thumbUrl: null, backdropUrl: null };
 }
 
 /** Map a structured command error to a session reason; unknown errors are server errors. */
@@ -583,7 +591,7 @@ export function useEmbyLibrary(
           ...(activeQuery.unplayedOnly ? { filters: "IsUnplayed" } : {}),
         });
         const decorated = await Promise.all(
-          page.items.map((item) => decorateItem(item, false)),
+          page.items.map((item) => decorateItem(item, false, 400, true)),
         );
         if (generation !== generationRef.current) return;
 

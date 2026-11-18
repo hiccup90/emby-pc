@@ -170,7 +170,7 @@ function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "ty
       .toISOString()
       .replace(".000Z", ".0000000Z"),
     runTimeTicks: null,
-    imageTags: scenario.noArt ? {} : { Primary: "p" },
+    imageTags: scenario.noArt ? {} : { Primary: "p", Thumb: "t" },
     backdropImageTags: scenario.noArt || fields.type === "Episode" ? [] : ["b"],
     userData: { playbackPositionTicks: null, played: false, favorite: false, unplayedItemCount: null },
     seriesId: null,
@@ -212,8 +212,8 @@ function addFlat(viewId: string, prefix: string, type: "Movie" | "Video", seeds:
         scenario.noArt || index === 11
           ? {}
           : index % 4 === 3
-            ? { Primary: "p" }
-            : { Primary: "p", Logo: "l" },
+            ? { Primary: "p", Thumb: "t" }
+            : { Primary: "p", Thumb: "t", Logo: "l" },
       userData: {
         playbackPositionTicks: inProgress ? Math.round(runTimeTicks * (0.18 + (index % 3) * 0.27)) : null,
         played: index % 5 === 3,
@@ -271,7 +271,7 @@ children.set(
       overview: OVERVIEWS[(seriesIndex + 2) % OVERVIEWS.length],
       // Series carry the wordmark; episodes do not, which exercises the
       // "episode without its own logo borrows the series logo" path.
-      imageTags: scenario.noArt ? {} : { Primary: "p", Logo: "l" },
+      imageTags: scenario.noArt ? {} : { Primary: "p", Thumb: "t", Logo: "l" },
       userData: {
         playbackPositionTicks: null,
         played: unplayed === 0,
@@ -476,7 +476,7 @@ function imageUrl(req: { itemId?: string; imageType?: string }): string {
   const item = req.itemId ? items.get(req.itemId) : undefined;
   if (!item) return "";
   if (req.imageType === "Logo") return logoSvg(item.name);
-  if (req.imageType === "Backdrop") return stillSvg(item.id, null);
+  if (req.imageType === "Thumb" || req.imageType === "Backdrop") return stillSvg(item.id, null);
   if (item.type === "Episode" || item.type === "Video") return stillSvg(item.id, null);
   return posterSvg(item.id, item.name, item.productionYear);
 }

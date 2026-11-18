@@ -1,7 +1,7 @@
 import { embyImageUrl } from "./client";
 import type { EmbyItem, EmbyPerson } from "./contract";
 
-export type ArtworkKind = "Primary" | "Backdrop" | "Logo";
+export type ArtworkKind = "Primary" | "Thumb" | "Backdrop" | "Logo";
 
 type ArtworkSource = Pick<EmbyItem, "id" | "imageTags" | "backdropImageTags">;
 
@@ -14,9 +14,11 @@ export async function safeImageUrl(
   const tag =
     imageType === "Primary"
       ? item.imageTags.Primary
-      : imageType === "Backdrop"
-        ? item.backdropImageTags[0]
-        : item.imageTags.Logo;
+      : imageType === "Thumb"
+        ? item.imageTags.Thumb
+        : imageType === "Backdrop"
+          ? item.backdropImageTags[0]
+          : item.imageTags.Logo;
   // No tag means the server has no such image: never ask for a URL.
   if (!tag) return null;
 
@@ -31,20 +33,23 @@ export async function safeImageUrl(
 
 export type DecoratedItem<T extends EmbyItem = EmbyItem> = T & {
   posterUrl: string | null;
+  thumbUrl: string | null;
   backdropUrl: string | null;
 };
 
-/** Decorate one raw item with resolved poster/backdrop URLs. */
+/** Decorate one raw item with resolved poster/thumbnail/backdrop URLs. */
 export async function decorateItem<T extends EmbyItem>(
   item: T,
   includeBackdrop: boolean,
   posterWidth = 400,
+  includeThumb = false,
 ): Promise<DecoratedItem<T>> {
-  const [posterUrl, backdropUrl] = await Promise.all([
+  const [posterUrl, thumbUrl, backdropUrl] = await Promise.all([
     safeImageUrl(item, "Primary", posterWidth),
+    includeThumb ? safeImageUrl(item, "Thumb", 640) : Promise.resolve(null),
     includeBackdrop ? safeImageUrl(item, "Backdrop", 1280) : Promise.resolve(null),
   ]);
-  return { ...item, posterUrl, backdropUrl };
+  return { ...item, posterUrl, thumbUrl, backdropUrl };
 }
 
 /** Decorate a list of raw items (search results, actor works, home rows). */
