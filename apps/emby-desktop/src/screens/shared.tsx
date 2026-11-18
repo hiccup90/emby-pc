@@ -146,6 +146,8 @@ interface MediaArtworkProps {
   title: string;
   className?: string;
   loading?: "lazy" | "eager";
+  /** Placeholder text when there is no image; defaults to the item title. */
+  fallbackLabel?: string;
 }
 
 /**
@@ -158,6 +160,7 @@ export function MediaArtwork({
   title,
   className = "",
   loading = "lazy",
+  fallbackLabel,
 }: MediaArtworkProps) {
   // Keyed by URL instead of reset in an effect: a fast (cached) load must not
   // be undone by a reset that runs after it.
@@ -170,7 +173,7 @@ export function MediaArtwork({
     <span className={`media-artwork ${className}`.trim()} data-loaded={loaded ? "true" : "false"}>
       {!usable && (
         <span className="media-artwork__fallback" aria-hidden="true">
-          <span>{title.trim() || "·"}</span>
+          <span>{fallbackLabel ?? (title.trim() || "·")}</span>
         </span>
       )}
       {src && usable && (

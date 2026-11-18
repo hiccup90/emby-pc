@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { hasTauriRuntime } from "../emby/client";
+import type { EmbyLibraryQuery } from "../emby/useEmby";
 
 /** Player quality preset; matches the Rust `VideoQuality` enum. */
 export type VideoQuality = "default" | "low";
@@ -14,6 +15,8 @@ export interface AppSettings {
   pageSize: number;
   /** Per Emby view id; absent means the library's own default. */
   libraryViewModes: Record<string, LibraryViewMode>;
+  /** Per Emby view id; absent means the global library query defaults. */
+  libraryQueries: Record<string, EmbyLibraryQuery>;
 }
 
 /**
@@ -25,6 +28,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoPlay: true,
   pageSize: 120,
   libraryViewModes: {},
+  libraryQueries: {},
 };
 
 export function hasSettingsRuntime(): boolean {

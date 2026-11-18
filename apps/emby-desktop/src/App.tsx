@@ -8,6 +8,7 @@ import type {
 } from "./emby/useEmby";
 import {
   DEFAULT_LIBRARY_QUERY,
+  sameLibraryQuery,
   useEmbyLibrary,
   useEmbySession,
   usePlaybackLauncher,
@@ -139,6 +140,8 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   /** Library scroll offset to restore when coming back from a detail page. */
   const libraryScrollRef = useRef(0);
+  /** Last saved toolbar query applied to a view, so the restore effect is one-shot. */
+  const appliedStoredQueryRef = useRef<{ viewId: string; query: EmbyLibraryQuery } | null>(null);
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
 
@@ -156,6 +159,19 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Settings arrive asynchronously: once the current view is known, restore
+  // its own toolbar query. The ref keeps this from undoing a later user edit.
+  useEffect(() => {
+    const viewId = library.view?.id;
+    if (!viewId) return;
+    const stored = settings.libraryQueries[viewId];
+    if (!stored) return;
+    const applied = appliedStoredQueryRef.current;
+    if (applied?.viewId === viewId && sameLibraryQuery(applied.query, stored)) return;
+    appliedStoredQueryRef.current = { viewId, query: stored };
+    if (!sameLibraryQuery(query, stored)) setQuery(stored);
+  }, [library.view?.id, query, settings.libraryQueries]);
 
   useEffect(() => {
     const previous = previousScreenRef.current;
@@ -207,11 +223,25 @@ export default function App() {
     [],
   );
 
-  const changeQuery = useCallback((next: EmbyLibraryQuery) => {
-    libraryScrollRef.current = 0;
-    contentRef.current?.scrollTo({ top: 0 });
-    setQuery(next);
-  }, []);
+  const changeQuery = useCallback(
+    (next: EmbyLibraryQuery) => {
+      libraryScrollRef.current = 0;
+      contentRef.current?.scrollTo({ top: 0 });
+      setQuery(next);
+      const viewId = library.view?.id;
+      if (!viewId) return;
+      const nextSettings: AppSettings = {
+        ...settings,
+        libraryQueries: { ...settings.libraryQueries, [viewId]: next },
+      };
+      setSettings(nextSettings);
+      if (!desktop) return;
+      void saveSettings(nextSettings).catch((reason: unknown) => {
+        console.warn("[settings] could not persist the library query", reason);
+      });
+    },
+    [desktop, library.view?.id, settings],
+  );
 
   /** Persist the card shape for the library currently on screen. */
   const changeLibraryViewMode = useCallback(
@@ -234,11 +264,13 @@ export default function App() {
   const chooseView = useCallback(
     (viewId: string) => {
       libraryScrollRef.current = 0;
-      library.selectView(viewId);
+      const nextQuery = settings.libraryQueries[viewId] ?? DEFAULT_LIBRARY_QUERY;
+      setQuery(nextQuery);
+      library.selectView(viewId, nextQuery);
       setRoute({ screen: "library" });
       contentRef.current?.scrollTo({ top: 0 });
     },
-    [library],
+    [library, settings.libraryQueries],
   );
 
 

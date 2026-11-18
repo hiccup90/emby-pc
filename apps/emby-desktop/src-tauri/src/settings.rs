@@ -63,6 +63,47 @@ impl Default for LibraryViewMode {
     }
 }
 
+/// One library's persisted sort/filter state. Strings mirror the frontend
+/// `EmbyLibraryQuery` wire values; `normalized` rejects values from hand-edited
+/// or older settings files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LibraryQuerySettings {
+    pub sort_by: String,
+    pub sort_order: String,
+    pub unplayed_only: bool,
+    pub item_type: String,
+}
+
+impl Default for LibraryQuerySettings {
+    fn default() -> Self {
+        Self {
+            sort_by: "SortName".to_string(),
+            sort_order: "Ascending".to_string(),
+            unplayed_only: false,
+            item_type: "all".to_string(),
+        }
+    }
+}
+
+impl LibraryQuerySettings {
+    fn normalized(mut self) -> Self {
+        if !matches!(
+            self.sort_by.as_str(),
+            "SortName" | "ProductionYear" | "DateCreated" | "CommunityRating"
+        ) {
+            self.sort_by = "SortName".to_string();
+        }
+        if !matches!(self.sort_order.as_str(), "Ascending" | "Descending") {
+            self.sort_order = "Ascending".to_string();
+        }
+        if !matches!(self.item_type.as_str(), "all" | "Movie" | "Series") {
+            self.item_type = "all".to_string();
+        }
+        self
+    }
+}
+
 /// Settings shared with the frontend through the `settings_*` commands.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -73,6 +114,9 @@ pub struct AppSettings {
     /// Per-library card shape. Missing ids use the view's own default in the UI.
     #[serde(default)]
     pub library_view_modes: BTreeMap<String, LibraryViewMode>,
+    /// Per-library sort/filter state. Missing ids use the global defaults.
+    #[serde(default)]
+    pub library_queries: BTreeMap<String, LibraryQuerySettings>,
 }
 
 impl Default for AppSettings {
@@ -82,6 +126,7 @@ impl Default for AppSettings {
             auto_play: true,
             page_size: DEFAULT_PAGE_SIZE,
             library_view_modes: BTreeMap::new(),
+            library_queries: BTreeMap::new(),
         }
     }
 }
@@ -94,6 +139,11 @@ impl AppSettings {
         }
         self.library_view_modes
             .retain(|view_id, _| !view_id.trim().is_empty());
+        self.library_queries
+            .retain(|view_id, _| !view_id.trim().is_empty());
+        for query in self.library_queries.values_mut() {
+            *query = query.clone().normalized();
+        }
         self
     }
 }
@@ -243,11 +293,22 @@ mod tests {
         let (store, dir) = temp_store("roundtrip");
         let mut library_view_modes = BTreeMap::new();
         library_view_modes.insert("library-1".to_string(), LibraryViewMode::Thumbnail);
+        let mut library_queries = BTreeMap::new();
+        library_queries.insert(
+            "library-1".to_string(),
+            LibraryQuerySettings {
+                sort_by: "CommunityRating".to_string(),
+                sort_order: "Descending".to_string(),
+                unplayed_only: true,
+                item_type: "Movie".to_string(),
+            },
+        );
         let settings = AppSettings {
             video_quality: VideoQuality::Default,
             auto_play: false,
             page_size: 60,
             library_view_modes,
+            library_queries,
         };
         store.save(&settings).expect("save settings");
         assert_eq!(store.load(), settings);
@@ -258,6 +319,8 @@ mod tests {
         assert!(text.contains("\"pageSize\": 60"), "{text}");
         assert!(text.contains("\"libraryViewModes\""), "{text}");
         assert!(text.contains("\"thumbnail\""), "{text}");
+        assert!(text.contains("\"libraryQueries\""), "{text}");
+        assert!(text.contains("\"CommunityRating\""), "{text}");
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -355,6 +355,7 @@ const DEFAULT_MOCK_SETTINGS: AppSettings = {
   autoPlay: true,
   pageSize: 120,
   libraryViewModes: {},
+  libraryQueries: {},
 };
 
 function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): AppSettings {
@@ -366,11 +367,28 @@ function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): 
   for (const [viewId, mode] of Object.entries(value?.libraryViewModes ?? {})) {
     if (viewId && (mode === "poster" || mode === "thumbnail")) libraryViewModes[viewId] = mode;
   }
+  const libraryQueries: AppSettings["libraryQueries"] = {};
+  for (const [viewId, query] of Object.entries(value?.libraryQueries ?? {})) {
+    if (!viewId || !query) continue;
+    libraryQueries[viewId] = {
+      sortBy:
+        query.sortBy === "ProductionYear" ||
+        query.sortBy === "DateCreated" ||
+        query.sortBy === "CommunityRating"
+          ? query.sortBy
+          : "SortName",
+      sortOrder: query.sortOrder === "Descending" ? "Descending" : "Ascending",
+      unplayedOnly: Boolean(query.unplayedOnly),
+      itemType:
+        query.itemType === "Movie" || query.itemType === "Series" ? query.itemType : "all",
+    };
+  }
   return {
     videoQuality: value?.videoQuality === "default" ? "default" : "low",
     autoPlay: value?.autoPlay !== false,
     pageSize,
     libraryViewModes,
+    libraryQueries,
   };
 }
 

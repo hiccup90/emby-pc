@@ -61,7 +61,7 @@ export interface EmbyLibraryController extends EmbyLibraryState {
   resumeStatus: EmbyLoadStatus;
   /** Why the continue-watching row is empty, when it is a failure, not a fact. */
   resumeError: string | null;
-  selectView: (viewId: string) => void;
+  selectView: (viewId: string, query?: EmbyLibraryQuery) => void;
   loadMore: () => void;
   reload: () => void;
   /** Re-read the continue-watching row after its request failed. */
@@ -105,6 +105,16 @@ export function isDefaultLibraryQuery(query: EmbyLibraryQuery): boolean {
     query.sortOrder === DEFAULT_LIBRARY_QUERY.sortOrder &&
     query.unplayedOnly === DEFAULT_LIBRARY_QUERY.unplayedOnly &&
     query.itemType === DEFAULT_LIBRARY_QUERY.itemType
+  );
+}
+
+/** Field-wise comparison, used when restoring a view's saved toolbar state. */
+export function sameLibraryQuery(a: EmbyLibraryQuery, b: EmbyLibraryQuery): boolean {
+  return (
+    a.sortBy === b.sortBy &&
+    a.sortOrder === b.sortOrder &&
+    a.unplayedOnly === b.unplayedOnly &&
+    a.itemType === b.itemType
   );
 }
 
@@ -546,8 +556,15 @@ export function useEmbyLibrary(
   );
 
   const fetchViewPage = useCallback(
-    async (view: EmbyView, mode: "replace" | "append") => {
-      const { query: activeQuery, pageSize: activePageSize } = queryRef.current;
+    async (
+      view: EmbyView,
+      mode: "replace" | "append",
+      queryOverride?: EmbyLibraryQuery,
+      pageSizeOverride?: number,
+    ) => {
+      const { query: currentQuery, pageSize: currentPageSize } = queryRef.current;
+      const activeQuery = queryOverride ?? currentQuery;
+      const activePageSize = pageSizeOverride ?? currentPageSize;
       const key = cacheKeyFor(view.id, libraryQuerySignature(activeQuery, activePageSize));
       const generation = generationRef.current;
       const requestKey = `${generation}:${key}`;
@@ -771,20 +788,36 @@ export function useEmbyLibrary(
   }, [fetchViewPage, querySignature, updateStore]);
 
   const selectView = useCallback(
-    (viewId: string) => {
+    (viewId: string, nextQuery?: EmbyLibraryQuery) => {
       const current = storeRef.current;
       const view = current.views.find((candidate) => candidate.id === viewId);
       if (!view) return;
-      if (current.viewId !== viewId) {
-        updateStore((state) => ({ ...state, viewId }));
+      const activeQuery = nextQuery ?? queryRef.current.query;
+      const activePageSize = nextQuery ? pageSize : queryRef.current.pageSize;
+      const signature = libraryQuerySignature(activeQuery, activePageSize);
+      if (nextQuery) {
+        // The shell sets its query state in the same tick; update the refs now
+        // so the fetch below does not read the previous library's query.
+        queryRef.current = { query: activeQuery, pageSize: activePageSize };
+        querySignatureRef.current = signature;
       }
-      const key = cacheKeyFor(viewId, querySignatureRef.current);
+      const key = cacheKeyFor(viewId, signature);
+      updateStore((state) => ({
+        ...state,
+        viewId,
+        ...(nextQuery ? { queryKey: signature } : {}),
+      }));
       const cache = current.cache[key];
       if (!cache || cache.status === "error") {
-        void fetchViewPage(view, "replace");
+        void fetchViewPage(
+          view,
+          "replace",
+          nextQuery ? activeQuery : undefined,
+          nextQuery ? activePageSize : undefined,
+        );
       }
     },
-    [fetchViewPage, updateStore],
+    [fetchViewPage, pageSize, updateStore],
   );
 
   const loadMore = useCallback(() => {

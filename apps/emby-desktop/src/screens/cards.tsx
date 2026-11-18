@@ -38,9 +38,10 @@ export function PosterCard({
     >
       <span className="poster-card__frame">
         <MediaArtwork
-          src={landscape ? item.thumbUrl ?? item.posterUrl : item.posterUrl}
+          src={landscape ? item.thumbUrl : item.posterUrl}
           alt=""
           title={item.name}
+          fallbackLabel="无图"
           loading="lazy"
         />
         {unwatched && <span className="badge-unwatched" aria-hidden="true" />}
