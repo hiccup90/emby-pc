@@ -6,7 +6,7 @@ name: emby-desktop-windows
 #
 # Manual trigger only: no automatic triggers are configured, so commits
 # never start a run on their own. Start it with:
-#   gh workflow run emby-desktop-windows.yml --ref rewrite/tauri-emby
+#   gh workflow run emby-desktop-windows.yml --ref "$(git branch --show-current)"
 #
 # Bundled libmpv runtime (Windows x64):
 #   Package: mpv-dev-x86_64-20261108-git-55d3feb45c.7z
@@ -36,7 +36,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  LIBMPV_VERSION: "mpv-dev-x86_64-20261108-git-55d3feb45c"
   LIBMPV_URL: "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261108/mpv-dev-x86_64-20261108-git-55d3feb45c.7z"
   LIBMPV_SHA256: "7c147cb7ceaba717414e782ef4398de728f679db6e86daaa8aeb175670cb7994"
 
@@ -89,52 +88,12 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      # Explicit type check. `tauri build` also runs `pnpm build` via
-      # beforeBuildCommand (tsc -b + vite build), which is acceptable here.
-      - name: Type check frontend
-        run: pnpm exec tsc -b
-
-      # Cargo.lock is committed by the main branch owner, but a first-time
-      # build is allowed to generate it. This check is informational only.
-      - name: Check Cargo.lock presence (non-blocking)
-        working-directory: .
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $lockfile = "apps/emby-desktop/src-tauri/Cargo.lock"
-          if (Test-Path -LiteralPath $lockfile -PathType Leaf) {
-            Write-Host "Found $lockfile"
-          } else {
-            Write-Warning "Missing $lockfile; Cargo may generate it on the first build."
-            Write-Host "::warning::Missing $lockfile (allowed for the first build)."
-          }
-
-      # The workspace crates are being merged independently. Test each crate
-      # whose manifest is present; a missing manifest is a skip, not a failure.
-      - name: Test workspace crates (if present)
-        working-directory: .
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $crates = @("emby-mpv", "emby-api")
-          Push-Location "apps/emby-desktop/src-tauri"
-          try {
-            foreach ($crate in $crates) {
-              $manifest = "crates/$crate/Cargo.toml"
-              if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
-                Write-Host "::notice::Skipping cargo test -p ${crate}: $manifest is not present."
-                continue
-              }
-              cargo test -p $crate
-              if ($LASTEXITCODE -ne 0) {
-                throw "cargo test -p ${crate} failed with exit code $LASTEXITCODE"
-              }
-            }
-          } finally {
-            Pop-Location
-          }
+      - name: Test workspace
+        working-directory: apps/emby-desktop/src-tauri
+        run: cargo test --workspace
 
       - name: Download libmpv archive
+        if: ${{ inputs.bundle_libmpv }}
         working-directory: .
         shell: pwsh
         run: |
@@ -142,12 +101,13 @@ jobs:
           $archiveDir = Join-Path $env:RUNNER_TEMP "libmpv"
           New-Item -ItemType Directory -Force -Path $archiveDir | Out-Null
           $archive = Join-Path $archiveDir "libmpv.7z"
-          Write-Host "Downloading $env:LIBMPV_VERSION from $env:LIBMPV_URL"
+          Write-Host "Downloading libmpv from $env:LIBMPV_URL"
           Invoke-WebRequest -Uri $env:LIBMPV_URL -OutFile $archive -UseBasicParsing
           $size = (Get-Item -LiteralPath $archive).Length
           Write-Host "Downloaded $archive ($size bytes)"
 
       - name: Verify libmpv archive SHA-256
+        if: ${{ inputs.bundle_libmpv }}
         working-directory: .
         shell: pwsh
         run: |
@@ -164,6 +124,7 @@ jobs:
           Write-Host "SHA-256 verified: $actual"
 
       - name: Extract libmpv archive
+        if: ${{ inputs.bundle_libmpv }}
         working-directory: .
         shell: pwsh
         run: |
@@ -192,6 +153,7 @@ jobs:
           }
 
       - name: Locate libmpv-2.dll
+        if: ${{ inputs.bundle_libmpv }}
         working-directory: .
         shell: pwsh
         run: |
@@ -218,6 +180,7 @@ jobs:
       # libmpv-2.dll must sit next to the executable for the packaged build to
       # load it at runtime. The Tauri build does not copy it automatically.
       - name: Copy libmpv-2.dll next to executable
+        if: ${{ inputs.bundle_libmpv }}
         working-directory: .
         shell: pwsh
         run: |
@@ -237,6 +200,7 @@ jobs:
           Get-Item -LiteralPath $target | Format-List FullName, Length
 
       - name: Verify executable and libmpv runtime
+        if: ${{ inputs.bundle_libmpv }}
         working-directory: .
         shell: pwsh
         run: |
@@ -252,19 +216,20 @@ jobs:
             Get-Item -LiteralPath $artifact | Format-List FullName, Length
           }
 
-      # 默认只上传 exe：libmpv-2.dll 是 pin 死的第三方文件（116 MB / 压后 46 MB），
-      # 每次构建重复上传它既慢又占空间。需要完整包时勾选 bundle_libmpv。
+      # 默认只上传 exe；archive:false 让 GitHub 直接给单文件，不再套一层 zip。
+      # libmpv-2.dll 是 pin 死的第三方文件（116 MB / 压后 46 MB），只在
+      # bundle_libmpv 时上传完整包。
       - name: Upload Windows executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: emby-desktop-windows-x64-${{ github.sha }}
           path: apps/emby-desktop/src-tauri/target/release/emby-desktop.exe
+          archive: false
           retention-days: 3
           if-no-files-found: error
 
       - name: Upload full package (exe + libmpv runtime)
         if: ${{ inputs.bundle_libmpv }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: emby-desktop-windows-x64-full-${{ github.sha }}
           path: |
