@@ -310,6 +310,7 @@
 
 .identify-dialog__results {
   display: grid;
+  align-content: start;
   gap: 4px;
   min-height: 150px;
   max-height: 340px;
@@ -349,7 +350,9 @@
 
 .identify-result .media-artwork {
   flex: 0 0 auto;
+  align-self: flex-start;
   width: 48px;
+  height: auto;
   aspect-ratio: 2 / 3;
   overflow: hidden;
   border-radius: 3px;
