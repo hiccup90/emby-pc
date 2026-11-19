@@ -869,7 +869,10 @@ impl OverlayState {
         );
         self.lock().last_video_rect = Some(video_rect);
         if region_changed {
-            apply_region(&controls, geometry.2, geometry.3, bands, margin)?;
+            // Size the region from the rect the window actually has. If the move
+            // budget skipped this target, `applied` is the previous geometry;
+            // using the new target here would clip a window that never moved.
+            apply_region(&controls, applied.2, applied.3, bands, margin)?;
             self.lock().last_bands = Some(bands);
         }
 
