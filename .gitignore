@@ -1,0 +1,4 @@
+# Local working docs and agent state stay out of the repository.
+/AGENTS.md
+/BOARD.md
+/.pi/
