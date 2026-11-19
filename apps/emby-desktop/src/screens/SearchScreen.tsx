@@ -3,11 +3,14 @@ import type { EmbyLibraryItem } from "../emby/useEmby";
 import { itemEpisodeLabel } from "../emby/format";
 import { isPlayableItemType } from "../emby/library";
 import { useSearch } from "../emby/useSearch";
+import { useItemActions } from "./ItemActions";
 import { ErrorNotice, Icon } from "./shared";
 import { PosterCard } from "./cards";
 import "./SearchScreen.css";
 
 interface SearchScreenProps {
+  /** Changes after delete/identify so the current results are re-read. */
+  refreshKey?: number;
   /** Open the details page for a result. */
   onOpen: (item: EmbyLibraryItem) => void;
   /** Start playback for a playable result (movie/episode/video). */
@@ -38,14 +41,17 @@ function SearchSkeleton() {
 }
 
 export default function SearchScreen({
+  refreshKey = 0,
   onOpen,
   onPlay,
   initialQuery = "",
   onQueryChange,
 }: SearchScreenProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const search = useSearch({ initialQuery, onQueryChange });
+  const search = useSearch({ initialQuery, onQueryChange, refreshKey });
   const trimmedQuery = search.query.trim();
+  const itemActions = useItemActions();
+  const selecting = itemActions?.selection.active ?? false;
 
   const clear = () => {
     search.setQuery("");
@@ -138,11 +144,16 @@ export default function SearchScreen({
                       onSelect={onOpen}
                       subtitle={episodeContext}
                     />
-                    {isPlayableItemType(item.type) && (
+                    {!selecting && isPlayableItemType(item.type) && (
                       <button
                         type="button"
                         className="search-result__play"
                         onClick={() => onPlay(item)}
+                        onContextMenu={(event) => {
+                          if (!itemActions) return;
+                          event.preventDefault();
+                          itemActions.openMenu(item, event.clientX, event.clientY);
+                        }}
                         aria-label={`播放《${item.name}》`}
                         title="播放"
                       >

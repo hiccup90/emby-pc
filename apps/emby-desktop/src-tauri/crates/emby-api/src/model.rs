@@ -211,6 +211,28 @@ pub struct EmbyImageRequest {
     pub tag: Option<String>,
 }
 
+/// Parameters for Emby's Identify remote search. `item_type` is the server
+/// item type (`Movie`, `Series`, ...), not a library collection type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EmbyRemoteSearchRequest {
+    pub item_id: String,
+    pub item_type: String,
+    pub name: String,
+    pub production_year: Option<u32>,
+}
+
+/// Applies one raw `RemoteSearchResult` returned by [`EmbyRemoteSearchRequest`].
+/// The result is intentionally `serde_json::Value`: Emby accepts the provider
+/// object back verbatim, including fields this client does not understand.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EmbyApplyRemoteSearchRequest {
+    pub item_id: String,
+    pub result: serde_json::Value,
+    pub replace_all_images: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Raw Emby JSON (PascalCase). Keep field names aligned with the API.
 // ---------------------------------------------------------------------------

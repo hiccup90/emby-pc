@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { EmbyItem, EmbyPlaybackTarget } from "./emby/contract";
-import { hasTauriRuntime } from "./emby/client";
+import { describeEmbyError, embyDeleteItems, hasTauriRuntime } from "./emby/client";
 import type {
   EmbyLibraryItem,
   EmbyLibraryQuery,
@@ -25,6 +25,15 @@ import LoginScreen from "./screens/LoginScreen";
 import Sidebar from "./screens/Sidebar";
 import TitleBar from "./screens/TitleBar";
 import type { TitleBarAccount } from "./screens/TitleBar";
+import {
+  DeleteDialog,
+  IdentifyDialog,
+  ItemActionContext,
+  ItemContextMenu,
+  SelectionBar,
+  IDENTIFY_ITEM_TYPES,
+} from "./screens/ItemActions";
+import type { ItemActionContextValue, ItemMenuState } from "./screens/ItemActions";
 import { BrandMark, ErrorNotice, PageBackdrop } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import type { PlaybackMeta } from "./player/contract";
@@ -144,6 +153,20 @@ export default function App() {
   const libraryScrollRef = useRef(0);
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
+  /** Card right-click / multi-select state; only the current page may keep it. */
+  const [selection, setSelection] = useState<{ active: boolean; ids: Set<string> }>({
+    active: false,
+    ids: new Set(),
+  });
+  const [selectedItems, setSelectedItems] = useState<Map<string, EmbyLibraryItem>>(new Map());
+  const [itemMenu, setItemMenu] = useState<ItemMenuState | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<EmbyLibraryItem[] | null>(null);
+  const [identifyItem, setIdentifyItem] = useState<EmbyLibraryItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  /** Bumped after delete/identify so the page that owns the cards re-reads it. */
+  const [dataRevision, setDataRevision] = useState(0);
 
   // Read the persisted settings once; a failure keeps the defaults.
   useEffect(() => {
@@ -269,6 +292,98 @@ export default function App() {
     [library.views, settings.homeViewIds],
   );
 
+  const clearSelection = useCallback(() => {
+    setSelection({ active: false, ids: new Set() });
+    setSelectedItems(new Map());
+  }, []);
+
+  const toggleSelection = useCallback((item: EmbyLibraryItem) => {
+    setSelectedItems((current) => {
+      const next = new Map(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.set(item.id, item);
+      return next;
+    });
+    setSelection((current) => {
+      const ids = new Set(current.ids);
+      if (ids.has(item.id)) ids.delete(item.id);
+      else ids.add(item.id);
+      // Like the official selection panel, deselecting the last item exits
+      // selection mode instead of leaving an empty bar on screen.
+      return { active: ids.size > 0, ids };
+    });
+  }, []);
+
+  const startSelection = useCallback((item: EmbyLibraryItem) => {
+    setItemMenu(null);
+    setSelectedItems((current) => new Map(current).set(item.id, item));
+    setSelection((current) => {
+      const ids = new Set(current.active ? current.ids : []);
+      ids.add(item.id);
+      return { active: true, ids };
+    });
+  }, []);
+
+  const openItemMenu = useCallback((item: EmbyLibraryItem, x: number, y: number) => {
+    setItemMenu({ item, x, y });
+  }, []);
+
+  const selectedList = useMemo(() => [...selectedItems.values()], [selectedItems]);
+  const selectionCanIdentify =
+    selectedList.length === 1 && IDENTIFY_ITEM_TYPES.has(selectedList[0].type);
+
+  // A different screen or library view is a different selection scope. This
+  // also closes a stale menu/dialog when the sidebar navigates away.
+  const actionScope =
+    route.screen === "library"
+      ? [
+          "library",
+          library.view?.id ?? "",
+          query.sortBy,
+          query.sortOrder,
+          query.itemType,
+          String(query.unplayedOnly),
+          String(settings.pageSize),
+        ].join(":")
+      : route.screen === "detail"
+        ? `detail:${route.itemId}`
+        : route.screen === "actor"
+          ? `actor:${route.personId}`
+          : route.screen === "search"
+            ? `search:${searchQuery}`
+            : route.screen;
+  useEffect(() => {
+    setSelection({ active: false, ids: new Set() });
+    setSelectedItems(new Map());
+    setItemMenu(null);
+    setDeleteRequest(null);
+    setIdentifyItem(null);
+    // `route` changes even when the screen name stays the same (e.g. clicking
+    // home while already there); that still starts a new selection scope.
+  }, [actionScope, route]);
+
+  // Escape cancels selection before a page-level handler (detail "back") can
+  // see it. Menus/dialogs have their own capture handlers.
+  useEffect(() => {
+    if (!selection.active || itemMenu || deleteRequest || identifyItem) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearSelection();
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [clearSelection, deleteRequest, identifyItem, itemMenu, selection.active]);
+
+  const itemActions = useMemo<ItemActionContextValue>(
+    () => ({
+      selection: { active: selection.active, ids: selection.ids, toggle: toggleSelection },
+      openMenu: openItemMenu,
+    }),
+    [openItemMenu, selection.active, selection.ids, toggleSelection],
+  );
+
   const openActor = useCallback(
     (person: { id: string | null; name: string }) => {
       const personId = person.id;
@@ -323,6 +438,50 @@ export default function App() {
       return current.origin;
     });
   }, []);
+
+  const requestDelete = useCallback((items: EmbyLibraryItem[]) => {
+    if (items.length === 0) return;
+    setItemMenu(null);
+    setDeleteError(null);
+    setDeleteRequest(items);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteRequest || deletingRef.current) return;
+    deletingRef.current = true;
+    const ids = deleteRequest.map((item) => item.id);
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await embyDeleteItems(ids);
+      setDeleteRequest(null);
+      clearSelection();
+      setDataRevision((value) => value + 1);
+      if (routeRef.current.screen === "library") library.reload();
+      refreshResume();
+      if (routeRef.current.screen === "detail" && ids.includes(routeRef.current.itemId)) {
+        leaveDetail();
+      }
+    } catch (reason: unknown) {
+      setDeleteError(describeEmbyError(reason, "删除失败，请稍后重试。"));
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
+  }, [clearSelection, deleteRequest, leaveDetail, library, refreshResume]);
+
+  const openIdentify = useCallback((item: EmbyLibraryItem) => {
+    setItemMenu(null);
+    setIdentifyItem(item);
+  }, []);
+
+  const finishIdentify = useCallback(() => {
+    setIdentifyItem(null);
+    clearSelection();
+    setDataRevision((value) => value + 1);
+    if (routeRef.current.screen === "library") library.reload();
+    refreshResume();
+  }, [clearSelection, library, refreshResume]);
 
   const {
     launch,
@@ -595,6 +754,7 @@ export default function App() {
             : null;
 
   return (
+    <ItemActionContext.Provider value={itemActions}>
     <div className={`app-shell app-shell--${route.screen}`}>
       <TitleBar
         account={account}
@@ -647,6 +807,7 @@ export default function App() {
 
           {route.screen === "home" && (
             <HomeScreen
+              refreshKey={dataRevision}
               resume={library.resumable}
               resumeStatus={library.resumeStatus}
               resumeError={library.resumeError}
@@ -661,6 +822,7 @@ export default function App() {
 
           {route.screen === "search" && (
             <SearchScreen
+              refreshKey={dataRevision}
               onOpen={openItem}
               onPlay={resumeItem}
               initialQuery={searchQuery}
@@ -678,6 +840,7 @@ export default function App() {
 
           {route.screen === "actor" && (
             <ActorScreen
+              key={`${route.personId}:${dataRevision}`}
               personId={route.personId}
               personName={route.personName}
               onOpen={openItem}
@@ -700,7 +863,7 @@ export default function App() {
 
           {route.screen === "detail" && (
             <DetailScreen
-              key={route.itemId}
+              key={`${route.itemId}:${dataRevision}`}
               itemId={route.itemId}
               seed={route.seed}
               focusEpisodeId={route.focusEpisodeId ?? null}
@@ -728,6 +891,47 @@ export default function App() {
           )}
         </div>
       </div>
+      {itemMenu && (
+        <ItemContextMenu
+          menu={itemMenu}
+          canIdentify={IDENTIFY_ITEM_TYPES.has(itemMenu.item.type)}
+          onClose={() => setItemMenu(null)}
+          onStartSelection={startSelection}
+          onDelete={(item) => requestDelete([item])}
+          onIdentify={openIdentify}
+        />
+      )}
+      {selection.active && (
+        <SelectionBar
+          count={selectedList.length}
+          canIdentify={selectionCanIdentify}
+          onDelete={() => requestDelete(selectedList)}
+          onIdentify={() => selectedList[0] && openIdentify(selectedList[0])}
+          onCancel={clearSelection}
+        />
+      )}
+      {deleteRequest && (
+        <DeleteDialog
+          items={deleteRequest}
+          busy={deleting}
+          error={deleteError}
+          onCancel={() => {
+            if (!deleting) {
+              setDeleteRequest(null);
+              setDeleteError(null);
+            }
+          }}
+          onConfirm={() => void confirmDelete()}
+        />
+      )}
+      {identifyItem && (
+        <IdentifyDialog
+          item={identifyItem}
+          onClose={() => setIdentifyItem(null)}
+          onApplied={finishIdentify}
+        />
+      )}
     </div>
+    </ItemActionContext.Provider>
   );
 }

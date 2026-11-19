@@ -26,6 +26,8 @@ export interface UseSearchOptions {
   initialQuery?: string;
   /** Called with every raw query change, so a parent can remember it. */
   onQueryChange?: (query: string) => void;
+  /** Bumped by the shell after a delete/identify to re-read the same query. */
+  refreshKey?: number;
 }
 
 export interface EmbySearchController {
@@ -50,7 +52,12 @@ export interface EmbySearchController {
  * parent restore and remember it without taking over the field state.
  */
 export function useSearch(options: UseSearchOptions = {}): EmbySearchController {
-  const { debounceMs = SEARCH_DEBOUNCE_MS, initialQuery = "", onQueryChange } = options;
+  const {
+    debounceMs = SEARCH_DEBOUNCE_MS,
+    initialQuery = "",
+    onQueryChange,
+    refreshKey = 0,
+  } = options;
   const [query, setQueryState] = useState(initialQuery);
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim());
   const onQueryChangeRef = useRef(onQueryChange);
@@ -78,7 +85,7 @@ export function useSearch(options: UseSearchOptions = {}): EmbySearchController 
       const items = await decorateItems(page.items);
       return { items, totalItems: page.totalRecordCount };
     },
-    `search:${debouncedQuery}`,
+    `search:${debouncedQuery}:${refreshKey}`,
     { enabled: Boolean(debouncedQuery), fallbackError: "搜索失败，请稍后重试。" },
   );
 

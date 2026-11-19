@@ -16,9 +16,10 @@ use crate::auth::{authorization_header, CLIENT_NAME, CLIENT_VERSION};
 use crate::clean;
 use crate::error::{ApiError, ApiErrorKind, ApiResult};
 use crate::model::{
-    pick_playback_source, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest,
-    EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbyView, RawAuthResponse,
-    RawItem, RawItemsResponse, RawPlaybackInfo, RawPublicSystemInfo, DEFAULT_IMAGE_WIDTH,
+    pick_playback_source, EmbyApplyRemoteSearchRequest, EmbyImageRequest, EmbyItem, EmbyItemsPage,
+    EmbyItemsRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyRemoteSearchRequest,
+    EmbyReportRequest, EmbyView, RawAuthResponse, RawItem, RawItemsResponse, RawPlaybackInfo,
+    RawPublicSystemInfo, DEFAULT_IMAGE_WIDTH,
 };
 use crate::report::{ReportBody, ReportEvent};
 use crate::ticks::ticks_to_seconds;
@@ -410,6 +411,139 @@ impl EmbyClient {
         Ok(())
     }
 
+    /// Deletes one or more items (`POST /Items/Delete?Ids=...`).
+    ///
+    /// Emby deletes the library entry and, for library content, its media
+    /// files; the caller must show a confirmation first. The server enforces
+    /// the administrator permission.
+    pub async fn delete_items(&self, ids: &[String]) -> ApiResult<()> {
+        let _token = self.token()?;
+        let ids: Vec<&str> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if ids.is_empty() {
+            return Err(ApiError::invalid_input("缺少要删除的条目 id"));
+        }
+        let joined = ids.join(",");
+        let url = self.endpoint(&["Items", "Delete"], &[("Ids", joined.as_str())])?;
+        self.send(self.request(Method::POST, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        Ok(())
+    }
+
+    /// File paths Emby will delete with the item (`GET /Items/{id}/DeleteInfo`).
+    /// Used only to make the destructive confirmation explicit.
+    pub async fn delete_info(&self, item_id: &str) -> ApiResult<Vec<String>> {
+        let _token = self.token()?;
+        let item_id = required_item_id(item_id)?;
+        let url = self.endpoint(&["Items", item_id, "DeleteInfo"], &[])?;
+        let body = self
+            .send(self.request(Method::GET, &url), DEFAULT_TIMEOUT, &url)
+            .await?;
+        let value: serde_json::Value = parse_json(&body, "删除信息")?;
+        Ok(value
+            .get("Paths")
+            .and_then(serde_json::Value::as_array)
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Searches the enabled metadata providers (`POST /Items/RemoteSearch/{Type}`).
+    ///
+    /// The returned objects are the provider results exactly as Emby sends
+    /// them; the frontend passes the chosen object back unchanged to
+    /// [`Self::apply_remote_search`].
+    pub async fn remote_search(
+        &self,
+        req: &EmbyRemoteSearchRequest,
+    ) -> ApiResult<Vec<serde_json::Value>> {
+        let _token = self.token()?;
+        let item_id = required_item_id(&req.item_id)?;
+        let item_type = req.item_type.trim();
+        if item_type.is_empty() {
+            return Err(ApiError::invalid_input("缺少条目类型"));
+        }
+        let name = req.name.trim();
+        if name.is_empty() {
+            return Err(ApiError::invalid_input("请输入要搜索的名称"));
+        }
+        // Official Identify sends the text fields from the dialog's
+        // `data-lookup` attributes; the year key is `Year`, not
+        // `ProductionYear` (that is the response/card field).
+        let mut search_info = json!({ "ProviderIds": {}, "Name": name });
+        if let Some(year) = req.production_year.filter(|year| *year > 0) {
+            search_info["Year"] = json!(year);
+        }
+        let body = json!({ "SearchInfo": search_info, "ItemId": item_id });
+        let url = self.endpoint(&["Items", "RemoteSearch", item_type], &[])?;
+        let response = self
+            .send(
+                self.request(Method::POST, &url).json(&body),
+                DEFAULT_TIMEOUT,
+                &url,
+            )
+            .await?;
+        parse_json(&response, "远程搜索结果")
+    }
+
+    /// Applies a chosen remote-search result (`POST /Items/RemoteSearch/Apply/{id}`).
+    pub async fn apply_remote_search(&self, req: &EmbyApplyRemoteSearchRequest) -> ApiResult<()> {
+        let _token = self.token()?;
+        let item_id = required_item_id(&req.item_id)?;
+        if req.result.is_null() {
+            return Err(ApiError::invalid_input("请选择识别结果"));
+        }
+        let replace = if req.replace_all_images {
+            "true"
+        } else {
+            "false"
+        };
+        let url = self.endpoint(
+            &["Items", "RemoteSearch", "Apply", item_id],
+            &[("ReplaceAllImages", replace)],
+        )?;
+        self.send(
+            self.request(Method::POST, &url).json(&req.result),
+            DEFAULT_TIMEOUT,
+            &url,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Absolute URL for one remote-search result image. Emby serves provider
+    /// images through `Items/RemoteSearch/Image`; the raw result only carries
+    /// a provider-relative `ImageUrl`.
+    pub fn remote_search_image_url(
+        &self,
+        image_url: &str,
+        provider: Option<&str>,
+    ) -> ApiResult<String> {
+        let token = self.token()?.to_string();
+        let image_url = image_url.trim();
+        if image_url.is_empty() {
+            return Err(ApiError::invalid_input("缺少识别结果的图片地址"));
+        }
+        let mut query: Vec<(&str, String)> = vec![("imageUrl", image_url.to_string())];
+        if let Some(provider) = clean(provider) {
+            query.push(("ProviderName", provider));
+        }
+        let pairs: Vec<(&str, &str)> = query
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        let url = self.endpoint(&["Items", "RemoteSearch", "Image"], &pairs)?;
+        Ok(with_api_key(&url, &token))
+    }
+
     /// Works featuring a person (`GET /Persons/{id}/Items`).
     ///
     /// The response uses the regular item shape, so it goes through the same
@@ -772,15 +906,36 @@ mod tests {
 
             let mut request = Vec::new();
             let mut chunk = [0_u8; 1024];
-            loop {
+            let header_end = loop {
                 let read = stream.read(&mut chunk).expect("read request");
+                if read == 0 {
+                    break request.len();
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if let Some(start) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break start + 4;
+                }
+            };
+            // POST bodies may arrive in a separate packet; drain the declared
+            // Content-Length so tests can inspect JSON payloads too.
+            let headers = String::from_utf8_lossy(&request[..header_end.min(request.len())]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            let wanted = header_end + content_length;
+            while request.len() < wanted {
+                let read = stream.read(&mut chunk).expect("read request body");
                 if read == 0 {
                     break;
                 }
                 request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
             }
 
             let response = format!(
@@ -1177,6 +1332,113 @@ mod tests {
             .await
             .expect_err("empty person id");
         assert_eq!(error.kind(), ApiErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn delete_items_posts_ids_and_delete_info_returns_paths() {
+        let (server_url, server) = spawn_mock_server("{}");
+        test_client(server_url)
+            .delete_items(&["m1".to_string(), " m2 ".to_string()])
+            .await
+            .expect("delete items");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("POST /Items/Delete?"),
+            "{request_line}"
+        );
+        assert!(request_line.contains("Ids=m1"), "{request_line}");
+        assert!(request_line.contains("m2"), "{request_line}");
+
+        let (server_url, server) =
+            spawn_mock_server(r#"{"Paths":["/media/m1.mkv","/media/m2.mkv"]}"#);
+        let paths = test_client(server_url)
+            .delete_info("m1")
+            .await
+            .expect("delete info");
+        assert_eq!(paths, vec!["/media/m1.mkv", "/media/m2.mkv"]);
+        let request = server.join().expect("mock server thread");
+        assert!(
+            request
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .starts_with("GET /Items/m1/DeleteInfo "),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn remote_search_image_url_uses_the_proxy_endpoint() {
+        let client = EmbyClient::with_token(
+            default_http_client().expect("http client"),
+            "http://emby.test:8096".to_string(),
+            "test-device",
+            "Test",
+            "test-token",
+        );
+        let url = client
+            .remote_search_image_url("https://image.test/poster.jpg", Some("TheMovieDb"))
+            .expect("image url");
+        assert!(
+            url.starts_with("http://emby.test:8096/Items/RemoteSearch/Image?"),
+            "{url}"
+        );
+        assert!(url.contains("ProviderName=TheMovieDb"), "{url}");
+        assert!(url.contains("api_key=test-token"), "{url}");
+        assert!(
+            url.contains("imageUrl=https%3A%2F%2Fimage.test%2Fposter.jpg"),
+            "{url}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_search_sends_official_payload_and_apply_round_trips_it() {
+        let response =
+            r#"[{"Name":"Matched","ProductionYear":2001,"SearchProviderName":"Provider"}]"#;
+        let (server_url, server) = spawn_mock_server(response);
+        let results = test_client(server_url)
+            .remote_search(&EmbyRemoteSearchRequest {
+                item_id: "i1".to_string(),
+                item_type: "Movie".to_string(),
+                name: "Lookup".to_string(),
+                production_year: Some(2001),
+            })
+            .await
+            .expect("remote search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["Name"], "Matched");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("POST /Items/RemoteSearch/Movie "),
+            "{request_line}"
+        );
+        assert!(request.contains(r#""ItemId":"i1""#), "{request}");
+        assert!(request.contains(r#""Name":"Lookup""#), "{request}");
+        assert!(request.contains(r#""Year":2001"#), "{request}");
+
+        let (server_url, server) = spawn_mock_server("{}");
+        let result = serde_json::json!({"Name":"Matched","ProviderIds":{"Tmdb":"1"}});
+        test_client(server_url)
+            .apply_remote_search(&EmbyApplyRemoteSearchRequest {
+                item_id: "i1".to_string(),
+                result: result.clone(),
+                replace_all_images: true,
+            })
+            .await
+            .expect("apply search");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("POST /Items/RemoteSearch/Apply/i1?"),
+            "{request_line}"
+        );
+        assert!(
+            request_line.contains("ReplaceAllImages=true"),
+            "{request_line}"
+        );
+        assert!(request.contains(r#""ProviderIds""#), "{request}");
     }
 
     #[test]

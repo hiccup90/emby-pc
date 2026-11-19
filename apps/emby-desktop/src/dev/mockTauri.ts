@@ -20,6 +20,7 @@
  *   ?home=loading     the home page's per-library "recently added" rows never finish
  *   ?home=error       the home page's per-library "recently added" rows fail
  *   ?settings=slow    settings arrive after boot (pageSize lands mid-session)
+ *   ?actions=error    delete/identify commands fail (permission/API error path)
  */
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
@@ -52,6 +53,8 @@ const scenario = {
   home: params.get("home"),
   /** "slow" resolves `settings_get` after the session boot has finished. */
   settings: params.get("settings"),
+  /** Delete/identify commands reject with an admin-permission style error. */
+  actionError: params.get("actions") === "error",
 };
 
 // ---- fictional catalogue ----------------------------------------------------
@@ -742,6 +745,38 @@ function page(list: EmbyItem[], req: Record<string, unknown>): EmbyItemsPage {
   };
 }
 
+function removeFromCatalogue(ids: string[]): void {
+  const deleting = new Set(ids.map((id) => id.trim()).filter(Boolean));
+  for (const id of deleting) items.delete(id);
+  for (const list of children.values()) {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      if (deleting.has(list[index].id)) list.splice(index, 1);
+    }
+  }
+}
+
+function mockRemoteSearch(req: Record<string, unknown>) {
+  const name = String(req.name ?? "").trim();
+  const year = Number(req.productionYear) || 2024;
+  const provider = "TheMovieDb";
+  return [
+    {
+      Name: name || "未命名",
+      ProductionYear: year,
+      SearchProviderName: provider,
+      ImageUrl: "https://image.test/result-1.jpg",
+      Overview: "这是 mock 服务器返回的识别结果，用于验证搜索、选择和 Apply 流程。",
+    },
+    {
+      Name: `${name || "未命名"}（另一版本）`,
+      ProductionYear: year - 1,
+      SearchProviderName: provider,
+      ImageUrl: "https://image.test/result-2.jpg",
+      Overview: "第二条识别结果，用来验证列表选择。",
+    },
+  ];
+}
+
 async function handle(cmd: string, args: Record<string, unknown>): Promise<unknown> {
   const req = (args.req ?? {}) as Record<string, unknown>;
   switch (cmd) {
@@ -937,6 +972,49 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
     }
     case "emby_image_url":
       return imageUrl(req);
+    case "emby_delete_info": {
+      await wait(120);
+      if (scenario.actionError) return [];
+      const item = items.get(String(args.id ?? ""));
+      return item ? [`D:\\Media\\${item.name}`] : [];
+    }
+    case "emby_delete_items": {
+      await wait(300);
+      if (scenario.actionError) {
+        throw { reason: "forbidden", message: "当前用户没有删除此条目的权限。" };
+      }
+      const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
+      removeFromCatalogue(ids);
+      return null;
+    }
+    case "emby_remote_search": {
+      await wait(250);
+      if (scenario.actionError) {
+        throw { reason: "forbidden", message: "当前用户没有识别此条目的权限。" };
+      }
+      return mockRemoteSearch(req);
+    }
+    case "emby_remote_search_image": {
+      await wait(40);
+      // The real command only assembles a server proxy URL. In the mock there
+      // is no server, so use a tiny inline SVG to exercise the image path.
+      const label = String(args.provider ?? "?");
+      return `data:image/svg+xml,${encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="144"><rect width="96" height="144" fill="#444"/><text x="48" y="76" fill="#bbb" font-family="sans-serif" font-size="12" text-anchor="middle">${label}</text></svg>`,
+      )}`;
+    }
+    case "emby_apply_remote_search": {
+      await wait(300);
+      const itemId = String(req.itemId ?? "");
+      const result = (req.result ?? {}) as Record<string, unknown>;
+      const item = items.get(itemId);
+      if (item) {
+        if (typeof result.Name === "string" && result.Name.trim()) item.name = result.Name;
+        if (typeof result.ProductionYear === "number") item.productionYear = result.ProductionYear;
+        if (typeof result.Overview === "string") item.overview = result.Overview;
+      }
+      return null;
+    }
     case "emby_playback_target": {
       await wait(400);
       const item = items.get(String(req.itemId));

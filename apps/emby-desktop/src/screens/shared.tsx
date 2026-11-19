@@ -16,6 +16,9 @@ export type IconName =
   | "chevron-up"
   | "chevron-down"
   | "check"
+  | "select"
+  | "identify"
+  | "trash"
   | "logout"
   | "home"
   | "search"
@@ -99,6 +102,24 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     "chevron-up": <path d="m6 14.5 6-6 6 6" />,
     "chevron-down": <path d="m6 9.5 6 6 6-6" />,
     check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+    select: (
+      <>
+        <rect x="3.5" y="3.5" width="17" height="17" rx="2.5" strokeDasharray="3 2.5" />
+        <path d="m8 12 2.7 2.7L16.5 9" />
+      </>
+    ),
+    identify: (
+      <>
+        <circle cx="10.5" cy="10.5" r="6" />
+        <path d="m15 15 4.5 4.5M10.5 7.5v6M7.5 10.5h6" />
+      </>
+    ),
+    trash: (
+      <>
+        <path d="M4.5 7h15M9 7V4.5h6V7M6.5 7l.8 12.5h9.4L17.5 7" />
+        <path d="M10 11v5M14 11v5" />
+      </>
+    ),
     logout: (
       <>
         <path d="M14.5 4h3.5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5" />

@@ -18,9 +18,10 @@ use std::fmt;
 use std::time::Duration;
 
 use emby_api::{
-    ApiError, ApiErrorKind, EmbyClient, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest,
-    EmbyLoginRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest, EmbyResumeRequest,
-    EmbySession, EmbyView, SessionStore, StoredSession, SESSION_VERSION,
+    ApiError, ApiErrorKind, EmbyApplyRemoteSearchRequest, EmbyClient, EmbyImageRequest, EmbyItem,
+    EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest, EmbyPlaybackRequest, EmbyPlaybackTarget,
+    EmbyRemoteSearchRequest, EmbyReportRequest, EmbyResumeRequest, EmbySession, EmbyView,
+    SessionStore, StoredSession, SESSION_VERSION,
 };
 use serde::Serialize;
 use tauri::async_runtime::Mutex;
@@ -603,6 +604,74 @@ pub async fn emby_set_favorite(
     let client = state.client(&session);
     match client.set_favorite(&session.user_id, &id, favorite).await {
         Ok(()) => Ok(()),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+#[tauri::command]
+pub async fn emby_delete_info(
+    id: String,
+    state: State<'_, EmbyService>,
+) -> Result<Vec<String>, EmbyCommandError> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.delete_info(&id).await {
+        Ok(paths) => Ok(paths),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+#[tauri::command]
+pub async fn emby_delete_items(
+    ids: Vec<String>,
+    state: State<'_, EmbyService>,
+) -> Result<(), EmbyCommandError> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.delete_items(&ids).await {
+        Ok(()) => Ok(()),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+#[tauri::command]
+pub async fn emby_remote_search(
+    req: EmbyRemoteSearchRequest,
+    state: State<'_, EmbyService>,
+) -> Result<Vec<serde_json::Value>, EmbyCommandError> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.remote_search(&req).await {
+        Ok(results) => Ok(results),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+#[tauri::command]
+pub async fn emby_apply_remote_search(
+    req: EmbyApplyRemoteSearchRequest,
+    state: State<'_, EmbyService>,
+) -> Result<(), EmbyCommandError> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.apply_remote_search(&req).await {
+        Ok(()) => Ok(()),
+        Err(err) => Err(state.fail(err).await),
+    }
+}
+
+/// Builds the server-side proxy URL for a remote-search result image. This is
+/// only string assembly; the webview loads the image like any other Emby URL.
+#[tauri::command]
+pub async fn emby_remote_search_image(
+    image_url: String,
+    provider: Option<String>,
+    state: State<'_, EmbyService>,
+) -> Result<String, EmbyCommandError> {
+    let session = state.require_session().await?;
+    let client = state.client(&session);
+    match client.remote_search_image_url(&image_url, provider.as_deref()) {
+        Ok(url) => Ok(url),
         Err(err) => Err(state.fail(err).await),
     }
 }

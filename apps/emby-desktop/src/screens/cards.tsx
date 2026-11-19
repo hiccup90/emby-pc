@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import {
   formatRemainingTicks,
@@ -7,7 +12,13 @@ import {
   itemProgress,
   itemYearLabel,
 } from "../emby/format";
+import { useItemActions } from "./ItemActions";
 import { Icon, MediaArtwork, ProgressBar } from "./shared";
+
+/** Context-menu key or Shift+F10 opens the same menu as a right click. */
+function isContextMenuKey(event: ReactKeyboardEvent): boolean {
+  return event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+}
 
 /** 2:3 (or 16:9) poster with Plex-style badges; used by the library and detail rows. */
 export function PosterCard({
@@ -29,13 +40,36 @@ export function PosterCard({
   // The title already shows whether it is a movie or a series; only add a
   // year when the server supplied one.
   const subtitle = subtitleOverride ?? itemYearLabel(item);
+  const actions = useItemActions();
+  const selecting = actions?.selection.active ?? false;
+  const selected = selecting && (actions?.selection.ids.has(item.id) ?? false);
+
+  const handleClick = () => {
+    if (selecting && actions) {
+      actions.selection.toggle(item);
+      return;
+    }
+    onSelect(item);
+  };
 
   return (
     <button
       type="button"
-      className={`poster-card${landscape ? " poster-card--landscape" : ""}`}
-      onClick={() => onSelect(item)}
-      aria-label={`查看《${item.name}》详情`}
+      className={`poster-card${landscape ? " poster-card--landscape" : ""}${selecting ? " is-selecting" : ""}${selected ? " is-selected" : ""}`}
+      onClick={handleClick}
+      onContextMenu={(event) => {
+        if (!actions) return;
+        event.preventDefault();
+        actions.openMenu(item, event.clientX, event.clientY);
+      }}
+      onKeyDown={(event) => {
+        if (!actions || !isContextMenuKey(event)) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        actions.openMenu(item, rect.left + rect.width / 2, rect.top + 8);
+      }}
+      aria-label={selecting ? `选择《${item.name}》` : `查看《${item.name}》详情`}
+      aria-pressed={selecting ? selected : undefined}
     >
       <span className="poster-card__frame">
         <MediaArtwork
@@ -55,6 +89,11 @@ export function PosterCard({
           </span>
         )}
         {progress > 0 && <ProgressBar value={progress} className="poster-card__progress" />}
+        {selecting && (
+          <span className="poster-card__select" aria-hidden="true">
+            {selected && <Icon name="check" size={14} />}
+          </span>
+        )}
       </span>
       <span className="poster-card__title">{item.name}</span>
       {subtitle && <span className="poster-card__meta">{subtitle}</span>}
@@ -85,18 +124,46 @@ export function ContinueCard({
   const label = episode
     ? `继续观看《${title}》${lead ? ` ${lead}` : ""} ${item.name}`
     : `继续观看《${title}》`;
+  const actions = useItemActions();
+  const selecting = actions?.selection.active ?? false;
+  const selected = selecting && (actions?.selection.ids.has(item.id) ?? false);
 
   return (
-    <div className="continue-card">
+    <div
+      className={`continue-card${selecting ? " is-selecting" : ""}${selected ? " is-selected" : ""}`}
+      onContextMenu={(event) => {
+        if (!actions) return;
+        event.preventDefault();
+        actions.openMenu(item, event.clientX, event.clientY);
+      }}
+      onClickCapture={(event) => {
+        if (!selecting || !actions) return;
+        event.preventDefault();
+        event.stopPropagation();
+        actions.selection.toggle(item);
+      }}
+    >
       <button
         type="button"
         className="continue-card__open"
         onClick={() => onDetails(item)}
-        aria-label={`查看《${title}》详情`}
+        onKeyDown={(event) => {
+          if (!actions || !isContextMenuKey(event)) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          actions.openMenu(item, rect.left + rect.width / 2, rect.top + 8);
+        }}
+        aria-label={selecting ? `选择《${title}》` : `查看《${title}》详情`}
+        aria-pressed={selecting ? selected : undefined}
       >
         <span className="continue-card__frame">
           <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
           <ProgressBar value={progress} className="continue-card__progress" />
+          {selecting && (
+            <span className="continue-card__select" aria-hidden="true">
+              {selected && <Icon name="check" size={14} />}
+            </span>
+          )}
         </span>
         <span className="continue-card__title">{title}</span>
         <span className="continue-card__meta">

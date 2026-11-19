@@ -2,11 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { EMBY_SESSION_EVENT } from "./contract";
 import type {
+  EmbyApplyRemoteSearchRequest,
   EmbyItem,
   EmbyItemsPage,
   EmbyItemsRequest,
   EmbyPersonItemsRequest,
   EmbyPlaybackTarget,
+  EmbyRemoteSearchRequest,
+  EmbyRemoteSearchResult,
   EmbyResumeRequest,
   EmbySession,
   EmbySessionBoot,
@@ -18,8 +21,11 @@ import type {
 } from "./contract";
 
 export type {
+  EmbyApplyRemoteSearchRequest,
   EmbyItemsRequest,
   EmbyPersonItemsRequest,
+  EmbyRemoteSearchRequest,
+  EmbyRemoteSearchResult,
   EmbySetFavoriteRequest,
   EmbySetPlayedRequest,
 } from "./contract";
@@ -222,6 +228,46 @@ export async function embySetFavorite(
   await invokeEmby<void>("emby_set_favorite", {
     id: request.itemId,
     favorite: request.favorite,
+  });
+}
+
+/** File paths Emby will delete together with the item. */
+export async function embyDeleteInfo(id: string): Promise<string[]> {
+  requireDesktop();
+  return invokeEmby<string[]>("emby_delete_info", { id });
+}
+
+/** Deletes items from the library and their files; caller confirms first. */
+export async function embyDeleteItems(ids: string[]): Promise<void> {
+  requireDesktop();
+  await invokeEmby<void>("emby_delete_items", { ids });
+}
+
+/** Identify: searches enabled metadata providers for one item. */
+export async function embyRemoteSearch(
+  req: EmbyRemoteSearchRequest,
+): Promise<EmbyRemoteSearchResult[]> {
+  requireDesktop();
+  return invokeEmby<EmbyRemoteSearchResult[]>("emby_remote_search", { req });
+}
+
+/** Identify: applies the selected provider result to the item. */
+export async function embyApplyRemoteSearch(
+  req: EmbyApplyRemoteSearchRequest,
+): Promise<void> {
+  requireDesktop();
+  await invokeEmby<void>("emby_apply_remote_search", { req });
+}
+
+/** Identify: server-side proxy URL for one provider result image. */
+export async function embyRemoteSearchImage(
+  imageUrl: string,
+  provider?: string | null,
+): Promise<string> {
+  requireDesktop();
+  return invokeEmby<string>("emby_remote_search_image", {
+    imageUrl,
+    provider: provider ?? null,
   });
 }
 

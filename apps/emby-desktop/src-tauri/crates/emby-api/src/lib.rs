@@ -35,9 +35,10 @@ pub use client::{default_http_client, EmbyClient, LoginOutcome};
 pub use reqwest::Client as HttpClient;
 pub use error::{ApiError, ApiErrorKind, ApiResult};
 pub use model::{
-    EmbyChapter, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyLoginRequest,
-    EmbyMediaStream, EmbyPerson, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyReportRequest,
-    EmbyResumeRequest, EmbySession, EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
+    EmbyApplyRemoteSearchRequest, EmbyChapter, EmbyImageRequest, EmbyItem, EmbyItemsPage,
+    EmbyItemsRequest, EmbyLoginRequest, EmbyMediaStream, EmbyPerson, EmbyPlaybackRequest,
+    EmbyPlaybackTarget, EmbyRemoteSearchRequest, EmbyReportRequest, EmbyResumeRequest, EmbySession,
+    EmbyUserData, EmbyView, DEFAULT_IMAGE_WIDTH,
 };
 pub use session::{write_atomic, SessionStore, StoredSession, SESSION_VERSION};
 pub use url::normalize_server_url;

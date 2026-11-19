@@ -467,7 +467,7 @@ export function useEmbyLibrary(
   const storeRef = useRef<LibraryStore>(store);
   const generationRef = useRef(0);
   const requestsRef = useRef<Set<string>>(new Set());
-  const resumeRefreshRef = useRef(false);
+  const resumeRequestRef = useRef(0);
   const [reloadToken, setReloadToken] = useState(0);
 
   const query = options.query ?? DEFAULT_LIBRARY_QUERY;
@@ -807,26 +807,30 @@ export function useEmbyLibrary(
   const retryResume = useCallback(() => setReloadToken((value) => value + 1), []);
 
   const refreshResume = useCallback(() => {
-    if (!enabled || !session || !desktop || resumeRefreshRef.current) return;
-    resumeRefreshRef.current = true;
+    if (!enabled || !session || !desktop) return;
     const generation = generationRef.current;
+    // A newer refresh (e.g. after a delete) always wins over an older response
+    // that was already in flight; do not skip the newer request.
+    const requestId = ++resumeRequestRef.current;
 
     void (async () => {
       try {
         const page = await embyResume({ limit: RESUME_LIMIT });
-        if (generation !== generationRef.current) return;
+        if (generation !== generationRef.current || requestId !== resumeRequestRef.current) {
+          return;
+        }
         const resumable = await Promise.all(
           page.items.map((item) => decorateItem(item, true, 640)),
         );
-        if (generation !== generationRef.current) return;
+        if (generation !== generationRef.current || requestId !== resumeRequestRef.current) {
+          return;
+        }
         updateStore((current) => ({ ...current, resumable }));
       } catch (reason) {
         console.warn(
           "[emby] continue-watching refresh failed; keeping cached items",
           reason,
         );
-      } finally {
-        resumeRefreshRef.current = false;
       }
     })();
   }, [desktop, enabled, session, updateStore]);

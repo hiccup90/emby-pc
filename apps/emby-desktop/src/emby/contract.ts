@@ -162,6 +162,36 @@ export interface EmbySetFavoriteRequest {
   favorite: boolean;
 }
 
+/** Payload for `emby_remote_search` (Identify). */
+export interface EmbyRemoteSearchRequest {
+  itemId: string;
+  /** Server item type, e.g. `Movie` or `Series`; not a library collection type. */
+  itemType: string;
+  name: string;
+  productionYear?: number | null;
+}
+
+/**
+ * One provider result. Emby sends PascalCase fields and accepts the object
+ * back verbatim in `emby_apply_remote_search`; do not normalize these names.
+ */
+export interface EmbyRemoteSearchResult {
+  Name?: string;
+  ProductionYear?: number;
+  ImageUrl?: string;
+  SearchProviderName?: string;
+  Overview?: string;
+  [key: string]: unknown;
+}
+
+/** Payload for `emby_apply_remote_search`. */
+export interface EmbyApplyRemoteSearchRequest {
+  itemId: string;
+  result: EmbyRemoteSearchResult;
+  /** Official Identify dialog defaults this to true. */
+  replaceAllImages: boolean;
+}
+
 export interface EmbyResumeRequest {
   limit?: number;
 }

@@ -12,6 +12,8 @@ import "./HomeScreen.css";
 const HOME_ROW_LIMIT = 8;
 
 export interface HomeScreenProps {
+  /** Changes after delete/identify so every library row re-reads its 8 items. */
+  refreshKey?: number;
   /** Continue-watching items (server order, usually most recent first). */
   resume: EmbyLibraryItem[];
   resumeStatus: EmbyLoadStatus;
@@ -109,10 +111,12 @@ function HomeSection({
 function HomeLibrarySection({
   view,
   userId,
+  refreshKey,
   onOpen,
 }: {
   view: EmbyView;
   userId: string;
+  refreshKey: number;
   onOpen: (item: EmbyLibraryItem) => void;
 }) {
   const resource = useAsyncResource(
@@ -127,7 +131,7 @@ function HomeLibrarySection({
         ...(includeItemTypes ? { includeItemTypes } : {}),
       }).then((page) => decorateItems(page.items));
     },
-    `home-library:${userId}:${view.id}:${HOME_ROW_LIMIT}`,
+    `home-library:${userId}:${view.id}:${HOME_ROW_LIMIT}:${refreshKey}`,
     {
       enabled: Boolean(userId),
       fallbackError: `无法读取「${view.name}」的最近入库。`,
@@ -169,6 +173,7 @@ function HomeLibrarySection({
  * wrap the cards instead.
  */
 export default function HomeScreen({
+  refreshKey = 0,
   resume,
   resumeStatus,
   resumeError,
@@ -197,7 +202,13 @@ export default function HomeScreen({
       )}
 
       {views.map((view) => (
-        <HomeLibrarySection key={view.id} view={view} userId={userId} onOpen={onOpen} />
+        <HomeLibrarySection
+          key={view.id}
+          view={view}
+          userId={userId}
+          refreshKey={refreshKey}
+          onOpen={onOpen}
+        />
       ))}
 
       {nothingLoaded && (
