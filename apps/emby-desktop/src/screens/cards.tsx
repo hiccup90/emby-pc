@@ -38,11 +38,7 @@ export function PosterCard({
     >
       <span className="poster-card__frame">
         <MediaArtwork
-          // Emby only publishes ImageTags.Thumb for some item types; a real
-          // movie library usually has Primary but no Thumb, so thumbnail view
-          // must fall back to the poster instead of showing "无图" for every
-          // card.
-          src={landscape ? item.thumbUrl ?? item.posterUrl : item.posterUrl}
+          src={landscape ? item.thumbUrl : item.posterUrl}
           alt=""
           title={item.name}
           fallbackLabel="无图"
