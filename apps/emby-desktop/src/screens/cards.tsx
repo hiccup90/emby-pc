@@ -56,7 +56,7 @@ export function PosterCard({
         {progress > 0 && <ProgressBar value={progress} className="poster-card__progress" />}
       </span>
       <span className="poster-card__title">{item.name}</span>
-      <span className="poster-card__meta">{subtitle}</span>
+      {subtitle && <span className="poster-card__meta">{subtitle}</span>}
     </button>
   );
 }

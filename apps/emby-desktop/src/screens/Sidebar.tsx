@@ -73,7 +73,9 @@ export default function Sidebar({
       {views.length > 0 ? (
         <ul className="sidebar__list">
           {views.map((view) => {
-            const active = view.id === activeViewId;
+            // While Home/Search/Settings is the active nav item, no library
+            // should keep its amber selection bar.
+            const active = activeNav === null && view.id === activeViewId;
             return (
               <li key={view.id}>
                 <button
