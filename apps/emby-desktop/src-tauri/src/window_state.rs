@@ -11,8 +11,16 @@
 //! rectangles into a monitor work area, which handles unplugged monitors and
 //! taskbars better than the plugin's corner-only intersection check.
 
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 
+use emby_api::write_atomic;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Window};
 
@@ -47,6 +55,9 @@ struct WorkArea {
 pub struct WindowState {
     path: PathBuf,
     tracked: Mutex<Tracked>,
+    /// CloseRequested, Destroyed and ExitRequested can all fire for one exit;
+    /// the first save wins so the file is written once with the same window.
+    saved: AtomicBool,
 }
 
 impl WindowState {
@@ -58,6 +69,7 @@ impl WindowState {
         Ok(Self {
             path: dir.join(FILENAME),
             tracked: Mutex::new(Tracked::default()),
+            saved: AtomicBool::new(false),
         })
     }
 
@@ -121,6 +133,9 @@ impl WindowState {
     /// last normal geometry; if it is maximized, remember that flag but keep
     /// the normal rectangle as the restore target.
     pub fn save(&self, window: &Window) {
+        if self.saved.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let tracked = *self.tracked.lock().unwrap_or_else(|poison| poison.into_inner());
         let fullscreen = window.is_fullscreen().unwrap_or(false);
         let maximized = window.is_maximized().unwrap_or(tracked.maximized);
@@ -183,7 +198,7 @@ impl WindowState {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|err| format!("无法创建窗口状态目录：{err}"))?;
         }
-        fs::write(&self.path, bytes).map_err(|err| format!("无法写入窗口状态：{err}"))
+        write_atomic(&self.path, &bytes).map_err(|err| format!("无法写入窗口状态：{err}"))
     }
 }
 

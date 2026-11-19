@@ -31,10 +31,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   libraryQueries: {},
 };
 
-export function hasSettingsRuntime(): boolean {
-  return hasTauriRuntime();
-}
-
 /** Reads the persisted settings; browser previews fall back to defaults. */
 export async function getSettings(): Promise<AppSettings> {
   if (!hasTauriRuntime()) return { ...DEFAULT_APP_SETTINGS };

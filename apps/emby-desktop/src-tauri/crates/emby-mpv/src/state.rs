@@ -21,6 +21,10 @@ pub struct SnapshotAssembler {
     subtitle_tracks: Vec<PlayerTrack>,
     error: Option<String>,
     pending_seek: Option<f64>,
+    /// True between `begin_open` and `MPV_EVENT_START_FILE`/FILE_LOADED.
+    /// Property events from the previous file still arrive in this window;
+    /// accepting their time-pos/duration would overwrite the new resume point.
+    awaiting_start: bool,
     dirty: bool,
 }
 
@@ -61,6 +65,7 @@ impl SnapshotAssembler {
             subtitle_tracks: Vec::new(),
             error: None,
             pending_seek: None,
+            awaiting_start: false,
             dirty: false,
         }
     }
@@ -132,7 +137,7 @@ impl SnapshotAssembler {
     }
 
     pub fn set_position(&mut self, position: f64) {
-        if !position.is_finite() || position < 0.0 {
+        if !position.is_finite() || position < 0.0 || !self.accepts_file_properties() {
             return;
         }
         // `ended` stays parked at duration (see contract); `idle` must stay at
@@ -149,7 +154,7 @@ impl SnapshotAssembler {
     }
 
     pub fn set_duration(&mut self, duration: f64) {
-        if !duration.is_finite() || duration < 0.0 {
+        if !duration.is_finite() || duration < 0.0 || !self.accepts_file_properties() {
             return;
         }
         // Same stale-event protection as `set_position`.
@@ -163,7 +168,7 @@ impl SnapshotAssembler {
     }
 
     pub fn set_video_size(&mut self, width: i64, height: i64) {
-        if self.status == PlayerStatus::Idle {
+        if self.status == PlayerStatus::Idle || !self.accepts_file_properties() {
             return;
         }
         let width = width.max(0);
@@ -176,6 +181,9 @@ impl SnapshotAssembler {
     }
 
     pub fn set_tracks(&mut self, audio: Vec<PlayerTrack>, subtitles: Vec<PlayerTrack>) {
+        if !self.accepts_file_properties() {
+            return;
+        }
         if audio != self.audio_tracks || subtitles != self.subtitle_tracks {
             self.audio_tracks = audio;
             self.subtitle_tracks = subtitles;
@@ -198,11 +206,20 @@ impl SnapshotAssembler {
         // file is still loading. Clearing it also drops a stale seek left by
         // an open that failed before FILE_LOADED.
         self.pending_seek = None;
+        self.awaiting_start = true;
         self.video_width = 0;
         self.video_height = 0;
         self.audio_tracks.clear();
         self.subtitle_tracks.clear();
         self.dirty = true;
+    }
+
+    /// `MPV_EVENT_START_FILE`: mpv has switched the playlist entry. From here
+    /// on, property events describe the new file, not the one being replaced.
+    pub fn on_start_file(&mut self) {
+        if self.status == PlayerStatus::Loading {
+            self.awaiting_start = false;
+        }
     }
 
     pub fn take_pending_seek(&mut self) -> Option<f64> {
@@ -216,6 +233,7 @@ impl SnapshotAssembler {
     }
 
     pub fn on_file_loaded(&mut self) {
+        self.awaiting_start = false;
         // A `stop` command can be processed while a `loadfile` is still in
         // flight; the late FILE_LOADED must not resurrect an idle session.
         // Legitimate loads always arrive in `Loading` (set by `begin_open`).
@@ -307,6 +325,12 @@ impl SnapshotAssembler {
         self.dirty = true;
     }
 
+    /// Before START_FILE the assembler is still receiving the replaced file's
+    /// properties. Idle/Ended/Error keep their existing guards.
+    fn accepts_file_properties(&self) -> bool {
+        !(self.status == PlayerStatus::Loading && self.awaiting_start)
+    }
+
     fn finish(&mut self) {
         if self.status == PlayerStatus::Ended && self.error.is_none() {
             return;
@@ -325,6 +349,7 @@ impl SnapshotAssembler {
         self.buffering = false;
         self.error = None;
         self.pending_seek = None;
+        self.awaiting_start = false;
         self.video_width = 0;
         self.video_height = 0;
         self.audio_tracks.clear();
@@ -414,6 +439,7 @@ mod tests {
         assert_eq!(asm.build().status, STATUS_LOADING);
         assert!(asm.is_dirty());
         asm.clear_dirty();
+        asm.on_start_file();
         asm.set_duration(600.0);
         assert!(asm.is_dirty(), "duration change must mark dirty");
         asm.clear_dirty();
@@ -597,6 +623,28 @@ mod tests {
         negative.begin_open(Some(-10.0));
         assert_eq!(negative.build().position_seconds, 0.0);
         assert_eq!(negative.take_pending_seek(), None);
+    }
+
+    #[test]
+    fn properties_before_start_file_belong_to_the_replaced_file() {
+        let mut asm = SnapshotAssembler::new();
+        asm.begin_open(Some(30.0));
+        asm.set_position(1.0);
+        asm.set_duration(600.0);
+        asm.set_video_size(1920, 1080);
+        // mpv has not switched the playlist entry yet: these are the old
+        // file's events and must not overwrite the new resume point.
+        assert_eq!(asm.build().position_seconds, 30.0);
+        assert_eq!(asm.build().duration_seconds, 0.0);
+        assert_eq!((asm.video_width(), asm.video_height()), (0, 0));
+
+        asm.on_start_file();
+        asm.set_position(31.0);
+        asm.set_duration(600.0);
+        asm.set_video_size(1920, 1080);
+        assert_eq!(asm.build().position_seconds, 31.0);
+        assert_eq!(asm.build().duration_seconds, 600.0);
+        assert_eq!((asm.video_width(), asm.video_height()), (1920, 1080));
     }
 
     #[test]

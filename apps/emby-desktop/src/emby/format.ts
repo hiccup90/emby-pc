@@ -18,6 +18,11 @@ export function formatRuntimeTicks(ticks: number | null | undefined): string {
   return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`;
 }
 
+/** Resume point in seconds; 0 when the item has no saved progress. */
+export function itemStartSeconds(item: Pick<EmbyItem, "userData">): number {
+  return ticksToSeconds(item.userData?.playbackPositionTicks);
+}
+
 export function itemProgress(item: EmbyItem): number {
   const position = item.userData?.playbackPositionTicks;
   const duration = item.runTimeTicks;

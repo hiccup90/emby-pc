@@ -11,7 +11,8 @@
 //!
 //! All commands are `async fn`: Tauri runs them on its tokio runtime, never on
 //! the UI thread. Session storage is a tiny JSON file, so its I/O is done
-//! inline. Access tokens never reach frontend success values or messages.
+//! inline. Tokens are never logged or returned as standalone fields; playback
+//! and image URLs do carry `api_key`, because Emby requires it.
 
 use std::fmt;
 use std::time::Duration;
@@ -27,7 +28,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Message shown when the server no longer accepts the stored token.
 const AUTH_EXPIRED: &str = "登录已过期，请重新登录";
-const BOOT_ATTEMPTS: usize = 3;
 #[cfg(not(test))]
 const BOOT_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(7)];
 #[cfg(test)]
@@ -110,12 +110,23 @@ impl fmt::Display for EmbyCommandError {
 
 impl std::error::Error for EmbyCommandError {}
 
-impl SessionBoot {
+/// Cached boot outcome. The active session itself lives only in
+/// `EmbyService::session`; this type keeps the signed-out result and its safe
+/// prefill hints, so a token rejection cannot leave a second, stale session
+/// object behind.
+#[derive(Clone, Debug)]
+struct BootState {
+    status: SessionStatus,
+    reason: SessionReason,
+    last_server: Option<String>,
+    last_user_name: Option<String>,
+}
+
+impl BootState {
     fn signed_in(session: &StoredSession) -> Self {
         Self {
             status: SessionStatus::SignedIn,
             reason: SessionReason::NoSession,
-            session: Some(session.public()),
             last_server: Some(session.server_url.clone()),
             last_user_name: Some(session.user_name.clone()),
         }
@@ -125,9 +136,24 @@ impl SessionBoot {
         Self {
             status: SessionStatus::SignedOut,
             reason,
-            session: None,
             last_server: session.map(|session| session.server_url.clone()),
             last_user_name: session.map(|session| session.user_name.clone()),
+        }
+    }
+
+    /// Combine the cached status with the one active session. `boot.session`
+    /// is therefore derived on every read instead of being copied at boot.
+    fn view(&self, session: Option<&StoredSession>) -> SessionBoot {
+        SessionBoot {
+            status: self.status,
+            reason: self.reason,
+            session: if self.status == SessionStatus::SignedIn {
+                session.map(StoredSession::public)
+            } else {
+                None
+            },
+            last_server: self.last_server.clone(),
+            last_user_name: self.last_user_name.clone(),
         }
     }
 }
@@ -142,9 +168,12 @@ enum ProbeOutcome {
     /// reverse-proxy path, or a different server behind the same URL. Keep the
     /// stored session: it is the only copy of the token.
     NotFound,
-    /// Server-side or network trouble: worth retrying, and the stored session
-    /// must be kept so a later launch can sign in without the password.
-    Transient(SessionReason),
+    /// Network trouble: worth retrying, and the stored session must be kept so
+    /// a later launch can sign in without the password.
+    Retryable(SessionReason),
+    /// A deterministic server/protocol failure. Retrying only delays the
+    /// signed-out screen by the full backoff.
+    Fatal(SessionReason),
 }
 
 /// Managed state for every `emby_*` command.
@@ -154,7 +183,7 @@ pub struct EmbyService {
     device_name: String,
     app: AppHandle,
     session: Mutex<Option<StoredSession>>,
-    boot: Mutex<Option<SessionBoot>>,
+    boot: Mutex<Option<BootState>>,
 }
 
 impl EmbyService {
@@ -181,18 +210,20 @@ impl EmbyService {
         let mut slot = self.boot.lock().await;
         if !force {
             if let Some(existing) = slot.as_ref() {
-                return existing.clone();
+                let session = self.current_session().await;
+                return existing.view(session.as_ref());
             }
         }
-        let result = self.boot_once().await;
-        *slot = Some(result.clone());
-        result
+        let state = self.boot_once().await;
+        *slot = Some(state.clone());
+        let session = self.current_session().await;
+        state.view(session.as_ref())
     }
 
-    async fn boot_once(&self) -> SessionBoot {
-        let (result, session) = boot_session(&self.store, &self.http, &self.device_name).await;
+    async fn boot_once(&self) -> BootState {
+        let (state, session) = boot_session(&self.store, &self.http, &self.device_name).await;
         self.set_session(session).await;
-        result
+        state
     }
 
     async fn set_session(&self, session: Option<StoredSession>) {
@@ -205,11 +236,11 @@ impl EmbyService {
 
     async fn remember(&self, session: StoredSession) {
         self.set_session(Some(session.clone())).await;
-        self.set_boot(SessionBoot::signed_in(&session)).await;
+        self.set_boot(BootState::signed_in(&session)).await;
     }
 
-    async fn set_boot(&self, result: SessionBoot) {
-        *self.boot.lock().await = Some(result);
+    async fn set_boot(&self, state: BootState) {
+        *self.boot.lock().await = Some(state);
     }
 
     async fn forget_local(&self) {
@@ -272,8 +303,8 @@ impl EmbyService {
             if let Err(err) = self.store.clear() {
                 eprintln!("[emby] could not clear a rejected session: {err}");
             }
-            let result = SessionBoot::signed_out(SessionReason::TokenRejected, Some(&session));
-            self.set_boot(result).await;
+            let state = BootState::signed_out(SessionReason::TokenRejected, Some(&session));
+            self.set_boot(state).await;
             let event = SessionEvent {
                 status: SessionStatus::SignedOut,
                 reason: SessionReason::TokenRejected,
@@ -296,9 +327,9 @@ impl EmbyService {
             }
         }
         self.forget_local().await;
-        let result = SessionBoot::signed_out(SessionReason::NoSession, previous.as_ref());
-        self.set_boot(result.clone()).await;
-        result
+        let state = BootState::signed_out(SessionReason::NoSession, previous.as_ref());
+        self.set_boot(state.clone()).await;
+        state.view(None)
     }
 }
 
@@ -308,7 +339,7 @@ async fn boot_session(
     store: &SessionStore,
     http: &emby_api::HttpClient,
     device_name: &str,
-) -> (SessionBoot, Option<StoredSession>) {
+) -> (BootState, Option<StoredSession>) {
     // One-shot migration from the previous storage layout: reading the session
     // is side-effect free, so deleting the legacy copies is an explicit
     // boot-time action.
@@ -319,11 +350,11 @@ async fn boot_session(
         Ok(session) => session,
         Err(err) => {
             eprintln!("[emby] session boot storage error: {err}");
-            return (SessionBoot::signed_out(SessionReason::StorageError, None), None);
+            return (BootState::signed_out(SessionReason::StorageError, None), None);
         }
     };
     let Some(session) = session else {
-        return (SessionBoot::signed_out(SessionReason::NoSession, None), None);
+        return (BootState::signed_out(SessionReason::NoSession, None), None);
     };
 
     let client = EmbyClient::with_token(
@@ -334,15 +365,18 @@ async fn boot_session(
         session.access_token.clone(),
     );
     let mut final_reason = SessionReason::Unreachable;
-    for attempt in 0..BOOT_ATTEMPTS {
+    // The delay table is the single definition of both the count and the
+    // backoff; adding/removing a delay can no longer desynchronize an index.
+    let attempts = BOOT_RETRY_DELAYS.len() + 1;
+    for attempt in 0..attempts {
         match probe_token(&client, &session).await {
-            ProbeOutcome::Valid => return (SessionBoot::signed_in(&session), Some(session)),
+            ProbeOutcome::Valid => return (BootState::signed_in(&session), Some(session)),
             ProbeOutcome::TokenRejected => {
                 if let Err(err) = store.clear() {
                     eprintln!("[emby] could not clear a rejected session: {err}");
                 }
                 return (
-                    SessionBoot::signed_out(SessionReason::TokenRejected, Some(&session)),
+                    BootState::signed_out(SessionReason::TokenRejected, Some(&session)),
                     None,
                 );
             }
@@ -350,23 +384,26 @@ async fn boot_session(
                 // 404 is not proof that the token is invalid. Do not delete the
                 // only stored credential because a proxy path or server changed.
                 return (
-                    SessionBoot::signed_out(SessionReason::ServerError, Some(&session)),
+                    BootState::signed_out(SessionReason::ServerError, Some(&session)),
                     None,
                 );
             }
-            ProbeOutcome::Transient(reason) => {
+            ProbeOutcome::Retryable(reason) => {
                 final_reason = reason;
-                if attempt + 1 < BOOT_ATTEMPTS {
+                if let Some(delay) = BOOT_RETRY_DELAYS.get(attempt) {
                     // Async sleep: boot is an async command, so a blocking
                     // sleep would freeze a Tauri runtime worker for the whole
                     // backoff.
-                    tokio::time::sleep(BOOT_RETRY_DELAYS[attempt]).await;
+                    tokio::time::sleep(*delay).await;
                 }
+            }
+            ProbeOutcome::Fatal(reason) => {
+                return (BootState::signed_out(reason, Some(&session)), None);
             }
         }
     }
 
-    (SessionBoot::signed_out(final_reason, Some(&session)), None)
+    (BootState::signed_out(final_reason, Some(&session)), None)
 }
 
 /// Validates the stored token through the shared client.
@@ -383,13 +420,13 @@ async fn probe_token(client: &EmbyClient, session: &StoredSession) -> ProbeOutco
             ApiErrorKind::TokenExpired => ProbeOutcome::TokenRejected,
             ApiErrorKind::NotFound => ProbeOutcome::NotFound,
             ApiErrorKind::Forbidden => ProbeOutcome::Valid,
-            ApiErrorKind::Network => ProbeOutcome::Transient(SessionReason::Unreachable),
+            ApiErrorKind::Network => ProbeOutcome::Retryable(SessionReason::Unreachable),
             ApiErrorKind::InvalidCredentials
             | ApiErrorKind::InvalidInput
             | ApiErrorKind::Storage
             | ApiErrorKind::Server
             | ApiErrorKind::Decode
-            | ApiErrorKind::NoPlayableSource => ProbeOutcome::Transient(SessionReason::ServerError),
+            | ApiErrorKind::NoPlayableSource => ProbeOutcome::Fatal(SessionReason::ServerError),
         },
     }
 }
@@ -432,10 +469,15 @@ pub async fn emby_login(
         access_token: outcome.access_token,
         version: SESSION_VERSION,
     };
-    // The in-memory session is usable even if the disk write fails; the error
-    // tells the frontend that it is not persistent.
+    // Do not keep a session the next launch cannot read: the login page would
+    // show an error while every command ran signed in, then a restart would
+    // silently lose it. The disk write is part of the login contract.
     state.remember(session.clone()).await;
     if let Err(err) = state.store.save(&session) {
+        state.set_session(None).await;
+        state
+            .set_boot(BootState::signed_out(SessionReason::StorageError, Some(&session)))
+            .await;
         return Err(EmbyCommandError::new(
             SessionReason::StorageError,
             format!("登录成功，但无法保存会话：{err}"),
@@ -716,7 +758,7 @@ mod tests {
         let client = test_client("http://127.0.0.1:1");
         let session = test_session("http://127.0.0.1:1");
         let result = tauri::async_runtime::block_on(probe_token(&client, &session));
-        assert_eq!(result, ProbeOutcome::Transient(SessionReason::Unreachable));
+        assert_eq!(result, ProbeOutcome::Retryable(SessionReason::Unreachable));
     }
 
     #[test]
@@ -752,21 +794,24 @@ mod tests {
     }
 
     #[test]
-    fn boot_retries_transient_failures_before_signing_in() {
-        let (url, server) = spawn_sequence_server(&[
-            "500 Internal Server Error",
-            "500 Internal Server Error",
-            "200 OK",
-        ]);
-        let (store, dir) = temp_store("boot-retry");
+    fn boot_does_not_retry_a_server_error() {
+        let (url, server) = spawn_sequence_server(&["500 Internal Server Error"]);
+        let (store, dir) = temp_store("boot-no-retry");
         let session = test_session(&url);
         store.save(&session).unwrap();
         let http = emby_api::default_http_client().unwrap();
+        let started = std::time::Instant::now();
         let (boot, memory) = tauri::async_runtime::block_on(boot_session(&store, &http, "test"));
-        assert_eq!(boot.status, SessionStatus::SignedIn);
-        assert!(memory.is_some());
+        assert_eq!(boot.status, SessionStatus::SignedOut);
+        assert_eq!(boot.reason, SessionReason::ServerError);
+        assert!(memory.is_none());
+        assert!(store.session_path().exists(), "a server error keeps the credentials");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a 500 must fail immediately, not wait for a backoff"
+        );
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 3, "boot should probe three times");
+        assert_eq!(requests.len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -122,7 +122,6 @@ pub type MpvTerminateDestroyFn = unsafe extern "C" fn(ctx: *mut MpvHandle);
 pub type MpvErrorStringFn = unsafe extern "C" fn(error: c_int) -> *const c_char;
 pub type MpvClientApiVersionFn = unsafe extern "C" fn() -> c_ulong;
 pub type MpvRequestLogMessagesFn = unsafe extern "C" fn(ctx: *mut MpvHandle, min_level: *const c_char) -> c_int;
-pub type MpvWakeupFn = unsafe extern "C" fn(ctx: *mut MpvHandle);
 
 /// The subset of libmpv symbols this player needs.
 ///
@@ -143,8 +142,6 @@ pub struct MpvApi {
     pub client_api_version: MpvClientApiVersionFn,
     /// Optional: absent in very old builds only.
     pub request_log_messages: Option<MpvRequestLogMessagesFn>,
-    /// Optional: only used to interrupt `mpv_wait_event` early.
-    pub wakeup: Option<MpvWakeupFn>,
 }
 
 impl MpvApi {
@@ -163,9 +160,6 @@ impl MpvApi {
         "mpv_error_string",
         "mpv_client_api_version",
     ];
-
-    pub const OPTIONAL_SYMBOLS: &'static [&'static str] =
-        &["mpv_request_log_messages", "mpv_wakeup"];
 }
 
 #[cfg(test)]

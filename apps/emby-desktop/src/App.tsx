@@ -4,18 +4,19 @@ import { hasTauriRuntime } from "./emby/client";
 import type {
   EmbyLibraryItem,
   EmbyLibraryQuery,
-  EmbyLoadStatus,
 } from "./emby/useEmby";
 import {
   DEFAULT_LIBRARY_QUERY,
-  sameLibraryQuery,
   useEmbyLibrary,
   useEmbySession,
   usePlaybackLauncher,
+  fetchEpisodeRun,
+  clearEpisodeRunCache,
 } from "./emby/useEmby";
-import { describeEmbyError, embyItems } from "./emby/client";
+import { embyItems } from "./emby/client";
+import { useAsyncResource } from "./emby/useAsyncResource";
 import { decorateItems } from "./emby/artwork";
-import { episodePlaybackMeta, itemChapters, itemPlaybackMeta } from "./emby/format";
+import { episodePlaybackMeta, itemChapters, itemPlaybackMeta, itemStartSeconds } from "./emby/format";
 import ActorScreen from "./screens/ActorScreen";
 import DetailScreen from "./screens/DetailScreen";
 import HomeScreen from "./screens/HomeScreen";
@@ -122,9 +123,12 @@ export default function App() {
   /** Persisted settings; pageSize drives the library page size, autoPlay the queue. */
   const [settings, setSettings] = useState<AppSettings>(() => ({ ...DEFAULT_APP_SETTINGS }));
   const [query, setQuery] = useState<EmbyLibraryQuery>(DEFAULT_LIBRARY_QUERY);
-  const library = useEmbyLibrary(session, Boolean(session), {
+  const [settingsReady, setSettingsReady] = useState(false);
+  const library = useEmbyLibrary(session, Boolean(session) && settingsReady, {
     query,
     pageSize: settings.pageSize,
+    storedQueries: settings.libraryQueries,
+    onRestoredQuery: setQuery,
   });
   const [route, setRoute] = useState<Route>({ screen: "login" });
   /**
@@ -140,8 +144,6 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   /** Library scroll offset to restore when coming back from a detail page. */
   const libraryScrollRef = useRef(0);
-  /** Last saved toolbar query applied to a view, so the restore effect is one-shot. */
-  const appliedStoredQueryRef = useRef<{ viewId: string; query: EmbyLibraryQuery } | null>(null);
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
 
@@ -154,24 +156,17 @@ export default function App() {
       })
       .catch((reason: unknown) => {
         console.warn("[settings] could not read the persisted settings", reason);
+      })
+      .finally(() => {
+        // Even a failed read leaves the defaults usable; only then may the
+        // library boot, so it never fetches page 0 with the default query and
+        // immediately refetches with the stored one.
+        if (!cancelled) setSettingsReady(true);
       });
     return () => {
       cancelled = true;
     };
   }, []);
-
-  // Settings arrive asynchronously: once the current view is known, restore
-  // its own toolbar query. The ref keeps this from undoing a later user edit.
-  useEffect(() => {
-    const viewId = library.view?.id;
-    if (!viewId) return;
-    const stored = settings.libraryQueries[viewId];
-    if (!stored) return;
-    const applied = appliedStoredQueryRef.current;
-    if (applied?.viewId === viewId && sameLibraryQuery(applied.query, stored)) return;
-    appliedStoredQueryRef.current = { viewId, query: stored };
-    if (!sameLibraryQuery(query, stored)) setQuery(stored);
-  }, [library.view?.id, query, settings.libraryQueries]);
 
   useEffect(() => {
     const previous = previousScreenRef.current;
@@ -189,11 +184,7 @@ export default function App() {
   useLayoutEffect(() => {
     const box = contentRef.current;
     if (!box) return;
-    if (route.screen === "library") {
-      box.scrollTop = libraryScrollRef.current;
-    } else if (route.screen === "detail") {
-      box.scrollTop = 0;
-    }
+    box.scrollTop = route.screen === "library" ? libraryScrollRef.current : 0;
   }, [route]);
 
   // A new page size refetches page 0; the old scroll offset would land in the
@@ -274,50 +265,24 @@ export default function App() {
   );
 
 
-  // "Recently added" for the home screen (server-sorted, newest first). The row
-  // publishes its own load state so a pending/failed request never looks empty.
-  const [recent, setRecent] = useState<EmbyLibraryItem[]>([]);
-  const [recentStatus, setRecentStatus] = useState<EmbyLoadStatus>("idle");
-  const [recentError, setRecentError] = useState<string | null>(null);
-  const [recentReloadToken, setRecentReloadToken] = useState(0);
-
-  useEffect(() => {
-    if (!session) {
-      setRecent([]);
-      setRecentStatus("idle");
-      setRecentError(null);
-      return undefined;
-    }
-    let cancelled = false;
-    setRecentStatus("loading");
-    setRecentError(null);
-    void (async () => {
-      try {
-        const page = await embyItems({
-          recursive: true,
-          sortBy: "DateCreated",
-          sortOrder: "Descending",
-          limit: 24,
-          includeItemTypes: "Movie,Series",
-        });
-        const decorated = await decorateItems(page.items);
-        if (cancelled) return;
-        setRecent(decorated);
-        setRecentStatus("ready");
-      } catch (reason) {
-        if (cancelled) return;
-        console.warn("[home] could not load recently added", reason);
-        setRecent([]);
-        setRecentError(describeEmbyError(reason, "无法读取最近添加的内容。"));
-        setRecentStatus("error");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [recentReloadToken, session]);
-
-  const retryRecent = useCallback(() => setRecentReloadToken((value) => value + 1), []);
+  // "Recently added" for the home screen (server-sorted, newest first). The
+  // shared resource hook publishes loading/error/ready and owns cancellation.
+  const recentResource = useAsyncResource(
+    () =>
+      embyItems({
+        recursive: true,
+        sortBy: "DateCreated",
+        sortOrder: "Descending",
+        limit: 24,
+        includeItemTypes: "Movie,Series",
+      }).then((page) => decorateItems(page.items)),
+    `home-recent:${session?.userId ?? "signed-out"}`,
+    {
+      enabled: Boolean(session),
+      fallbackError: "无法读取最近添加的内容。",
+    },
+  );
+  const recent = recentResource.data ?? [];
 
   const openActor = useCallback(
     (person: { id: string | null; name: string }) => {
@@ -394,7 +359,6 @@ export default function App() {
    * previous/next availability the controls show. One request per series, no
    * matter how many episodes the user walks through.
    */
-  const episodeRunRef = useRef<{ seriesId: string; items: Promise<EmbyItem[]> } | null>(null);
   /** The item actually on screen in the player (auto-play and step both update it). */
   const playingItemRef = useRef<EmbyItem | null>(null);
   /** One episode switch at a time: a double click must not skip two episodes. */
@@ -413,7 +377,7 @@ export default function App() {
     if (sessionState.status === "signedIn") {
       setRoute((current) => (current.screen === "login" ? { screen: "home" } : current));
     } else if (sessionState.status === "signedOut") {
-      episodeRunRef.current = null;
+      clearEpisodeRunCache();
       playingItemRef.current = null;
       setEpisodeRunIds(null);
       setRoute({ screen: "login" });
@@ -446,24 +410,10 @@ export default function App() {
   const loadEpisodeRun = useCallback(
     async (item: EmbyItem): Promise<EmbyItem[] | null> => {
       if (item.type !== "Episode" || !item.seriesId) return null;
-      const cached = episodeRunRef.current;
-      if (cached && cached.seriesId === item.seriesId) return cached.items;
-      // Cache the promise, not the result: the availability effect and a quick
-      // "next" press can ask at the same time, and the series must be fetched
-      // only once.
-      const pending = embyItems({
-        parentId: item.seriesId,
-        includeItemTypes: "Episode",
-        recursive: true,
-        sortBy: "ParentIndexNumber,IndexNumber",
-        limit: 500,
-      }).then((page) => page.items);
-      episodeRunRef.current = { seriesId: item.seriesId, items: pending };
       try {
-        return await pending;
+        return await fetchEpisodeRun(item.seriesId);
       } catch (reason) {
         console.warn("[player] could not load the episode list", reason);
-        episodeRunRef.current = null;
         return null;
       }
     },
@@ -487,7 +437,7 @@ export default function App() {
         const targetIndex = index + delta;
         if (index < 0 || targetIndex < 0 || targetIndex >= run.length) return false;
         const next = run[targetIndex];
-        const target = await launch(next.id);
+        const target = await launch(next.id, itemStartSeconds(next));
         if (!target) return false;
         playingItemRef.current = next;
         const meta =
@@ -546,7 +496,7 @@ export default function App() {
   const resumeItem = useCallback(
     async (item: EmbyLibraryItem) => {
       failedPlayItemRef.current = item;
-      const target = await launch(item.id);
+      const target = await launch(item.id, itemStartSeconds(item));
       // `launch` reports its own failure through the launcher's error state,
       // which is rendered above the content instead of being swallowed: a
       // failed "continue watching" click must never look like a dead button.
@@ -610,7 +560,7 @@ export default function App() {
           autoPlayNext={autoPlay}
           episodeRun={episodeRunIds}
           onBack={() => {
-            episodeRunRef.current = null;
+            clearEpisodeRunCache();
             playingItemRef.current = null;
             setEpisodeRunIds(null);
             setRoute({
@@ -664,7 +614,7 @@ export default function App() {
       <TitleBar
         account={account}
         onBack={route.screen === "detail" ? leaveDetail : undefined}
-        backLabel={route.screen === "detail" && route.trail.length > 0 ? "返回" : "返回媒体库"}
+        backLabel="返回"
       />
       <div className="app-body">
         {route.screen === "detail" && backdrop && <PageBackdrop key={backdrop} src={backdrop} />}
@@ -716,12 +666,12 @@ export default function App() {
               resumeStatus={library.resumeStatus}
               resumeError={library.resumeError}
               recent={recent}
-              recentStatus={recentStatus}
-              recentError={recentError}
+              recentStatus={recentResource.status}
+              recentError={recentResource.error}
               onOpen={openItem}
               onPlay={resumeItem}
               onSeeAll={goToLibrary}
-              onRetryRecent={retryRecent}
+              onRetryRecent={recentResource.reload}
               onRetryResume={library.retryResume}
             />
           )}

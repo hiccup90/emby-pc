@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { applyPreviewAction } from "../player/preview";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -320,7 +321,6 @@ export default function Overlay() {
   const seekHoldRef = useRef<number | null>(null);
   const volumeHoldRef = useRef<number | null>(null);
   const lastVolumeSentRef = useRef<number | null>(null);
-  const lastSeekRef = useRef<{ value: number; at: number } | null>(null);
 
   const expanded = menu !== null;
 
@@ -602,13 +602,6 @@ export default function Overlay() {
       updateSeekDraft(null);
       return;
     }
-    const now = Date.now();
-    const last = lastSeekRef.current;
-    if (last && Math.abs(last.value - value) < 0.5 && now - last.at < 800) {
-      updateSeekDraft(null);
-      return;
-    }
-    lastSeekRef.current = { value, at: now };
     send({ type: "seek", seconds: value });
     holdSeek(value);
   };
@@ -1180,56 +1173,4 @@ export default function Overlay() {
       </div>
     </div>
   );
-}
-
-/** Standalone (non-Tauri) preview keeps the bar interactive without Rust. */
-function applyPreviewAction(
-  previous: PlayerSnapshot | null,
-  action: OverlayAction,
-): PlayerSnapshot | null {
-  if (!previous) return previous;
-  const next = { ...previous, seq: previous.seq + 1 };
-  switch (action.type) {
-    case "toggle-play":
-      return {
-        ...next,
-        status: previous.status === "playing" ? "paused" : "playing",
-        buffering: false,
-      };
-    case "seek":
-      return {
-        ...next,
-        positionSeconds: Math.min(
-          Math.max(0, action.seconds),
-          previous.durationSeconds,
-        ),
-      };
-    case "set-volume":
-      return {
-        ...next,
-        volume: Math.round(Math.min(100, Math.max(0, action.value))),
-      };
-    case "toggle-mute":
-      return { ...next, muted: !previous.muted };
-    case "set-track": {
-      const mark = (track: PlayerTrack) => ({
-        ...track,
-        selected:
-          action.id === "no" ? false : track.id === action.id,
-      });
-      return {
-        ...next,
-        audioTracks:
-          action.kind === "audio"
-            ? previous.audioTracks.map(mark)
-            : previous.audioTracks,
-        subtitleTracks:
-          action.kind === "subtitle"
-            ? previous.subtitleTracks.map(mark)
-            : previous.subtitleTracks,
-      };
-    }
-    default:
-      return next;
-  }
 }

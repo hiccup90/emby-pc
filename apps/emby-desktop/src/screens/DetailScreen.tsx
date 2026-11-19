@@ -14,6 +14,7 @@ import {
   itemEpisodeLabel,
   itemPlaybackMeta,
   itemProgress,
+  itemStartSeconds,
   itemChapters,
   itemYearLabel,
   seriesStatusLabel,
@@ -428,9 +429,15 @@ export default function DetailScreen({
   }, [backdrop, onBackdrop]);
   useEffect(() => () => onBackdrop?.(null), [onBackdrop]);
 
+  const focusedItemRef = useRef<string | null>(null);
   useEffect(() => {
-    if (item) headingRef.current?.focus({ preventScroll: true });
-  }, [item]);
+    // Wait for the requested item: during an item change the previous detail
+    // may still be rendered until its replacement arrives.
+    if (item?.id === itemId && focusedItemRef.current !== itemId) {
+      focusedItemRef.current = itemId;
+      headingRef.current?.focus({ preventScroll: true });
+    }
+  }, [item, itemId]);
 
   // Local toggles belong to one detail item; drop them when the page changes.
   useEffect(() => {
@@ -443,7 +450,7 @@ export default function DetailScreen({
 
   const startPlayback = async () => {
     if (!item || playback.pending || !isPlayableItemType(item.type)) return;
-    const target = await playback.launch(item.id);
+    const target = await playback.launch(item.id, itemStartSeconds(item));
     if (target) {
       onPlay(target, { ...itemPlaybackMeta(item), chapters: itemChapters(item) }, [item], item.id);
     }
@@ -452,7 +459,7 @@ export default function DetailScreen({
   const playEpisode = async (episode: EmbyLibraryItem) => {
     if (!item || playback.pending) return;
     setPendingEpisodeId(episode.id);
-    const target = await playback.launch(episode.id);
+    const target = await playback.launch(episode.id, itemStartSeconds(episode));
     setPendingEpisodeId(null);
     if (!target) return;
     // Episodes after this one follow automatically; track choice is per series.

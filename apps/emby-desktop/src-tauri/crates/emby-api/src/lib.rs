@@ -41,3 +41,11 @@ pub use model::{
 };
 pub use session::{write_atomic, SessionStore, StoredSession, SESSION_VERSION};
 pub use url::normalize_server_url;
+
+/// Trimmed non-empty optional string, shared by requests and reports.
+pub(crate) fn clean(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}

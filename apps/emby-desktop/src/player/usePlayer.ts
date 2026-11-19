@@ -13,6 +13,7 @@ import {
   invokePlayerSubscribe,
   invokePlayerToggleFullscreen,
 } from "./tauri";
+import { applyPreviewAction } from "./preview";
 
 type PlayerTrackKind = PlayerTrack["type"];
 
@@ -213,16 +214,7 @@ export function usePlayer() {
       setError(null);
 
       if (!isDesktop) {
-        setSnapshot((previous) =>
-          previous
-            ? {
-                ...previous,
-                seq: previous.seq + 1,
-                status: nextPaused ? "paused" : "playing",
-                buffering: false,
-              }
-            : previous,
-        );
+        setSnapshot((previous) => applyPreviewAction(previous, { type: "toggle-play" }));
         return;
       }
 
@@ -254,14 +246,7 @@ export function usePlayer() {
 
       if (!isDesktop) {
         setSnapshot((previous) =>
-          previous
-            ? {
-                ...previous,
-                seq: previous.seq + 1,
-                positionSeconds: target,
-                status: previous.status === "ended" ? "paused" : previous.status,
-              }
-            : previous,
+          applyPreviewAction(previous, { type: "seek", seconds: target }),
         );
         return true;
       }
@@ -289,7 +274,7 @@ export function usePlayer() {
 
       if (!isDesktop) {
         setSnapshot((previous) =>
-          previous ? { ...previous, seq: previous.seq + 1, volume: next } : previous,
+          applyPreviewAction(previous, { type: "set-volume", value: next }),
         );
         return;
       }
@@ -310,9 +295,7 @@ export function usePlayer() {
     setError(null);
 
     if (!isDesktop) {
-      setSnapshot((previous) =>
-        previous ? { ...previous, seq: previous.seq + 1, muted: nextMuted } : previous,
-      );
+      setSnapshot((previous) => applyPreviewAction(previous, { type: "toggle-mute" }));
       return;
     }
 
@@ -347,10 +330,9 @@ export function usePlayer() {
       };
 
       if (!isDesktop) {
-        setSnapshot((previous) => {
-          const next = applySelection(previous);
-          return next ? { ...next, seq: next.seq + 1 } : next;
-        });
+        setSnapshot((previous) =>
+          applyPreviewAction(previous, { type: "set-track", kind, id }),
+        );
         return;
       }
 

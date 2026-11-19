@@ -475,25 +475,13 @@ export default function PlayerPage({
   }, [isDesktop]);
 
   const leavePlayer = useCallback(() => {
-    if (
-      isDesktop &&
-      playback &&
-      startReportedRef.current &&
-      !stopReportedRef.current
-    ) {
-      stopReportedRef.current = true;
-      reportEmbyPlayback(
-        playback,
-        "stop",
-        positionRef.current,
-        lastStatusRef.current === "paused",
-      );
-    }
+    // The unmount effect below reports `stop`; doing it here as well duplicated
+    // the same report (and its position) before the route changed.
     if (isDesktop && isFullscreenRef.current) {
       void toggleFullscreen();
     }
     onBack();
-  }, [isDesktop, onBack, playback, toggleFullscreen]);
+  }, [isDesktop, onBack, toggleFullscreen]);
 
   /**
    * The video host is mouse-transparent (`HTTRANSPARENT`), so the click lands on
@@ -832,7 +820,28 @@ export default function PlayerPage({
   }, [isDesktop]);
 
   // Keyboard shortcuts stay on the main window for when the overlay has no
-  // focus; the overlay implements the same keys for its own window.
+  // focus; the overlay implements the same keys for its own window. The
+  // listener is registered once and reads current state/actions through refs;
+  // depending on `snapshot` rebuilt it several times per second.
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
+  const playbackRef = useRef(playback);
+  playbackRef.current = playback;
+  const keyActionsRef = useRef({
+    leavePlayer,
+    handleSeek,
+    togglePlayback,
+    toggleFullscreen,
+    toggleMuted,
+  });
+  keyActionsRef.current = {
+    leavePlayer,
+    handleSeek,
+    togglePlayback,
+    toggleFullscreen,
+    toggleMuted,
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
@@ -847,7 +856,7 @@ export default function PlayerPage({
 
       if (event.key === "Escape") {
         event.preventDefault();
-        leavePlayer();
+        keyActionsRef.current.leavePlayer();
         return;
       }
 
@@ -856,41 +865,34 @@ export default function PlayerPage({
 
       if (event.code === "Space") {
         event.preventDefault();
-        void togglePlayback(playback?.url);
+        void keyActionsRef.current.togglePlayback(playbackRef.current?.url);
         return;
       }
 
+      const current = snapshotRef.current;
       if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
-        if (!snapshot || snapshot.durationSeconds <= 0) return;
+        if (!current || current.durationSeconds <= 0) return;
         event.preventDefault();
         const delta = event.key === "ArrowRight" ? 10 : -10;
-        handleSeek(snapshot.positionSeconds + delta);
+        keyActionsRef.current.handleSeek(current.positionSeconds + delta);
         return;
       }
 
       if (event.key.toLowerCase() === "f") {
         event.preventDefault();
-        void toggleFullscreen();
+        void keyActionsRef.current.toggleFullscreen();
         return;
       }
 
       if (event.key.toLowerCase() === "m") {
         event.preventDefault();
-        void toggleMuted();
+        void keyActionsRef.current.toggleMuted();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    handleSeek,
-    leavePlayer,
-    snapshot,
-    playback?.url,
-    toggleFullscreen,
-    toggleMuted,
-    togglePlayback,
-  ]);
+  }, []);
 
   // One short line at most: the video is the page and covers this text on a
   // real machine — the same strings go to the controls window as `error` and

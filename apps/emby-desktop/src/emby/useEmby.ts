@@ -117,6 +117,10 @@ export interface EmbyLibraryOptions {
   query?: EmbyLibraryQuery;
   /** Items per page; comes from `AppSettings.pageSize`. */
   pageSize?: number;
+  /** Persisted toolbar query per view, applied when the boot selects a view. */
+  storedQueries?: Record<string, EmbyLibraryQuery>;
+  /** Reports the query restored for the boot-selected view. */
+  onRestoredQuery?: (query: EmbyLibraryQuery) => void;
 }
 
 /**
@@ -214,7 +218,7 @@ export interface EmbyEpisodesState {
 export interface PlaybackLauncher {
   pending: boolean;
   error: string | null;
-  launch: (itemId: string) => Promise<EmbyPlaybackTarget | null>;
+  launch: (itemId: string, startSeconds?: number) => Promise<EmbyPlaybackTarget | null>;
   clearError: () => void;
 }
 
@@ -473,6 +477,10 @@ export function useEmbyLibrary(
   queryRef.current = { query, pageSize };
   const querySignatureRef = useRef(querySignature);
   querySignatureRef.current = querySignature;
+  const storedQueriesRef = useRef(options.storedQueries ?? {});
+  storedQueriesRef.current = options.storedQueries ?? {};
+  const onRestoredQueryRef = useRef(options.onRestoredQuery);
+  onRestoredQueryRef.current = options.onRestoredQuery;
 
   const updateStore = useCallback(
     (updater: (current: LibraryStore) => LibraryStore) => {
@@ -655,12 +663,24 @@ export function useEmbyLibrary(
 
         const views = viewsResult.value;
         const view = pickDefaultView(views);
+        const restoredQuery = view ? storedQueriesRef.current[view.id] : undefined;
+        if (restoredQuery) {
+          // Resolve the saved query before the first page request. Applying it
+          // after boot used to fetch page 0 twice (defaults, then saved).
+          queryRef.current = { query: restoredQuery, pageSize };
+          querySignatureRef.current = libraryQuerySignature(restoredQuery, pageSize);
+          onRestoredQueryRef.current?.(restoredQuery);
+        }
         updateStore((current) => ({
           ...current,
           views,
           viewsStatus: "ready",
           viewsError: null,
           viewId: view?.id ?? null,
+          // The first page is fetched with `queryRef`, which may have just
+          // been replaced by the stored query; keep the store's signature in
+          // sync or the query effect would fetch page 0 again.
+          queryKey: querySignatureRef.current,
           resumable,
           resumeStatus: resumeFailure ? "error" : "ready",
           resumeError: resumeFailure,
@@ -757,9 +777,14 @@ export function useEmbyLibrary(
       ? current.cache[cacheKeyFor(current.viewId, querySignatureRef.current)]
       : undefined;
     if (!view || !cache || cache.status !== "ready" || cache.loadingMore) return;
-    if (cache.error) return;
-    if (cache.items.length >= cache.total) return;
-    if (cache.items.length >= LIBRARY_MAX_ITEMS) return;
+    // A failed append keeps the loaded pages and is retried by appending, not
+    // by `reload` (which would discard them). Blocking errors have no items
+    // and are handled by the page-level reload instead.
+    if (cache.error && cache.items.length === 0) return;
+    if (!cache.error) {
+      if (cache.items.length >= cache.total) return;
+      if (cache.items.length >= LIBRARY_MAX_ITEMS) return;
+    }
     void fetchViewPage(view, "append");
   }, [fetchViewPage]);
 
@@ -857,10 +882,16 @@ export function useEmbyDetail(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const seededItemRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setItem(seed);
-    setPhotos({});
+    // A reload of the same item must keep the current title/cast/photos on
+    // screen while the request runs; only an item change resets the seed.
+    if (seededItemRef.current !== itemId) {
+      seededItemRef.current = itemId;
+      setItem(seed);
+      setPhotos({});
+    }
     setError(null);
 
     if (!enabled || !itemId || !desktop) {
@@ -925,6 +956,35 @@ export function useEmbySimilar(itemId: string | null, enabled: boolean): EmbySim
   return { items };
 }
 
+const episodeRunCache = new Map<string, Promise<EmbyItem[]>>();
+
+/**
+ * One ordered episode run per series, shared by the detail page (list + next
+ * episode) and the player (auto-play/previous/next). Both callers used to
+ * issue the identical request and cache it separately.
+ */
+export function clearEpisodeRunCache(): void {
+  episodeRunCache.clear();
+}
+
+export function fetchEpisodeRun(seriesId: string, force = false): Promise<EmbyItem[]> {
+  if (force) episodeRunCache.delete(seriesId);
+  const cached = episodeRunCache.get(seriesId);
+  if (cached) return cached;
+  const pending = embyItems({
+    parentId: seriesId,
+    includeItemTypes: "Episode",
+    recursive: true,
+    sortBy: "ParentIndexNumber,IndexNumber",
+    limit: 500,
+  }).then((page) => page.items);
+  episodeRunCache.set(seriesId, pending);
+  void pending.catch(() => {
+    if (episodeRunCache.get(seriesId) === pending) episodeRunCache.delete(seriesId);
+  });
+  return pending;
+}
+
 export function useEmbyEpisodes(
   seriesId: string | null,
   enabled: boolean,
@@ -947,16 +1007,10 @@ export function useEmbyEpisodes(
     let disposed = false;
     setLoading(true);
 
-    void embyItems({
-      parentId: seriesId,
-      includeItemTypes: "Episode",
-      recursive: true,
-      sortBy: "ParentIndexNumber,IndexNumber",
-      limit: 500,
-    })
-      .then((page) => {
+    void fetchEpisodeRun(seriesId, reloadToken > 0)
+      .then((items) => {
         if (disposed) return;
-        setItems(page.items.map(plainLibraryItem));
+        setItems(items.map(plainLibraryItem));
         setLoading(false);
       })
       .catch((reason: unknown) => {
@@ -979,27 +1033,30 @@ export function usePlaybackLauncher(): PlaybackLauncher {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const launch = useCallback(async (itemId: string): Promise<EmbyPlaybackTarget | null> => {
-    setPending(true);
-    setError(null);
-    try {
-      const target = await embyPlaybackTarget(itemId);
-      if (!target.url.trim()) {
-        throw new Error("服务器没有返回可播放的直链。");
+  const launch = useCallback(
+    async (itemId: string, startSeconds?: number): Promise<EmbyPlaybackTarget | null> => {
+      setPending(true);
+      setError(null);
+      try {
+        const target = await embyPlaybackTarget(itemId, startSeconds);
+        if (!target.url.trim()) {
+          throw new Error("服务器没有返回可播放的直链。");
+        }
+        return target;
+      } catch (reason) {
+        setError(
+          describeEmbyError(
+            reason,
+            "无法开始播放。该条目可能需要转码，当前不支持。",
+          ),
+        );
+        return null;
+      } finally {
+        setPending(false);
       }
-      return target;
-    } catch (reason) {
-      setError(
-        describeEmbyError(
-          reason,
-          "无法开始播放。该条目可能需要转码，当前不支持。",
-        ),
-      );
-      return null;
-    } finally {
-      setPending(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const clearError = useCallback(() => setError(null), []);
 

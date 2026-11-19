@@ -7,12 +7,7 @@ import type {
   VideoSync,
 } from "./contract";
 
-type TauriAwareWindow = Window & { __TAURI_INTERNALS__?: unknown };
-
-export function hasTauriRuntime(): boolean {
-  if (typeof window === "undefined") return false;
-  return Boolean((window as TauriAwareWindow).__TAURI_INTERNALS__);
-}
+export { hasTauriRuntime } from "../emby/client";
 
 export function describeError(error: unknown, fallback: string): string {
   let message = "";

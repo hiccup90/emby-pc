@@ -8,10 +8,12 @@
 use std::fmt;
 use std::time::Duration;
 
+use bytes::Bytes;
 use reqwest::{Client, Method, RequestBuilder};
 use serde_json::json;
 
 use crate::auth::{authorization_header, CLIENT_NAME, CLIENT_VERSION};
+use crate::clean;
 use crate::error::{ApiError, ApiErrorKind, ApiResult};
 use crate::model::{
     pick_playback_source, EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest,
@@ -617,20 +619,21 @@ impl EmbyClient {
         builder: RequestBuilder,
         timeout: Duration,
         url: &str,
-    ) -> ApiResult<Vec<u8>> {
+    ) -> ApiResult<Bytes> {
         let response = builder
             .send()
             .await
             .map_err(|err| transport_error(err, timeout, url))?;
         let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|err| transport_error(err, timeout, url))?;
         if !status.is_success() {
+            // Do not download an error page just to discard it. The status is
+            // all the caller maps on; the body is not part of the contract.
             return Err(ApiError::http_status(status.as_u16(), url));
         }
-        Ok(body.to_vec())
+        response
+            .bytes()
+            .await
+            .map_err(|err| transport_error(err, timeout, url))
     }
 
     async fn fetch_server_name(&self) -> Option<String> {
@@ -646,39 +649,28 @@ impl EmbyClient {
     }
 }
 
-fn required_user_id(user_id: &str) -> ApiResult<&str> {
-    let user_id = user_id.trim();
-    if user_id.is_empty() {
-        return Err(ApiError::invalid_input("缺少用户 id"));
+fn required_id<'a>(value: &'a str, what: &str) -> ApiResult<&'a str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ApiError::invalid_input(format!("缺少{what} id")));
     }
-    Ok(user_id)
+    Ok(value)
+}
+
+fn required_user_id(user_id: &str) -> ApiResult<&str> {
+    required_id(user_id, "用户")
 }
 
 fn required_item_id(item_id: &str) -> ApiResult<&str> {
-    let item_id = item_id.trim();
-    if item_id.is_empty() {
-        return Err(ApiError::invalid_input("缺少条目 id"));
-    }
-    Ok(item_id)
+    required_id(item_id, "条目")
 }
 
 fn required_person_id(person_id: &str) -> ApiResult<&str> {
-    let person_id = person_id.trim();
-    if person_id.is_empty() {
-        return Err(ApiError::invalid_input("缺少演员 id"));
-    }
-    Ok(person_id)
+    required_id(person_id, "演员")
 }
 
 fn no_source_error() -> ApiError {
     ApiError::no_playable_source("该媒体没有可直接播放的源（需要转码，当前版本尚未实现）")
-}
-
-fn clean(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 /// Emby's `SortOrder` query value. Anything other than an explicit descending

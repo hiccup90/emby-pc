@@ -66,7 +66,7 @@ fn main() {
             // false` leaves in the window style; without this the DWM paints a
             // 1px system line along the top of the window (the reported gap when
             // the window is flush with the top of the screen).
-            if let Some(hwnd) = chrome_hwnd_webview(&window) {
+            if let Some(hwnd) = chrome_hwnd(&window) {
                 if let Err(err) = overlay::harden_main_window_chrome(hwnd) {
                     eprintln!("[desktop] main window chrome hardening skipped: {err}");
                 }
@@ -143,7 +143,7 @@ fn main() {
                         state.track(window);
                     }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
-                        state.on_main_geometry(app, None);
+                        state.on_main_geometry(app);
                     }
                     // A fullscreen toggle hid both the native video and the
                     // overlay; the new client size only exists now. Re-place the
@@ -163,12 +163,12 @@ fn main() {
                         let _ = overlay::harden_main_window_chrome(hwnd);
                     }
                 }
-                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                WindowEvent::ScaleFactorChanged { .. } => {
                     if let Some(state) = app.try_state::<window_state::WindowState>() {
                         state.track(window);
                     }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
-                        state.on_main_geometry(app, Some(*scale_factor));
+                        state.on_main_geometry(app);
                     }
                     if let Some(hwnd) = chrome_hwnd(window) {
                         let _ = overlay::harden_main_window_chrome(hwnd);
@@ -250,13 +250,34 @@ fn main_window_hwnd(_window: &tauri::WebviewWindow) -> Result<isize, String> {
 
 /// `HWND` for the window-style fix, or `None` when it is unavailable.
 ///
-/// `Window::hwnd()` is itself `#[cfg(windows)]`, so this needs a platform pair:
-/// the caller (`setup` / `on_window_event`) stays platform-neutral and simply
-/// skips the fix when there is no handle.
+/// `hwnd()` is itself `#[cfg(windows)]`, so this needs a platform pair: the
+/// caller (`setup` / `on_window_event`) stays platform-neutral and simply skips
+/// the fix when there is no handle.
+/// Both window handles only expose `hwnd()` under Windows and have no common
+/// trait in Tauri, so the raw handle conversion is the small shared piece.
 #[cfg(windows)]
-fn chrome_hwnd(window: &tauri::Window) -> Option<isize> {
-    match window.hwnd() {
-        Ok(hwnd) => Some(hwnd.0 as isize),
+trait ChromeHwnd {
+    fn raw_chrome_hwnd(&self) -> tauri::Result<isize>;
+}
+
+#[cfg(windows)]
+impl ChromeHwnd for tauri::Window {
+    fn raw_chrome_hwnd(&self) -> tauri::Result<isize> {
+        self.hwnd().map(|hwnd| hwnd.0 as isize)
+    }
+}
+
+#[cfg(windows)]
+impl ChromeHwnd for tauri::WebviewWindow {
+    fn raw_chrome_hwnd(&self) -> tauri::Result<isize> {
+        self.hwnd().map(|hwnd| hwnd.0 as isize)
+    }
+}
+
+#[cfg(windows)]
+fn chrome_hwnd<T: ChromeHwnd>(window: &T) -> Option<isize> {
+    match window.raw_chrome_hwnd() {
+        Ok(hwnd) => Some(hwnd),
         Err(err) => {
             eprintln!("[desktop] main window chrome hardening skipped: no HWND ({err})");
             None
@@ -265,35 +286,23 @@ fn chrome_hwnd(window: &tauri::Window) -> Option<isize> {
 }
 
 #[cfg(not(windows))]
-fn chrome_hwnd(_window: &tauri::Window) -> Option<isize> {
+fn chrome_hwnd<T>(_window: &T) -> Option<isize> {
     None
 }
 
-#[cfg(windows)]
-fn chrome_hwnd_webview(window: &tauri::WebviewWindow) -> Option<isize> {
-    match window.hwnd() {
-        Ok(hwnd) => Some(hwnd.0 as isize),
-        Err(err) => {
-            eprintln!("[desktop] main window chrome hardening skipped: no HWND ({err})");
-            None
-        }
+/// Shared parsing for the boolean diagnostic environment switches. Accepts the
+/// same spellings everywhere; unknown values leave the caller's default.
+fn env_flag(name: &str) -> Option<bool> {
+    match std::env::var(name).ok()?.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
     }
-}
-
-#[cfg(not(windows))]
-fn chrome_hwnd_webview(_window: &tauri::WebviewWindow) -> Option<isize> {
-    None
 }
 
 /// `EMBY_NO_OVERLAY=1` (1/true/yes/on) skips the controls window. Diagnostic
 /// switch for comparing GPU use with and without the transparent window that
 /// sits above the video; playback itself is unaffected.
 fn overlay_disabled() -> bool {
-    matches!(
-        std::env::var("EMBY_NO_OVERLAY")
-            .ok()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    )
+    env_flag("EMBY_NO_OVERLAY").unwrap_or(false)
 }

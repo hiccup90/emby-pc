@@ -129,7 +129,6 @@ impl MpvLibrary {
             error_string: required!("mpv_error_string", MpvErrorStringFn),
             client_api_version: required!("mpv_client_api_version", MpvClientApiVersionFn),
             request_log_messages: optional!("mpv_request_log_messages", MpvRequestLogMessagesFn),
-            wakeup: optional!("mpv_wakeup", MpvWakeupFn),
         };
 
         Ok(Self {

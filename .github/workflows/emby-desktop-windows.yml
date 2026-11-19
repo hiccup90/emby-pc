@@ -92,6 +92,13 @@ jobs:
         working-directory: apps/emby-desktop/src-tauri
         run: cargo test --workspace
 
+      # The wire-format tests need serde_json, which the offline Linux
+      # verification container cannot link. Windows CI has a linker, so run
+      # them here instead of leaving the feature permanently unexercised.
+      - name: Test serde wire contract
+        working-directory: apps/emby-desktop/src-tauri
+        run: cargo test -p emby-mpv --features serde-tests
+
       - name: Download libmpv archive
         if: ${{ inputs.bundle_libmpv }}
         working-directory: .

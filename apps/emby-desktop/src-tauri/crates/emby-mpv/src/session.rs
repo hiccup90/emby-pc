@@ -212,8 +212,16 @@ fn run_session(
                 Ok(PlayerCommand::Open {
                     url,
                     start_seconds,
+                    cancel,
                     reply,
                 }) => {
+                    if cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                    {
+                        eprintln!("[emby-mpv] open canceled before loadfile");
+                        continue;
+                    }
                     if let Err(err) = handle_open(&core, &mut assembler, url, start_seconds) {
                         eprintln!("[emby-mpv] open failed: {err}");
                         assembler.set_error(err.to_string());
@@ -226,9 +234,6 @@ fn run_session(
                     if let Some(reply) = reply {
                         let _ = reply.send(snapshot);
                     }
-                }
-                Ok(PlayerCommand::Snapshot(reply)) => {
-                    let _ = reply.send(hub.latest());
                 }
                 Ok(PlayerCommand::Stats(reply)) => {
                     let _ = reply.send(read_stats(&core));
@@ -359,7 +364,7 @@ fn handle_command(
             assembler.on_stopped();
             Ok(())
         }
-        PlayerCommand::Shutdown | PlayerCommand::Snapshot(_) | PlayerCommand::Stats(_) => Ok(()),
+        PlayerCommand::Shutdown | PlayerCommand::Stats(_) => Ok(()),
     }
 }
 
@@ -428,7 +433,12 @@ fn handle_open(
     // pause state while replacing the playlist entry, leaving the next
     // episode on frame 0. Clear it after the new file has been requested;
     // this also covers the normal resume/open paths.
-    core.set_property_string("pause", "no")?;
+    if let Err(err) = core.set_property_string("pause", "no") {
+        // The file is already loaded; a failed pause reset must not turn a
+        // successful open into an error. FILE_LOADED will publish the real
+        // state, and the next explicit play/pause still works.
+        eprintln!("[emby-mpv] could not clear pause after loadfile: {err}");
+    }
     Ok(())
 }
 
@@ -456,6 +466,10 @@ fn handle_event(
         MPV_EVENT_SHUTDOWN => EventOutcome::Shutdown,
         MPV_EVENT_PROPERTY_CHANGE => {
             apply_property_change(core, assembler, frame.data);
+            EventOutcome::Continue
+        }
+        MPV_EVENT_START_FILE => {
+            assembler.on_start_file();
             EventOutcome::Continue
         }
         MPV_EVENT_FILE_LOADED => {

@@ -56,16 +56,19 @@
 //! | first-show collapse | sleep 220 ms unconditionally | page's own state change settles it; 400 ms fallback |
 //! | cursor wake | 50 ms fixed poll | 16 ms while over the video, 250 ms elsewhere |
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use emby_mpv::{SeqLatch, VideoSync};
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+#[cfg(windows)]
+use tauri::Emitter;
 
 pub(crate) const CONTROLS_LABEL: &str = "controls";
 
@@ -94,9 +97,6 @@ pub fn resume(app: &AppHandle) {
     }
 }
 
-/// Logical (CSS px) heights of the control surface: the window always has the
-/// expanded height; the collapsed height is the strip the window region leaves
-/// visible and clickable while no menu is open. Keep in sync with
 /// Logical pixels the controls window is lifted above the video rectangle when
 /// `EMBY_TOP_MARGIN=1` is set.
 ///
@@ -129,15 +129,7 @@ fn log_diag(line: &str) {
 /// repeated pauses, strips in the right place, no stalls.
 fn top_margin_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("EMBY_TOP_MARGIN") {
-        Ok(value) => {
-            let value = value.trim();
-            !(value == "0"
-                || value.eq_ignore_ascii_case("false")
-                || value.eq_ignore_ascii_case("off"))
-        }
-        Err(_) => true,
-    })
+    *ENABLED.get_or_init(|| crate::env_flag("EMBY_TOP_MARGIN").unwrap_or(true))
 }
 
 /// The top margin in physical pixels; zero only when `EMBY_TOP_MARGIN=0`.
@@ -253,6 +245,11 @@ impl MoveBudget {
 /// and `--ov-bar-h` / `--ov-panel-h` (src/controls/overlay.css).
 const COLLAPSED_HEIGHT: f64 = 96.0;
 const EXPANDED_HEIGHT: f64 = 352.0;
+
+/// Commit the binary was built from, injected by `build.rs`.
+fn build_id() -> &'static str {
+    option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
+}
 /// Logical (CSS px) size of the top-left return/logo strip. The region only
 /// exposes this corner, not a full-width band, so clicks on the rest of the
 /// video's top edge still reach the video.
@@ -268,12 +265,15 @@ const TOP_BAND_MAX_WIDTH: f64 = 620.0;
 /// (`GetCursorPos` + `GetAsyncKeyState`) and is only ever active while the
 /// overlay is in player mode, so it is kept — with the interval split by what
 /// the tick is actually for (see the two constants below).
+#[cfg(windows)]
 const WAKE_POLL_ACTIVE: Duration = Duration::from_millis(16);
 /// Interval while the pointer is outside the video rect. Nothing can happen
 /// there, so this only has to notice the pointer coming back: 4 Hz instead of
 /// the old fixed 20 Hz.
+#[cfg(windows)]
 const WAKE_POLL_IDLE: Duration = Duration::from_millis(250);
 /// Squared movement threshold in physical pixels (3 px).
+#[cfg(windows)]
 const WAKE_MIN_MOVE_SQUARED: i64 = 9;
 /// Fallback bound for `overlay_set_interactive(false)` while a mouse button is
 /// physically down. The normal path applies click-through immediately; this
@@ -503,7 +503,7 @@ impl OverlayState {
             if let Err(err) = main.set_background_color(Some(Color(0, 0, 0, 255))) {
                 first_error.get_or_insert_with(|| format!("set background: {err}"));
             }
-            if let Err(err) = self.present(app, None) {
+            if let Err(err) = self.present(app) {
                 first_error.get_or_insert(err);
             }
             match first_error {
@@ -534,7 +534,7 @@ impl OverlayState {
             inner.mode == UiMode::Player
         };
         if player {
-            if let Err(err) = self.present(app, None) {
+            if let Err(err) = self.present(app) {
                 eprintln!("[overlay] could not position controls: {err}");
             }
         }
@@ -551,7 +551,7 @@ impl OverlayState {
             inner.mode == UiMode::Player
         };
         if player {
-            if let Err(err) = self.present(app, None) {
+            if let Err(err) = self.present(app) {
                 eprintln!("[overlay] could not resize controls: {err}");
             }
         }
@@ -577,7 +577,7 @@ impl OverlayState {
         };
         if settled {
             // Collapse the first-show full-height surface to the bar strip.
-            if let Err(err) = self.present(app, None) {
+            if let Err(err) = self.present(app) {
                 eprintln!("[overlay] warm-up collapse failed: {err}");
             }
         }
@@ -693,7 +693,7 @@ impl OverlayState {
         }
     }
 
-    pub fn on_main_geometry(&self, app: &AppHandle, scale_override: Option<f64>) {
+    pub fn on_main_geometry(&self, app: &AppHandle) {
         if !self.is_player_mode() {
             return;
         }
@@ -704,7 +704,7 @@ impl OverlayState {
             log_diag("geometry: on_main_geometry event dropped (applying_geometry)");
             return;
         }
-        if let Err(err) = self.present(app, scale_override) {
+        if let Err(err) = self.present(app) {
             eprintln!("[overlay] could not follow main window: {err}");
         }
     }
@@ -775,7 +775,7 @@ impl OverlayState {
     /// The caller must be on the Tauri main thread: sync window commands and
     /// window events already are, and the warm-up fallback posts itself here.
     /// This keeps SetWindowPos/SetWindowRgn out of the wake/click workers.
-    fn present(&self, app: &AppHandle, scale_override: Option<f64>) -> Result<(), String> {
+    fn present(&self, app: &AppHandle) -> Result<(), String> {
         // Feedback-loop guard: a window event that arrives while we are inside
         // `SetWindowPos` must not start another placement. Only active while the
         // margin layout is on; `EMBY_TOP_MARGIN=0` disables both.
@@ -823,11 +823,13 @@ impl OverlayState {
             return Ok(());
         };
 
-        let scale = match scale_override {
-            Some(scale) if scale.is_finite() && scale > 0.0 => scale,
-            _ => main
-                .scale_factor()
-                .map_err(|err| format!("scale factor: {err}"))?,
+        // The page's `devicePixelRatio` is the single source for the video
+        // rect, the margin and the bands. Asking the window for scale_factor
+        // separately made the two sides round differently during a DPI change.
+        let scale = if sync.dpr.is_finite() && sync.dpr > 0.0 {
+            sync.dpr
+        } else {
+            1.0
         };
         let client_origin = main
             .inner_position()
@@ -932,7 +934,7 @@ impl OverlayState {
                     if !state.lock().warmup_pending {
                         return;
                     }
-                    if let Err(err) = state.present(&app_for_state, None) {
+                    if let Err(err) = state.present(&app_for_state) {
                         eprintln!("[overlay] warm-up fallback failed: {err}");
                     }
                 }) {
@@ -1014,7 +1016,7 @@ impl OverlayState {
             return;
         }
         eprintln!("[overlay] resume");
-        if let Err(err) = self.present(app, None) {
+        if let Err(err) = self.present(app) {
             eprintln!("[overlay] could not re-present controls after fullscreen: {err}");
         }
     }
@@ -1414,7 +1416,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     #[cfg(windows)]
     diag::write(&format!(
         "controls window requested: build={} diag={}",
-        controls_build_id(),
+        diag::build_id(),
         diag::path()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<none>".to_string()),
@@ -1441,7 +1443,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     // same id in the log and into a small badge inside the controls page.
     // The build id stays in the title: it is what a screenshot of any future
     // chrome problem would show, without asking the user which binary they run.
-    .title(format!("Emby Controls · {}", controls_build_id()))
+    .title(format!("Emby Controls · {}", build_id()))
     .transparent(true)
     .decorations(false)
     .skip_taskbar(true)
@@ -1472,7 +1474,7 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
              text-shadow:0 0 2px rgba(0,0,0,.6);\"; \
              document.body.appendChild(node); \
              }})()",
-            controls_build_id(),
+            build_id(),
             margin = overlay_margin_css(),
         );
         let _ = webview.eval(script);
@@ -1499,16 +1501,6 @@ pub fn create_controls_window(app: &AppHandle) -> Result<WebviewWindow, String> 
     }
     Ok(window)
 }
-
-/// Build identifier: the short git sha injected by `build.rs`.
-///
-/// Also shown inside the controls page and used in the window title, so a
-/// screenshot of a broken build can be matched against a commit without asking
-/// the user anything. A source tree without git degrades to `unknown`.
-fn controls_build_id() -> &'static str {
-    option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
-}
-
 
 fn configure_controls_window(window: &WebviewWindow) -> Result<(), String> {
     // Invisible until a video rect is known; do not intercept the mouse while
@@ -1685,19 +1677,13 @@ mod diag {
 
     /// Commit the binary was built from, injected by `build.rs`.
     pub fn build_id() -> &'static str {
-        option_env!("EMBY_BUILD_SHA").unwrap_or("unknown")
+        super::build_id()
     }
 
     /// `EMBY_DIAG=1` (or `true`) turns the diagnostic file on.
     fn enabled() -> bool {
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ENABLED.get_or_init(|| match std::env::var("EMBY_DIAG") {
-            Ok(value) => {
-                let value = value.trim();
-                value == "1" || value.eq_ignore_ascii_case("true")
-            }
-            Err(_) => false,
-        })
+        *ENABLED.get_or_init(|| crate::env_flag("EMBY_DIAG").unwrap_or(false))
     }
 
     pub fn path() -> Option<&'static PathBuf> {
@@ -2237,12 +2223,13 @@ fn reassert_controls_chrome(window: &WebviewWindow) {
 
 // ---- cursor wake poller ------------------------------------------------------
 
-/// Poll the cursor every 50 ms while the app runs. The loop stays parked (no
-/// Win32 calls) outside player UI mode; `stop_wake` is checked every tick and
-/// the thread is detached so shutdown never waits on it. Besides waking the
-/// bar on pointer movement, the same tick samples the left mouse button so a
-/// click on the native video window (which swallows the real mouse event) still
-/// focuses the app and can toggle fullscreen on a double-click.
+/// Poll the cursor while the app runs: every 16 ms while the pointer is over
+/// the video, 250 ms otherwise. The loop stays parked (no Win32 calls) outside
+/// player UI mode; `stop_wake` is checked every tick and the thread is detached
+/// so shutdown never waits on it. Besides waking the bar on pointer movement,
+/// the same tick samples the left mouse button so a click on the native video
+/// window (which swallows the real mouse event) still focuses the app and can
+/// toggle fullscreen on a double-click.
 #[cfg(windows)]
 pub fn spawn_wake_poller(app: AppHandle) {
     let stop = match app.try_state::<OverlayState>() {

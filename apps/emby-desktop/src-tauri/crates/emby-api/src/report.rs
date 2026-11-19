@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+use crate::clean;
 use crate::error::{ApiError, ApiResult};
 use crate::model::EmbyReportRequest;
 use crate::ticks::seconds_to_ticks;
@@ -104,13 +105,6 @@ impl ReportBody {
             event_name: event.event_name(),
         }
     }
-}
-
-fn clean(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 #[cfg(test)]

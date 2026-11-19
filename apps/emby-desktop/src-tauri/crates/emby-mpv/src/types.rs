@@ -212,6 +212,10 @@ pub enum PlayerCommand {
     Open {
         url: String,
         start_seconds: Option<f64>,
+        /// Set by `player_open` when its bounded wait expires. The worker
+        /// checks it before `loadfile`, so a timed-out open cannot start
+        /// playback after the UI has already shown a failure.
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         /// Replies with the first snapshot published for this open, so
         /// `player_open` can return a `seq`-consistent loading state instead of
         /// racing the worker's property events.
@@ -229,8 +233,6 @@ pub enum PlayerCommand {
         id: i64,
     },
     Stop,
-    /// Ask the worker to publish a snapshot to `reply`.
-    Snapshot(std::sync::mpsc::Sender<PlayerSnapshot>),
     /// Ask the worker for the current mpv statistics.
     Stats(std::sync::mpsc::Sender<PlayerStats>),
     /// Quit mpv gracefully, then terminate the handle.

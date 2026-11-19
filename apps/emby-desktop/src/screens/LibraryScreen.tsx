@@ -150,7 +150,7 @@ export default function LibraryScreen({
 
           {appendError && (
             <div className="page-message">
-              <ErrorNotice message={appendError} onRetry={library.reload} retryLabel="重新读取" />
+              <ErrorNotice message={appendError} onRetry={library.loadMore} retryLabel="重试加载更多" />
             </div>
           )}
 

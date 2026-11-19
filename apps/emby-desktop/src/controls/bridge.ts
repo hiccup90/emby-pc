@@ -10,13 +10,9 @@ import type {
   OverlayUiMode,
 } from "./contract";
 
-type TauriAwareWindow = Window & { __TAURI_INTERNALS__?: unknown };
 type ResizeDirection = Parameters<TauriWindow["startResizeDragging"]>[0];
 
-export function hasTauriRuntime(): boolean {
-  if (typeof window === "undefined") return false;
-  return Boolean((window as TauriAwareWindow).__TAURI_INTERNALS__);
-}
+export { hasTauriRuntime } from "../emby/client";
 
 /**
  * Main window: enter/leave the borderless player mode. Idempotent on the Rust

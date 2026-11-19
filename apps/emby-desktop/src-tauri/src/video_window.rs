@@ -369,7 +369,11 @@ mod imp {
             // Safety net only (see the module docs): repair a child that was
             // created without a WM_PARENTNOTIFY we could observe.
             WM_TIMER => {
-                if wparam == TIMER_ID && host_needs_repair(hwnd) {
+                if wparam == TIMER_ID {
+                    // One child walk per tick: `sync_child_proc` already reads
+                    // the same style/size and only writes when something is
+                    // stale, so checking first and syncing in a second walk
+                    // was pure duplication.
                     maintain_z_order(hwnd);
                     sync_direct_children(hwnd);
                 }
@@ -441,10 +445,7 @@ mod imp {
     }
 
     unsafe fn sync_direct_children(hwnd: HWND) {
-        let mut context = ChildSyncContext {
-            host: hwnd,
-            stale: false,
-        };
+        let mut context = ChildSyncContext { host: hwnd };
         EnumChildWindows(
             hwnd,
             Some(sync_child_proc),
@@ -452,52 +453,8 @@ mod imp {
         );
     }
 
-    /// True when the host is not the top sibling or a direct child is missing
-    /// the click-through ex-style bits / does not match the host client area.
-    ///
-    /// The safety-net timer only does its Win32 work when this returns true, so
-    /// a healthy session costs one `GetWindow` + `EnumChildWindows` +
-    /// `GetClientRect` per second and nothing else.
-    unsafe fn host_needs_repair(hwnd: HWND) -> bool {
-        if !GetWindow(hwnd, GW_HWNDPREV).is_null() {
-            return true;
-        }
-        let mut context = ChildSyncContext {
-            host: hwnd,
-            stale: false,
-        };
-        EnumChildWindows(
-            hwnd,
-            Some(stale_child_proc),
-            &mut context as *mut ChildSyncContext as LPARAM,
-        );
-        context.stale
-    }
-
-    unsafe extern "system" fn stale_child_proc(child: HWND, lparam: LPARAM) -> i32 {
-        let context = &mut *(lparam as *mut ChildSyncContext);
-        if GetParent(child) != context.host {
-            return 1;
-        }
-        let mut host_rect = RECT::default();
-        let mut child_rect = RECT::default();
-        let size_ok = GetClientRect(context.host, &mut host_rect) != 0
-            && GetClientRect(child, &mut child_rect) != 0
-            && child_rect.right == host_rect.right
-            && child_rect.bottom == host_rect.bottom;
-        let style = GetWindowLongPtrW(child, GWL_EXSTYLE) as u32;
-        let style_ok = style | HOST_EX_STYLE == style;
-        if !size_ok || !style_ok {
-            context.stale = true;
-            return 0; // stop enumerating: one stale child is enough to act.
-        }
-        1
-    }
-
     struct ChildSyncContext {
         host: HWND,
-        /// Set by `stale_child_proc`; unused by the syncing walk.
-        stale: bool,
     }
 
     /// Only direct children belong to mpv's VO. Nested windows are left alone.

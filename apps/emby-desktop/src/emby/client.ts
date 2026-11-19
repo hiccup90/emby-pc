@@ -225,9 +225,17 @@ export async function embySetFavorite(
   });
 }
 
-export async function embyPlaybackTarget(itemId: string): Promise<EmbyPlaybackTarget> {
+export async function embyPlaybackTarget(
+  itemId: string,
+  startSeconds?: number,
+): Promise<EmbyPlaybackTarget> {
   requireDesktop();
-  return invokeEmby<EmbyPlaybackTarget>("emby_playback_target", { req: { itemId } });
+  // Supplying the known resume point avoids a second DETAIL_FIELDS request in
+  // the Rust client. Omitting it keeps the server-side lookup for callers that
+  // do not have the item's UserData.
+  return invokeEmby<EmbyPlaybackTarget>("emby_playback_target", {
+    req: startSeconds === undefined ? { itemId } : { itemId, startSeconds },
+  });
 }
 
 export async function embyReportPlayback(req: EmbyPlaybackReportRequest): Promise<void> {

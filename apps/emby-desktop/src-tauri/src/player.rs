@@ -5,7 +5,7 @@
 //! `Channel`s, and exposes the command contract.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -120,6 +120,9 @@ pub struct PlayerService {
     /// Immutable configuration of the running mpv session. `None` means "no
     /// session"; a mismatch against the desired key retires it.
     session_key: Mutex<Option<SessionKey>>,
+    /// Monotonic id for `open` calls. A timed-out open only sends `Stop` when
+    /// no newer open has been issued, so it cannot kill the newer stream.
+    open_generation: AtomicU64,
 }
 
 impl PlayerService {
@@ -139,6 +142,7 @@ impl PlayerService {
             config_dir,
             settings,
             session_key: Mutex::new(None),
+            open_generation: AtomicU64::new(0),
         }
     }
 
@@ -316,6 +320,8 @@ impl PlayerService {
         // Read settings before taking the session lock so a slow disk cannot
         // block player controls; the quality preset only matters when spawning.
         let key = SessionKey::new(self.current_settings().video_quality, request.headers);
+        let open_generation = self.open_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let cancel = Arc::new(AtomicBool::new(false));
 
         let reply = {
             let mut session = self.lock_session();
@@ -360,6 +366,7 @@ impl PlayerService {
                 .send(PlayerCommand::Open {
                     url: url.clone(),
                     start_seconds,
+                    cancel: Some(Arc::clone(&cancel)),
                     reply: Some(reply_tx),
                 });
             if let Err(err) = send_result {
@@ -383,6 +390,23 @@ impl PlayerService {
         match reply.recv_timeout(OPEN_REPLY_TIMEOUT) {
             Ok(snapshot) => Ok(snapshot),
             Err(err) => {
+                // The command is already queued. Mark it canceled so the
+                // worker skips a late loadfile, and stop a load that already
+                // started. Skip Stop when a newer open exists: that one owns
+                // the session now.
+                cancel.store(true, Ordering::SeqCst);
+                // Take the session lock before comparing generations. A newer
+                // open increments the generation and queues its Open under this
+                // same lock; this order prevents A's late Stop from being
+                // queued after B's Open and killing the newer stream.
+                let session = self.lock_session();
+                if self.open_generation.load(Ordering::SeqCst) == open_generation {
+                    if let Some(active) = session.as_ref() {
+                        if let Err(stop_err) = active.send(PlayerCommand::Stop) {
+                            eprintln!("[player] open timeout: could not stop mpv: {stop_err}");
+                        }
+                    }
+                }
                 eprintln!("[player] open: no snapshot reply within {OPEN_REPLY_TIMEOUT:?}: {err}");
                 Err(format!(
                     "player_open: mpv did not confirm the stream within {} s ({}); retry the open",
