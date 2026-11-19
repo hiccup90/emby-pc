@@ -56,6 +56,13 @@
   font-size: 15px;
 }
 
+/* The pill itself draws the focus ring; the inherited global :focus-visible
+   outline would add a second rectangle inside it. */
+.search-box__input:focus,
+.search-box__input:focus-visible {
+  outline: none;
+}
+
 .search-box__input::placeholder {
   color: var(--text-3);
 }
