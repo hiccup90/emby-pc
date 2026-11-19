@@ -38,7 +38,10 @@ export function PosterCard({
     >
       <span className="poster-card__frame">
         <MediaArtwork
-          src={landscape ? item.thumbUrl : item.posterUrl}
+          // Match Emby's own thumbnail view: use the 16:9 Thumb when the
+          // server has one, otherwise its 16:9 Backdrop. A poster is 2:3 and
+          // must never be cropped into this card.
+          src={landscape ? item.thumbUrl ?? item.backdropUrl : item.posterUrl}
           alt=""
           title={item.name}
           fallbackLabel="无图"

@@ -546,7 +546,9 @@ export function useEmbyLibrary(
           ...(activeQuery.unplayedOnly ? { filters: "IsUnplayed" } : {}),
         });
         const decorated = await Promise.all(
-          page.items.map((item) => decorateItem(item, false, 400, true)),
+          // The thumbnail view needs both sources Emby's own client uses:
+          // Thumb first, then the 16:9 Backdrop. Never crop the poster.
+          page.items.map((item) => decorateItem(item, true, 400, true)),
         );
         if (generation !== generationRef.current) return;
 

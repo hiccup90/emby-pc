@@ -261,7 +261,10 @@ impl EmbyClient {
         let mut query: Vec<(&str, String)> = vec![
             ("Fields", ITEM_FIELDS.to_string()),
             ("EnableUserData", "true".to_string()),
-            ("EnableImageTypes", "Primary,Backdrop".to_string()),
+            // Thumb is the image the thumbnail view prefers. Without asking
+            // for it Emby leaves ImageTags.Thumb out of the response, so every
+            // landscape card had to fall back to a poster.
+            ("EnableImageTypes", "Primary,Thumb,Backdrop".to_string()),
             ("ImageTypeLimit", "1".to_string()),
             ("Recursive", req.recursive.unwrap_or(true).to_string()),
             (
@@ -1003,6 +1006,11 @@ mod tests {
             "{request_line}"
         );
         assert!(request_line.contains("Limit=24"), "{request_line}");
+        assert!(
+            request_line.contains("EnableImageTypes=Primary%2CThumb%2CBackdrop")
+                || request_line.contains("EnableImageTypes=Primary,Thumb,Backdrop"),
+            "{request_line}"
+        );
         assert!(page.items.is_empty());
     }
 
