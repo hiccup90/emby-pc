@@ -14,7 +14,7 @@ import {
   usePlaybackLauncher,
 } from "./emby/useEmby";
 import { describeEmbyError, embyItems } from "./emby/client";
-import { decorateItems } from "./emby/useSearch";
+import { decorateItems } from "./emby/artwork";
 import { episodePlaybackMeta, itemChapters, itemPlaybackMeta } from "./emby/format";
 import ActorScreen from "./screens/ActorScreen";
 import DetailScreen from "./screens/DetailScreen";

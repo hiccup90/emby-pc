@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   describeEmbyError,
-  embyImageUrl,
   embyItem,
   embyItems,
   embyLogin,
@@ -17,7 +16,6 @@ import {
 import type { EmbyCredentials } from "./client";
 import type {
   EmbyItem,
-  EmbyPerson,
   EmbyPlaybackTarget,
   EmbySession,
   EmbySessionBoot,
@@ -25,6 +23,7 @@ import type {
   EmbySortOrder,
   EmbyView,
 } from "./contract";
+import { decorateItem, personPhotoUrls, type DecoratedItem } from "./artwork";
 import {
   LIBRARY_MAX_ITEMS,
   LIBRARY_PAGE_SIZE,
@@ -33,12 +32,8 @@ import {
   pickDefaultView,
 } from "./library";
 
-export interface EmbyLibraryItem extends EmbyItem {
-  posterUrl: string | null;
-  /** Emby's 16:9 thumbnail image; null when the item has no `Thumb` tag. */
-  thumbUrl: string | null;
-  backdropUrl: string | null;
-}
+/** A raw item plus resolved poster/thumbnail/backdrop URLs. */
+export type EmbyLibraryItem = DecoratedItem<EmbyItem>;
 
 export type EmbyLoadStatus = "idle" | "loading" | "ready" | "error";
 
@@ -257,71 +252,6 @@ function emptyStore(): LibraryStore {
     resumeStatus: "idle",
     resumeError: null,
   };
-}
-
-async function safeImageUrl(
-  item: EmbyItem,
-  imageType: "Primary" | "Thumb" | "Backdrop",
-  maxWidth: number,
-): Promise<string | null> {
-  const tag =
-    imageType === "Primary"
-      ? item.imageTags.Primary
-      : imageType === "Thumb"
-        ? item.imageTags.Thumb
-        : item.backdropImageTags[0];
-  if (!tag) return null;
-  const request = {
-    itemId: item.id,
-    imageType,
-    maxWidth,
-    ...(tag ? { tag } : {}),
-  };
-
-  try {
-    const url = await embyImageUrl(request);
-    return url.trim() ? url : null;
-  } catch (reason) {
-    console.warn(`[emby] could not build ${imageType} image URL`, reason);
-    return null;
-  }
-}
-
-async function decorateItem(
-  item: EmbyItem,
-  includeBackdrop: boolean,
-  posterWidth = 400,
-  includeThumb = false,
-): Promise<EmbyLibraryItem> {
-  const [posterUrl, thumbUrl, backdropUrl] = await Promise.all([
-    safeImageUrl(item, "Primary", posterWidth),
-    includeThumb ? safeImageUrl(item, "Thumb", 640) : Promise.resolve(null),
-    includeBackdrop ? safeImageUrl(item, "Backdrop", 1280) : Promise.resolve(null),
-  ]);
-  return { ...item, posterUrl, thumbUrl, backdropUrl };
-}
-
-/** One image URL per cast/crew member that has a primary image. */
-async function personPhotoUrls(people: EmbyPerson[]): Promise<Record<string, string>> {
-  const withPhoto = people.filter((person) => person.id && person.primaryImageTag).slice(0, 40);
-  const entries = await Promise.all(
-    withPhoto.map(async (person): Promise<[string, string] | null> => {
-      const id = person.id as string;
-      try {
-        const url = await embyImageUrl({
-          itemId: id,
-          imageType: "Primary",
-          maxWidth: 240,
-          tag: person.primaryImageTag as string,
-        });
-        return url.trim() ? [id, url] : null;
-      } catch (reason) {
-        console.warn("[emby] could not build a person image URL", reason);
-        return null;
-      }
-    }),
-  );
-  return Object.fromEntries(entries.filter((entry): entry is [string, string] => entry !== null));
 }
 
 function plainLibraryItem(item: EmbyItem): EmbyLibraryItem {

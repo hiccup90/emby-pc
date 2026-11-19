@@ -12,9 +12,7 @@ const SEARCH_ITEM_TYPES = "Movie,Series,Episode";
 
 export type SearchStatus = "idle" | "loading" | "ready" | "error";
 
-// Kept as a re-export for callers that still import it from this module;
-// the implementation lives in artwork.ts (single source of truth).
-export { decorateItems };
+// The implementation lives in artwork.ts (single source of truth).
 
 interface SearchResults {
   items: EmbyLibraryItem[];
@@ -24,7 +22,7 @@ interface SearchResults {
 export interface UseSearchOptions {
   /** Debounce before a request is sent. Defaults to 250ms. */
   debounceMs?: number;
-  /** Starting text; later changes to this value replace the current query. */
+  /** Starting text; only read on mount. */
   initialQuery?: string;
   /** Called with every raw query change, so a parent can remember it. */
   onQueryChange?: (query: string) => void;
@@ -57,16 +55,6 @@ export function useSearch(options: UseSearchOptions = {}): EmbySearchController 
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim());
   const onQueryChangeRef = useRef(onQueryChange);
   onQueryChangeRef.current = onQueryChange;
-  const initialRef = useRef(initialQuery);
-
-  // A new initial value (e.g. the shell restoring the field after a detour)
-  // replaces the current text; the first render already used it above.
-  useEffect(() => {
-    if (initialRef.current === initialQuery) return;
-    initialRef.current = initialQuery;
-    setQueryState(initialQuery);
-    setDebouncedQuery(initialQuery.trim());
-  }, [initialQuery]);
 
   const setQuery = (next: string) => {
     setQueryState(next);
