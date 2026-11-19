@@ -37,13 +37,9 @@
 
 以下步骤是 Windows 实机验收清单，不是已验证结果。若还没有可用 artifact，先按“Windows CI”一节手动触发一次构建。
 
-1. 从 GitHub Actions 页面下载 artifact，或在本仓库执行：
+1. 从 GitHub Actions 页面直接下载 artifact（`emby-desktop.exe` 单文件，不用解压）。当前 `gh run download` 仍按 zip 解压，对单文件 artifact 会报错；完整包仍是 zip，仍可用它下载。
 
-   ```sh
-   gh run download <run-id>
-   ```
-
-   默认 artifact 是单个 `emby-desktop.exe`，浏览器直接下载，不再套 zip。第一次安装还需要 `libmpv-2.dll`：手动触发时勾选 `bundle_libmpv`（命令行加 `-f bundle_libmpv=true`），会另外产出含 exe 和 DLL 的 zip 包 `emby-desktop-windows-x64-full-<sha>`。
+   默认 artifact 是单个 `emby-desktop.exe`（未压缩，约 12 MB；之前的 zip 约 3.9 MB）。第一次安装还需要 `libmpv-2.dll`：手动触发时勾选 `bundle_libmpv`（命令行加 `-f bundle_libmpv=true`），会另外产出含 exe 和 DLL 的 zip 包 `emby-desktop-windows-x64-full-<sha>`。
 2. 确认 `emby-desktop.exe` 与 `libmpv-2.dll` 位于同一目录，两者缺一不可。libmpv 版本没变时，之后更新只需替换 exe。
 3. 运行 `emby-desktop.exe`。构建未签名，Windows 可能弹出 SmartScreen 提示；仅在确认产物来自本项目 CI 后继续。
 4. 启动后进入登录页，填写服务器地址（如 `https://<server>` 或 `<host>:<port>`；省略 scheme 时按 `http://` 处理）、用户名和密码，点击登录。登录成功后会话写入 `session.json`；若提示登录失效，需要重新登录。
@@ -115,7 +111,7 @@ gh workflow run emby-desktop-windows.yml --ref "$(git branch --show-current)"
 - 运行环境：`windows-2022`、Node 20、pnpm 9.15.4（`pnpm-lock.yaml` 已入库）、Rust stable MSVC x64。
 - 构建步骤包括 `cargo test --workspace` 和 `pnpm tauri build --no-bundle`（`beforeBuildCommand` 跑 `tsc -b` + `vite build`）；不产 MSI。
 - 只有勾选 `bundle_libmpv` 时才下载固定版本 libmpv `20261108`、校验 SHA-256 并把 `libmpv-2.dll` 复制到 exe 同目录；默认 exe-only 构建不跑这些步骤。
-- 默认 artifact `emby-desktop.exe` 是单文件（`archive:false`，直接下载，保留 3 天）；加 `-f bundle_libmpv=true` 时另外产出 `emby-desktop-windows-x64-full-<sha>`（zip，exe + `libmpv-2.dll`，约 49 MB，保留 1 天）。CI 通过只说明能编译、单测通过，不代表播放已验收。
+- 默认 artifact `emby-desktop.exe` 是单文件（`archive:false`，直接下载，未压缩约 12 MB，保留 3 天）；加 `-f bundle_libmpv=true` 时另外产出 `emby-desktop-windows-x64-full-<sha>`（zip，exe + `libmpv-2.dll`，约 49 MB，保留 1 天）。CI 通过只说明能编译、单测通过，不代表播放已验收。
 - libmpv 来自 GPLv2+ 构建，分发 exe 与 DLL 前需确认许可证合规。
 
 ## 待验证与未决事项
