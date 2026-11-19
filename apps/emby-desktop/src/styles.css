@@ -7,7 +7,7 @@
 :root {
   color-scheme: dark;
   --titlebar-height: 48px;
-  --sidebar-width: 260px;
+  --sidebar-width: 64px;
   --page-x: 40px;
 
   /* Plex Web 4.163 tokens (see plex-ref/SPEC.md): neutral greys, amber accent. */
@@ -18,7 +18,6 @@
     radial-gradient(circle at 0 100%, #272727, transparent 70%),
     radial-gradient(circle at 100% 100%, #414141, transparent 70%),
     #1f1f1f;
-  --bg-deep: #111111;
   --sidebar: rgba(0, 0, 0, 0.15);
   --surface: rgba(0, 0, 0, 0.45);
   --menu: #191a1c;
@@ -150,7 +149,8 @@ button:disabled {
   flex: 0 0 var(--titlebar-height);
   align-items: center;
   padding-left: 18px;
-  background: var(--bg-deep);
+  background: var(--bg);
+  box-shadow: inset 0 -1px 0 var(--line);
   user-select: none;
 }
 
@@ -370,8 +370,8 @@ button:disabled {
   width: 100%;
   height: 50px;
   align-items: center;
-  gap: 16px;
-  padding: 0 16px;
+  justify-content: center;
+  padding: 0;
   border: 0;
   border-radius: 0;
   color: var(--text-2);
@@ -418,11 +418,9 @@ button:disabled {
   background: #fff;
 }
 
-.sidebar__label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.sidebar__label,
+.sidebar__status {
+  display: none;
 }
 
 .sidebar__skeleton {
@@ -433,13 +431,6 @@ button:disabled {
 
 .sidebar__skeleton span {
   height: 14px;
-}
-
-.sidebar__status {
-  margin: 10px 16px;
-  color: var(--text-3);
-  font-size: 12.5px;
-  line-height: 1.5;
 }
 
 /* ---- page frame -------------------------------------------------------------- */
@@ -543,38 +534,6 @@ button:disabled {
   font-weight: 700;
 }
 
-.hub__actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.hub__nav {
-  display: flex;
-  gap: 6px;
-}
-
-.icon-button {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  color: var(--text-2);
-  background: transparent;
-}
-
-.icon-button:hover:not(:disabled) {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.icon-button:disabled {
-  opacity: 0.2;
-}
-
 .hub__track {
   display: grid;
   grid-auto-columns: clamp(220px, 21vw, 300px);
@@ -586,9 +545,20 @@ button:disabled {
   scroll-padding: 0 var(--page-x);
   scroll-snap-type: x proximity;
   scrollbar-width: none;
+  cursor: grab;
+  user-select: none;
   /* Cards slide under faded edges (Plex Web hub rows). */
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--page-x), #000 calc(100% - var(--page-x)), transparent 100%);
   mask-image: linear-gradient(90deg, transparent 0, #000 var(--page-x), #000 calc(100% - var(--page-x)), transparent 100%);
+}
+
+.hub__track.is-dragging {
+  cursor: grabbing;
+  scroll-snap-type: none;
+}
+
+.hub__track img {
+  -webkit-user-drag: none;
 }
 
 .hub__track > * {
@@ -1767,18 +1737,7 @@ button:disabled {
 
 @media (max-width: 900px) {
   :root {
-    --sidebar-width: 64px;
     --page-x: 22px;
-  }
-
-  .sidebar__label,
-  .sidebar__status {
-    display: none;
-  }
-
-  .sidebar__item {
-    justify-content: center;
-    padding: 0;
   }
 
   .sidebar__skeleton {

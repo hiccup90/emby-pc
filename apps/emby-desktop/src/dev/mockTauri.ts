@@ -17,8 +17,8 @@
  *   ?state=empty      libraries exist but are empty
  *   ?resume=none      no "continue watching" row
  *   ?posters=none     no artwork anywhere (fallback tiles)
- *   ?home=loading     the home screen's "recently added" request never finishes
- *   ?home=error       the home screen's "recently added" request fails
+ *   ?home=loading     the home page's per-library "recently added" rows never finish
+ *   ?home=error       the home page's per-library "recently added" rows fail
  *   ?settings=slow    settings arrive after boot (pageSize lands mid-session)
  */
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
@@ -48,7 +48,7 @@ const scenario = {
   state: params.get("state"),
   noResume: params.get("resume") === "none",
   noArt: params.get("posters") === "none",
-  /** Home screen only: "loading" stalls the recent row, "error" fails it. */
+  /** Home page rows only: "loading" stalls them, "error" fails them. */
   home: params.get("home"),
   /** "slow" resolves `settings_get` after the session boot has finished. */
   settings: params.get("settings"),
@@ -356,6 +356,7 @@ const DEFAULT_MOCK_SETTINGS: AppSettings = {
   pageSize: 120,
   libraryViewModes: {},
   libraryQueries: {},
+  homeViewIds: null,
 };
 
 function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): AppSettings {
@@ -383,12 +384,24 @@ function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): 
         query.itemType === "Movie" || query.itemType === "Series" ? query.itemType : "all",
     };
   }
+  const homeViewIds =
+    value?.homeViewIds == null
+      ? null
+      : Array.from(
+          new Set(
+            value.homeViewIds
+              .filter((id): id is string => typeof id === "string")
+              .map((id) => id.trim())
+              .filter(Boolean),
+          ),
+        );
   return {
     videoQuality: value?.videoQuality === "default" ? "default" : "low",
     autoPlay: value?.autoPlay !== false,
     pageSize,
     libraryViewModes,
     libraryQueries,
+    homeViewIds,
   };
 }
 
@@ -766,10 +779,16 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
       return VIEWS;
     case "emby_items": {
       if (scenario.state === "loading") return never();
-      // The home screen's "recently added" request is the one without a parent.
-      if (!req.parentId && scenario.home === "loading") return never();
+      // Home rows are the only fixed 8-item, DateCreated-descending children
+      // request; library pages use their own page size and query.
+      const isHomeRow =
+        Boolean(req.parentId) &&
+        req.recursive === true &&
+        req.limit === 8 &&
+        req.sortBy === "DateCreated";
+      if (isHomeRow && scenario.home === "loading") return never();
       await wait(250);
-      if (!req.parentId && scenario.home === "error") {
+      if (isHomeRow && scenario.home === "error") {
         throw {
           reason: "server_error",
           message: "error sending request for url (http://emby.home:8096/Users/mock-user/Items)",

@@ -13,6 +13,7 @@ export type IconName =
   | "folder"
   | "chevron-left"
   | "chevron-right"
+  | "chevron-up"
   | "chevron-down"
   | "check"
   | "logout"
@@ -95,6 +96,7 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     folder: <path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />,
     "chevron-left": <path d="m14.5 18-6-6 6-6" />,
     "chevron-right": <path d="m9.5 18 6-6-6-6" />,
+    "chevron-up": <path d="m6 14.5 6-6 6 6" />,
     "chevron-down": <path d="m6 9.5 6 6 6-6" />,
     check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
     logout: (

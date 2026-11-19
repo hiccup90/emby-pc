@@ -50,6 +50,34 @@ export function includeItemTypesForView(view: EmbyView): string | undefined {
   return includeItemTypesForCollectionType(collectionTypeOf(view));
 }
 
+/** The home page starts with the movie and TV libraries, in sidebar order. */
+export function defaultHomeViewIds(views: EmbyView[]): string[] {
+  return views
+    .filter((view) => {
+      const type = collectionTypeOf(view);
+      return type === "movies" || type === "tvshows";
+    })
+    .map((view) => view.id);
+}
+
+/** Resolve persisted home ids to existing views, preserving the saved order. */
+export function resolveHomeViews(
+  views: EmbyView[],
+  selectedIds: string[] | null,
+): EmbyView[] {
+  const byId = new Map(views.map((view) => [view.id, view]));
+  const ordered: EmbyView[] = [];
+  const seen = new Set<string>();
+  for (const id of selectedIds ?? defaultHomeViewIds(views)) {
+    const view = byId.get(id);
+    if (view && !seen.has(id)) {
+      seen.add(id);
+      ordered.push(view);
+    }
+  }
+  return ordered;
+}
+
 /** Movies first, otherwise the first view returned by the server. */
 export function pickDefaultView(views: EmbyView[]): EmbyView | null {
   return (

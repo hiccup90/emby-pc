@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import {
   formatRemainingTicks,
@@ -116,43 +116,27 @@ export function ContinueCard({
   );
 }
 
-/** Horizontal hub row with Plex-style paging arrows. */
+/** Horizontal hub row. Drag with the mouse (or use the wheel) to pan. */
 type HubVariant = "landscape" | "poster" | "person";
 
 export function HubRow({
   title,
-  count,
   variant = "landscape",
-  action,
   children,
 }: {
   title: string;
-  count: number;
   /** Card shape, sets the column width: 16:9 cards, 2:3 posters or people. */
   variant?: HubVariant;
-  /** Optional trailing control next to the paging arrows ("查看全部"). */
-  action?: ReactNode;
   children: ReactNode;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const [edges, setEdges] = useState({ start: true, end: true });
-
-  useEffect(() => {
-    const track = trackRef.current;
-    if (!track) return undefined;
-    const measure = () => {
-      const max = track.scrollWidth - track.clientWidth;
-      setEdges({ start: track.scrollLeft <= 2, end: track.scrollLeft >= max - 2 });
-    };
-    measure();
-    track.addEventListener("scroll", measure, { passive: true });
-    const observer = new ResizeObserver(measure);
-    observer.observe(track);
-    return () => {
-      track.removeEventListener("scroll", measure);
-      observer.disconnect();
-    };
-  }, [count]);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startScroll: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
 
   // Vertical wheel over a hub row pans it horizontally until the row hits an
   // edge; after that the page scrolls normally again. The listener must be
@@ -173,35 +157,79 @@ export function HubRow({
     };
     track.addEventListener("wheel", onWheel, { passive: false });
     return () => track.removeEventListener("wheel", onWheel);
-  }, [count]);
+  }, []);
 
-  const page = (direction: 1 | -1) => {
-    const track = trackRef.current;
-    if (!track) return;
-    track.scrollBy({ left: direction * track.clientWidth * 0.9, behavior: "smooth" });
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const track = event.currentTarget;
+    if (track.scrollWidth <= track.clientWidth) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScroll: track.scrollLeft,
+      moved: false,
+    };
+    suppressClickRef.current = false;
+  };
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const track = event.currentTarget;
+    const delta = event.clientX - drag.startX;
+    if (!drag.moved) {
+      if (Math.abs(delta) < 4) return;
+      drag.moved = true;
+      track.classList.add("is-dragging");
+      // Capture only after the drag threshold: a plain click must still reach
+      // the card button underneath.
+      track.setPointerCapture?.(event.pointerId);
+    }
+    event.preventDefault();
+    track.scrollLeft = drag.startScroll - delta;
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const track = event.currentTarget;
+    if (track.hasPointerCapture?.(event.pointerId)) {
+      track.releasePointerCapture(event.pointerId);
+    }
+    track.classList.remove("is-dragging");
+    if (drag.moved) {
+      // The click event follows pointerup; swallow exactly that one so a drag
+      // does not open the card under the pointer.
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    }
+    dragRef.current = null;
+  };
+
+  const onClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!suppressClickRef.current) return;
+    suppressClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   return (
     <section className="hub" aria-label={title}>
       <div className="hub__header">
         <h2 className="hub__title">{title}</h2>
-        {(action || !(edges.start && edges.end)) && (
-          <div className="hub__actions">
-            {action}
-            {!(edges.start && edges.end) && (
-              <div className="hub__nav">
-                <button type="button" className="icon-button" onClick={() => page(-1)} disabled={edges.start} aria-label="向左滚动">
-                  <Icon name="chevron-left" size={18} />
-                </button>
-                <button type="button" className="icon-button" onClick={() => page(1)} disabled={edges.end} aria-label="向右滚动">
-                  <Icon name="chevron-right" size={18} />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
       </div>
-      <div className={`hub__track hub__track--${variant}`} ref={trackRef}>
+      <div
+        className={`hub__track hub__track--${variant}`}
+        ref={trackRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onClickCapture={onClickCapture}
+        onDragStart={(event) => event.preventDefault()}
+      >
         {children}
       </div>
     </section>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { EmbyItem, EmbyPlaybackTarget } from "./emby/contract";
 import { hasTauriRuntime } from "./emby/client";
 import type {
@@ -13,9 +13,7 @@ import {
   fetchEpisodeRun,
   clearEpisodeRunCache,
 } from "./emby/useEmby";
-import { embyItems } from "./emby/client";
-import { useAsyncResource } from "./emby/useAsyncResource";
-import { decorateItems } from "./emby/artwork";
+import { resolveHomeViews } from "./emby/library";
 import { episodePlaybackMeta, itemChapters, itemPlaybackMeta, itemStartSeconds } from "./emby/format";
 import ActorScreen from "./screens/ActorScreen";
 import DetailScreen from "./screens/DetailScreen";
@@ -264,25 +262,12 @@ export default function App() {
     [library, settings.libraryQueries],
   );
 
-
-  // "Recently added" for the home screen (server-sorted, newest first). The
-  // shared resource hook publishes loading/error/ready and owns cancellation.
-  const recentResource = useAsyncResource(
-    () =>
-      embyItems({
-        recursive: true,
-        sortBy: "DateCreated",
-        sortOrder: "Descending",
-        limit: 24,
-        includeItemTypes: "Movie,Series",
-      }).then((page) => decorateItems(page.items)),
-    `home-recent:${session?.userId ?? "signed-out"}`,
-    {
-      enabled: Boolean(session),
-      fallbackError: "无法读取最近添加的内容。",
-    },
+  // The home page shows one fixed-size "recently added" row per selected
+  // library; `null` means the movie/TV defaults from the user's Emby views.
+  const homeViews = useMemo(
+    () => resolveHomeViews(library.views, settings.homeViewIds),
+    [library.views, settings.homeViewIds],
   );
-  const recent = recentResource.data ?? [];
 
   const openActor = useCallback(
     (person: { id: string | null; name: string }) => {
@@ -665,13 +650,11 @@ export default function App() {
               resume={library.resumable}
               resumeStatus={library.resumeStatus}
               resumeError={library.resumeError}
-              recent={recent}
-              recentStatus={recentResource.status}
-              recentError={recentResource.error}
+              views={homeViews}
+              userId={session?.userId ?? ""}
               onOpen={openItem}
               onPlay={resumeItem}
               onSeeAll={goToLibrary}
-              onRetryRecent={recentResource.reload}
               onRetryResume={library.retryResume}
             />
           )}
@@ -687,6 +670,7 @@ export default function App() {
 
           {route.screen === "settings" && (
             <SettingsScreen
+              views={library.views}
               onBack={() => setRoute({ screen: "home" })}
               onSettingsChange={setSettings}
             />

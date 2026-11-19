@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import type { EmbyView } from "../emby/contract";
 import { describeEmbyError, hasTauriRuntime } from "../emby/client";
+import { collectionTypeOf, defaultHomeViewIds } from "../emby/library";
 import { DEFAULT_APP_SETTINGS, getSettings, saveSettings } from "../settings/tauri";
 import type { AppSettings, VideoQuality } from "../settings/tauri";
 import { useAsyncResource } from "../emby/useAsyncResource";
@@ -8,9 +10,26 @@ import { ErrorNotice, Icon, useEscape } from "./shared";
 import "./SettingsScreen.css";
 
 interface SettingsScreenProps {
+  /** Emby libraries available for the home page configuration. */
+  views: EmbyView[];
   onBack: () => void;
   /** Lets the shell react immediately after a setting is persisted. */
   onSettingsChange?: (settings: AppSettings) => void;
+}
+
+function homeViewKind(view: EmbyView): string {
+  switch (collectionTypeOf(view)) {
+    case "movies":
+      return "电影";
+    case "tvshows":
+      return "电视剧";
+    case "homevideos":
+      return "家庭视频";
+    case "music":
+      return "音乐";
+    default:
+      return "媒体库";
+  }
 }
 
 const QUALITY_OPTIONS: Array<{ value: VideoQuality; label: string; title: string }> = [
@@ -29,7 +48,7 @@ function pageSizeOptionsFor(pageSize: number): readonly number[] {
     : [...PAGE_SIZE_OPTIONS, current].sort((a, b) => a - b);
 }
 
-export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScreenProps) {
+export default function SettingsScreen({ views, onBack, onSettingsChange }: SettingsScreenProps) {
   const [settings, setSettings] = useState<AppSettings>(() => ({ ...DEFAULT_APP_SETTINGS }));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -114,6 +133,36 @@ export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScr
     void persist(next);
   };
 
+  const selectedHomeIds = settings.homeViewIds ?? defaultHomeViewIds(views);
+  const viewById = new Map(views.map((view) => [view.id, view]));
+  const selectedHomeViews: EmbyView[] = [];
+  const selectedSet = new Set<string>();
+  for (const id of selectedHomeIds) {
+    const view = viewById.get(id);
+    if (view && !selectedSet.has(id)) {
+      selectedSet.add(id);
+      selectedHomeViews.push(view);
+    }
+  }
+  const unselectedHomeViews = views.filter((view) => !selectedSet.has(view.id));
+
+  const toggleHomeView = (view: EmbyView) => {
+    const ordered = selectedHomeViews.map((selected) => selected.id);
+    update({
+      homeViewIds: selectedSet.has(view.id)
+        ? ordered.filter((id) => id !== view.id)
+        : [...ordered, view.id],
+    });
+  };
+
+  const moveHomeView = (index: number, delta: -1 | 1) => {
+    const next = selectedHomeViews.map((selected) => selected.id);
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    update({ homeViewIds: next });
+  };
+
   return (
     <main className="page settings-page">
       <header className="settings-header">
@@ -169,6 +218,92 @@ export default function SettingsScreen({ onBack, onSettingsChange }: SettingsScr
         </p>
       ) : (
         <>
+          <section className="settings-section" aria-labelledby="settings-home-title">
+            <h2 className="settings-section__title" id="settings-home-title">
+              首页
+            </h2>
+            <div className="settings-card">
+              <div className="settings-row settings-row--stacked">
+                <span className="settings-row__text">
+                  <span className="settings-row__label">首页媒体库</span>
+                  <span className="settings-row__hint">
+                    选择要显示「最近入库」的媒体库，并按顺序排列；每行固定显示最新 8 部。
+                  </span>
+                </span>
+              </div>
+              {views.length === 0 ? (
+                <div className="settings-row">
+                  <span className="settings-row__hint">媒体库读取完成后即可配置。</span>
+                </div>
+              ) : (
+                <>
+                  {selectedHomeViews.map((view, index) => (
+                    <div className="settings-row settings-home-row" key={view.id}>
+                      <span className="settings-row__text">
+                        <span className="settings-row__label">{view.name}</span>
+                        <span className="settings-row__hint">{homeViewKind(view)} · 已显示</span>
+                      </span>
+                      <span className="settings-home-row__actions">
+                        <button
+                          type="button"
+                          className="settings-order"
+                          title="上移"
+                          aria-label={`上移 ${view.name}`}
+                          disabled={busy || index === 0}
+                          onClick={() => moveHomeView(index, -1)}
+                        >
+                          <Icon name="chevron-up" size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-order"
+                          title="下移"
+                          aria-label={`下移 ${view.name}`}
+                          disabled={busy || index === selectedHomeViews.length - 1}
+                          onClick={() => moveHomeView(index, 1)}
+                        >
+                          <Icon name="chevron-down" size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={true}
+                          aria-label={`在首页隐藏 ${view.name}`}
+                          disabled={busy}
+                          className="settings-toggle settings-toggle--on"
+                          onClick={() => toggleHomeView(view)}
+                        >
+                          <span className="settings-toggle__thumb" aria-hidden="true" />
+                          <span className="visually-hidden">已显示</span>
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                  {unselectedHomeViews.map((view) => (
+                    <div className="settings-row settings-home-row" key={view.id}>
+                      <span className="settings-row__text">
+                        <span className="settings-row__label">{view.name}</span>
+                        <span className="settings-row__hint">{homeViewKind(view)} · 未显示</span>
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={false}
+                        aria-label={`在首页显示 ${view.name}`}
+                        disabled={busy}
+                        className="settings-toggle"
+                        onClick={() => toggleHomeView(view)}
+                      >
+                        <span className="settings-toggle__thumb" aria-hidden="true" />
+                        <span className="visually-hidden">未显示</span>
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </section>
+
           <section className="settings-section" aria-labelledby="settings-playback-title">
             <h2 className="settings-section__title" id="settings-playback-title">
               播放

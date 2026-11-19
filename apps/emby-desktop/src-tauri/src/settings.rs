@@ -8,7 +8,7 @@
 //! whose quality preset is the historical low-overhead `profile=fast` so an
 //! upgrade does not silently change playback quality.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -119,6 +119,11 @@ pub struct AppSettings {
     /// Per-library sort/filter state. Missing ids use the global defaults.
     #[serde(default)]
     pub library_queries: BTreeMap<String, LibraryQuerySettings>,
+    /// Ordered Emby view ids shown on the home page. `None` means "use the
+    /// default movie/TV libraries"; an explicit (possibly empty) list is the
+    /// user's choice, so clearing every row must stay cleared.
+    #[serde(default)]
+    pub home_view_ids: Option<Vec<String>>,
 }
 
 impl Default for AppSettings {
@@ -129,6 +134,7 @@ impl Default for AppSettings {
             page_size: DEFAULT_PAGE_SIZE,
             library_view_modes: BTreeMap::new(),
             library_queries: BTreeMap::new(),
+            home_view_ids: None,
         }
     }
 }
@@ -145,6 +151,17 @@ impl AppSettings {
             .retain(|view_id, _| !view_id.trim().is_empty());
         for query in self.library_queries.values_mut() {
             *query = query.clone().normalized();
+        }
+        if let Some(ids) = self.home_view_ids.take() {
+            let mut seen = HashSet::new();
+            let mut cleaned = Vec::with_capacity(ids.len());
+            for id in ids {
+                let id = id.trim();
+                if !id.is_empty() && seen.insert(id.to_string()) {
+                    cleaned.push(id.to_string());
+                }
+            }
+            self.home_view_ids = Some(cleaned);
         }
         self
     }
@@ -311,6 +328,7 @@ mod tests {
             page_size: 60,
             library_view_modes,
             library_queries,
+            home_view_ids: Some(vec!["v-movies".to_string(), "v-tv".to_string()]),
         };
         store.save(&settings).expect("save settings");
         assert_eq!(store.load(), settings);
@@ -323,7 +341,27 @@ mod tests {
         assert!(text.contains("\"thumbnail\""), "{text}");
         assert!(text.contains("\"libraryQueries\""), "{text}");
         assert!(text.contains("\"CommunityRating\""), "{text}");
+        assert!(text.contains("\"homeViewIds\""), "{text}");
+        assert!(text.contains("\"v-movies\""), "{text}");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn home_view_ids_are_trimmed_deduplicated_and_keep_order() {
+        let settings = AppSettings {
+            home_view_ids: Some(vec![
+                " v-movies ".to_string(),
+                "".to_string(),
+                "v-tv".to_string(),
+                "v-movies".to_string(),
+            ]),
+            ..AppSettings::default()
+        }
+        .normalized();
+        assert_eq!(
+            settings.home_view_ids,
+            Some(vec!["v-movies".to_string(), "v-tv".to_string()])
+        );
     }
 
     #[test]

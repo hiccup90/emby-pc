@@ -17,6 +17,11 @@ export interface AppSettings {
   libraryViewModes: Record<string, LibraryViewMode>;
   /** Per Emby view id; absent means the global library query defaults. */
   libraryQueries: Record<string, EmbyLibraryQuery>;
+  /**
+   * Ordered Emby view ids shown on the home page. `null` means the default
+   * movie/TV libraries; an explicit list (even empty) is the user's choice.
+   */
+  homeViewIds: string[] | null;
 }
 
 /**
@@ -29,6 +34,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   pageSize: 120,
   libraryViewModes: {},
   libraryQueries: {},
+  homeViewIds: null,
 };
 
 /** Reads the persisted settings; browser previews fall back to defaults. */

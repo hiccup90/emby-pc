@@ -191,6 +191,34 @@
   transform: translateX(20px);
 }
 
+.settings-home-row__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-order {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text-2);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.settings-order:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settings-order:disabled {
+  opacity: 0.3;
+}
+
 .settings-select {
   min-width: 112px;
   height: 34px;

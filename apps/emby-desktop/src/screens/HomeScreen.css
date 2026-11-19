@@ -1,35 +1,43 @@
-/* Home screen: header plus the "继续观看" / "最近添加" hub rows.
-   The rows themselves reuse HubRow/ContinueCard from cards.tsx and take their
-   layout from styles.css (.hub, .hub__track, .continue-card); only the shell
-   and the loading/error/empty states live here. */
+/* Home page: "继续观看" plus one fixed-size "recently added" grid per selected
+   library. The rows themselves reuse HubRow/ContinueCard from cards.tsx and
+   take their horizontal layout from styles.css; only the page shell, the
+   library grids and the loading/error/empty states live here. */
 
-.home-page__header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px 24px;
-  margin: 0 0 30px;
-}
-
-.home-page__subtitle {
-  margin: 6px 0 0;
-  color: var(--text-3);
-  font-size: 13px;
-}
-
-/* Sections are separate blocks; the empty/error variants need the same rhythm
-   as a full hub row. */
 .home-hub {
   margin: 0 0 40px;
 }
 
-/* Placeholder row while the first request is in flight. */
+/* Eight across at desktop widths; wrapping only, never horizontal scrolling. */
+.home-library-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 200px));
+  justify-content: start;
+  gap: 24px 18px;
+}
+
+@media (max-width: 1220px) {
+  .home-library-grid {
+    grid-template-columns: repeat(6, minmax(0, 200px));
+  }
+}
+
+@media (max-width: 1000px) {
+  .home-library-grid {
+    grid-template-columns: repeat(4, minmax(0, 200px));
+  }
+}
+
+@media (max-width: 640px) {
+  .home-library-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Placeholder while a row's first request is in flight. */
 .home-skeleton {
   pointer-events: none;
 }
 
-.home-hub__empty,
 .home-hub__error {
   margin: 0;
   color: var(--text-3);
@@ -54,25 +62,6 @@
   color: var(--text);
 }
 
-.home-hub__see-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 4px;
-  color: var(--accent);
-  background: transparent;
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.home-hub__see-all:hover {
-  color: var(--accent-hover);
-  background: rgba(229, 160, 13, 0.1);
-}
-
 .home-page__empty {
   margin: 4px 0 0;
 }
@@ -88,11 +77,4 @@
 .home-page__link:hover {
   color: var(--accent-hover);
   text-decoration: underline;
-}
-
-@media (max-width: 700px) {
-  .home-page__header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }

@@ -734,7 +734,7 @@ export default function DetailScreen({
       {(cast.length > 0 || similar.items.length > 0) && (
         <div className="detail-rows">
           {cast.length > 0 && (
-            <HubRow title="演职人员" count={cast.length} variant="person">
+            <HubRow title="演职人员" variant="person">
               {cast.map((person, index) => (
                 <PersonCard
                   key={`${person.id ?? person.name}-${person.kind}-${index}`}
@@ -750,7 +750,7 @@ export default function DetailScreen({
             </HubRow>
           )}
           {similar.items.length > 0 && (
-            <HubRow title="更多类似内容" count={similar.items.length} variant="poster">
+            <HubRow title="更多类似内容" variant="poster">
               {similar.items.map((other) => (
                 <PosterCard key={other.id} item={other} landscape={false} onSelect={onOpenItem} />
               ))}

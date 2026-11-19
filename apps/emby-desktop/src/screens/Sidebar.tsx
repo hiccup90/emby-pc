@@ -31,7 +31,7 @@ interface SidebarProps {
   onSettings?: () => void;
 }
 
-/** Library navigation (Plex-style left rail). Collapses to icons in narrow windows. */
+/** Library navigation: a permanently icon-only left rail. */
 export default function Sidebar({
   views,
   activeViewId,
