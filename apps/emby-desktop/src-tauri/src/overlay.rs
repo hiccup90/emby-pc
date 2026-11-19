@@ -177,6 +177,17 @@ fn region_rects(width: u32, height: u32, bands: Bands, margin: i32) -> [(i32, i3
     ]
 }
 
+/// Half-open screen-space hit test: left/top are inside, right/bottom are not.
+#[cfg(any(windows, test))]
+fn point_in_rect(
+    cursor: (i32, i32),
+    (x, y, width, height): (i32, i32, u32, u32),
+) -> bool {
+    let right = x.saturating_add(width.min(i32::MAX as u32) as i32);
+    let bottom = y.saturating_add(height.min(i32::MAX as u32) as i32);
+    cursor.0 >= x && cursor.0 < right && cursor.1 >= y && cursor.1 < bottom
+}
+
 /// Hysteresis for window repositioning, in physical pixels.
 ///
 /// A window the compositor keeps nudging (or a geometry the page reports with a
@@ -305,6 +316,11 @@ struct Inner {
     latch: SeqLatch,
     /// Last geometry pushed to the controls window, to avoid redundant calls.
     last_geometry: Option<(i32, i32, u32, u32)>,
+    /// Last video rectangle in screen coordinates (physical px), captured by
+    /// `present`. The 16 ms wake poller and click router read this instead of
+    /// asking the window for scale/origin on every tick.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    last_video_rect: Option<(i32, i32, u32, u32)>,
     /// Strips (physical px) the window region exposes; `None` until the first
     /// region is applied. The top strip is clipped to its own width so only the
     /// corner is hit-testable, the bottom strip spans the window.
@@ -347,6 +363,10 @@ struct Inner {
 pub struct OverlayState {
     inner: Mutex<Inner>,
     wake_stop: Arc<AtomicBool>,
+    /// Captured at construction on the Tauri main thread; used by the Windows
+    /// frame-redraw path to avoid posting a redundant main-thread task.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    main_thread: std::thread::ThreadId,
 }
 
 impl OverlayState {
@@ -358,6 +378,7 @@ impl OverlayState {
                 sync: None,
                 latch: SeqLatch::new(),
                 last_geometry: None,
+                last_video_rect: None,
                 last_bands: None,
                 controls_shown: false,
                 interactive: false,
@@ -373,7 +394,13 @@ impl OverlayState {
                 applying_geometry: false,
             }),
             wake_stop: Arc::new(AtomicBool::new(false)),
+            main_thread: std::thread::current().id(),
         }
+    }
+
+    #[cfg(windows)]
+    fn is_main_thread(&self) -> bool {
+        self.main_thread == std::thread::current().id()
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -411,7 +438,22 @@ impl OverlayState {
         }
         #[cfg(windows)]
         if let Ok(hwnd) = controls_hwnd(controls) {
-            force_frame_redraw(hwnd, signature, reason);
+            if self.is_main_thread() {
+                force_frame_redraw(hwnd, signature, reason);
+            } else {
+                let hwnd = hwnd as isize;
+                let signature = signature.to_string();
+                let reason = reason.to_string();
+                if let Err(err) = controls.run_on_main_thread(move || {
+                    force_frame_redraw(
+                        hwnd as windows_sys::Win32::Foundation::HWND,
+                        &signature,
+                        &reason,
+                    );
+                }) {
+                    eprintln!("[overlay] could not post frame redraw: {err}");
+                }
+            }
         }
         #[cfg(not(windows))]
         {
@@ -577,23 +619,28 @@ impl OverlayState {
                 while pointer_button_down() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(16));
                 }
-                let Some(state) = app.try_state::<OverlayState>() else {
+                let Some(controls) = app.get_webview_window(CONTROLS_LABEL) else {
                     return;
                 };
-                // Re-check: the page may have turned input back on (a new
-                // generation) while the button was down. That deferred apply is
-                // then stale and must not swallow the next gesture.
-                let still_wanted = {
-                    let inner = state.lock();
-                    !inner.interactive
-                        && !inner.suspended
-                        && inner.interaction_generation == generation
-                };
-                if !still_wanted {
-                    return;
-                }
-                if let Some(controls) = app.get_webview_window(CONTROLS_LABEL) {
-                    state.apply_click_through(&controls);
+                let app_for_state = app.clone();
+                let controls_for_main = controls.clone();
+                if let Err(err) = controls.run_on_main_thread(move || {
+                    let Some(state) = app_for_state.try_state::<OverlayState>() else {
+                        return;
+                    };
+                    // Re-check on the main thread: the page may have turned
+                    // input back on while this task was queued.
+                    let still_wanted = {
+                        let inner = state.lock();
+                        !inner.interactive
+                            && !inner.suspended
+                            && inner.interaction_generation == generation
+                    };
+                    if still_wanted {
+                        state.apply_click_through(&controls_for_main);
+                    }
+                }) {
+                    eprintln!("[overlay] could not post click-through apply: {err}");
                 }
             })
             .map(|_| ())
@@ -725,6 +772,9 @@ impl OverlayState {
         Ok(())
     }
 
+    /// The caller must be on the Tauri main thread: sync window commands and
+    /// window events already are, and the warm-up fallback posts itself here.
+    /// This keeps SetWindowPos/SetWindowRgn out of the wake/click workers.
     fn present(&self, app: &AppHandle, scale_override: Option<f64>) -> Result<(), String> {
         // Feedback-loop guard: a window event that arrives while we are inside
         // `SetWindowPos` must not start another placement. Only active while the
@@ -807,6 +857,17 @@ impl OverlayState {
         if geometry_changed {
             self.apply_geometry(&controls, geometry, margin)?;
         }
+        let applied = {
+            let inner = self.lock();
+            inner.last_geometry.unwrap_or(geometry)
+        };
+        let video_rect = (
+            applied.0,
+            applied.1.saturating_add(margin),
+            applied.2,
+            applied.3.saturating_sub(margin.max(0) as u32),
+        );
+        self.lock().last_video_rect = Some(video_rect);
         if region_changed {
             apply_region(&controls, geometry.2, geometry.3, bands, margin)?;
             self.lock().last_bands = Some(bands);
@@ -860,14 +921,19 @@ impl OverlayState {
             let app = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(WARMUP_FALLBACK);
-                let Some(state) = app.try_state::<OverlayState>() else {
-                    return;
-                };
-                if !state.lock().warmup_pending {
-                    return;
-                }
-                if let Err(err) = state.present(&app, None) {
-                    eprintln!("[overlay] warm-up fallback failed: {err}");
+                let app_for_state = app.clone();
+                if let Err(err) = app.run_on_main_thread(move || {
+                    let Some(state) = app_for_state.try_state::<OverlayState>() else {
+                        return;
+                    };
+                    if !state.lock().warmup_pending {
+                        return;
+                    }
+                    if let Err(err) = state.present(&app_for_state, None) {
+                        eprintln!("[overlay] warm-up fallback failed: {err}");
+                    }
+                }) {
+                    eprintln!("[overlay] could not post warm-up fallback: {err}");
                 }
             });
         } else if region_changed {
@@ -884,6 +950,9 @@ impl OverlayState {
     }
 
     fn hide(&self, app: &AppHandle) {
+        // No overlay means no video rectangle to wake against. The next
+        // `present` captures it again.
+        self.lock().last_video_rect = None;
         let was_shown = {
             let mut inner = self.lock();
             let shown = inner.controls_shown;
@@ -952,10 +1021,10 @@ impl OverlayState {
     /// Focus is deliberately not consulted: the overlay is an owned window, so
     /// the OS hides it with its owner and focus changes must not drive it.
     #[cfg(windows)]
-    fn cursor_inside_video(&self, main: &WebviewWindow, cursor: (i32, i32)) -> bool {
-        let (mode, sync) = {
+    fn cursor_inside_video(&self, cursor: (i32, i32)) -> bool {
+        let (mode, sync, video_rect) = {
             let inner = self.lock();
-            (inner.mode, inner.sync)
+            (inner.mode, inner.sync, inner.last_video_rect)
         };
         if mode != UiMode::Player {
             return false;
@@ -966,26 +1035,17 @@ impl OverlayState {
         if !sync.visible || sync.w <= 0.0 || sync.h <= 0.0 {
             return false;
         }
-        let Ok(scale) = main.scale_factor() else {
+        let Some(video_rect) = video_rect else {
             return false;
         };
-        let Ok(origin) = main.inner_position() else {
-            return false;
-        };
-        let left = origin.x as f64 + sync.x * scale;
-        let top = origin.y as f64 + sync.y * scale;
-        let right = left + sync.w * scale;
-        let bottom = top + sync.h * scale;
-        let x = cursor.0 as f64;
-        let y = cursor.1 as f64;
-        x >= left && x < right && y >= top && y < bottom
+        point_in_rect(cursor, video_rect)
     }
 
     /// Screen-space test used by the click poller: true when the point is over
     /// the video and not over the (interactive) controls bar.
     #[cfg(windows)]
     fn is_stage_click(&self, app: &AppHandle, cursor: (i32, i32)) -> bool {
-        let (mode, sync, shown, interactive, geometry, bands) = {
+        let (mode, sync, shown, interactive, geometry, bands, video_rect) = {
             let inner = self.lock();
             (
                 inner.mode,
@@ -994,6 +1054,7 @@ impl OverlayState {
                 inner.interactive,
                 inner.last_geometry,
                 inner.last_bands,
+                inner.last_video_rect,
             )
         };
         if mode != UiMode::Player {
@@ -1005,33 +1066,25 @@ impl OverlayState {
         if !sync.visible || sync.w <= 0.0 || sync.h <= 0.0 {
             return false;
         }
+        let Some(video_rect) = video_rect else {
+            return false;
+        };
+        if !point_in_rect(cursor, video_rect) {
+            return false;
+        }
         let Some(main) = app.get_webview_window(MAIN_LABEL) else {
             return false;
         };
-        let Ok(scale) = main.scale_factor() else {
-            return false;
-        };
-        let Ok(origin) = main.inner_position() else {
-            return false;
-        };
-        let left = origin.x as f64 + sync.x * scale;
-        let top = origin.y as f64 + sync.y * scale;
-        let right = left + sync.w * scale;
-        let bottom = top + sync.h * scale;
-        let x = cursor.0 as f64;
-        let y = cursor.1 as f64;
-        if !(x >= left && x < right && y >= top && y < bottom) {
-            return false;
-        }
         // Clicks on a visible strip belong to the controls window, not the
         // stage. Only the two strips the window region exposes count: anywhere
         // else the window is clipped and the click reaches the video.
         if shown && interactive {
             if let (Some((gx, gy, gw, gh)), Some(bands)) = (geometry, bands) {
                 // Same rectangles the region exposes, mapped to screen space,
-                // so clipping and click routing cannot drift apart. With the
-                // margin off these are the top-edge strips the old code tested.
-                let margin = overlay_margin(scale);
+                // so clipping and click routing cannot drift apart. The
+                // margin is the gap between the window top and the video top;
+                // deriving it from the cached rect avoids another scale query.
+                let margin = video_rect.1.saturating_sub(gy).max(0);
                 let strips = region_rects(gw, gh, bands, margin);
                 let hit = |(left, top, right, bottom): (i32, i32, i32, i32)| {
                     let left = gx.saturating_add(left);
@@ -2219,9 +2272,6 @@ pub fn spawn_wake_poller(app: AppHandle) {
                     interval = WAKE_POLL_IDLE;
                     continue;
                 }
-                let Some(main) = app.get_webview_window(MAIN_LABEL) else {
-                    continue;
-                };
                 let Some(cursor) = cursor_position() else {
                     continue;
                 };
@@ -2233,7 +2283,7 @@ pub fn spawn_wake_poller(app: AppHandle) {
                     state.on_stage_click(&app, cursor);
                 }
                 last_left_down = left_down;
-                let inside = state.cursor_inside_video(&main, cursor);
+                let inside = state.cursor_inside_video(cursor);
                 if !inside {
                     // Re-entering the video starts a fresh movement baseline.
                     last = None;
@@ -2452,6 +2502,17 @@ mod tests {
         assert_eq!(allowed, MAX_MOVES_PER_SECOND);
         // The next second starts a fresh budget.
         assert!(budget.allows(start + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn point_in_rect_uses_half_open_bounds() {
+        let rect = (10, 20, 30, 40);
+        assert!(point_in_rect((10, 20), rect));
+        assert!(point_in_rect((39, 59), rect));
+        assert!(!point_in_rect((9, 20), rect));
+        assert!(!point_in_rect((10, 19), rect));
+        assert!(!point_in_rect((40, 20), rect));
+        assert!(!point_in_rect((10, 60), rect));
     }
 
     #[test]
