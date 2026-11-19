@@ -4,7 +4,6 @@ import type { EmbyLibraryItem } from "../emby/useEmby";
 import {
   formatRemainingTicks,
   itemEpisodeLabel,
-  itemKindLabel,
   itemProgress,
   itemYearLabel,
 } from "../emby/format";
@@ -20,14 +19,16 @@ export function PosterCard({
   item: EmbyLibraryItem;
   landscape: boolean;
   onSelect: (item: EmbyLibraryItem) => void;
-  /** Overrides the default year/type line (e.g. series + episode for search hits). */
+  /** Overrides the default year line (e.g. series + episode for search hits). */
   subtitle?: string | null;
 }) {
   const progress = itemProgress(item);
   const isSeries = item.type === "Series";
   const unplayedCount = isSeries ? item.userData.unplayedItemCount ?? 0 : 0;
   const unwatched = !isSeries && !item.userData.played && progress === 0 && item.type !== "Video";
-  const subtitle = subtitleOverride ?? itemYearLabel(item) ?? itemKindLabel(item);
+  // The title already shows whether it is a movie or a series; only add a
+  // year when the server supplied one.
+  const subtitle = subtitleOverride ?? itemYearLabel(item);
 
   return (
     <button

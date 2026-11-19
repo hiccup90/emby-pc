@@ -47,28 +47,6 @@ export function formatRemainingTicks(item: EmbyItem): string | null {
   return `剩余 ${formatRuntimeTicks(remaining)}`;
 }
 
-export function itemKindLabel(item: Pick<EmbyItem, "type" | "mediaType">): string {
-  switch (item.type) {
-    case "Movie":
-      return "电影";
-    case "Episode":
-      return "单集";
-    case "Series":
-      return "剧集";
-    case "Season":
-      return "季";
-    case "BoxSet":
-      return "合集";
-    case "MusicAlbum":
-      return "音乐专辑";
-    case "Audio":
-      return "音频";
-    case "Video":
-      return "视频";
-    default:
-      return item.mediaType === "Video" ? "视频" : item.type || "条目";
-  }
-}
 
 export function itemYearLabel(item: Pick<EmbyItem, "productionYear">): string | null {
   return typeof item.productionYear === "number" && item.productionYear > 0

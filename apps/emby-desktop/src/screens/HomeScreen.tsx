@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import type { EmbyView } from "../emby/contract";
 import { embyItems } from "../emby/client";
 import { decorateItems } from "../emby/artwork";
-import { itemYearLabel } from "../emby/format";
 import { includeItemTypesForView } from "../emby/library";
 import { useAsyncResource } from "../emby/useAsyncResource";
 import type { EmbyLibraryItem, EmbyLoadStatus } from "../emby/useEmby";
@@ -156,13 +155,7 @@ function HomeLibrarySection({
       ) : (
         <div className="home-library-grid">
           {items.map((item) => (
-            <PosterCard
-              key={item.id}
-              item={item}
-              landscape={false}
-              subtitle={itemYearLabel(item) ?? ""}
-              onSelect={onOpen}
-            />
+            <PosterCard key={item.id} item={item} landscape={false} onSelect={onOpen} />
           ))}
         </div>
       )}
