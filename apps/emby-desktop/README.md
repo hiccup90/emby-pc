@@ -4,7 +4,7 @@
 
 ## 产品要求（已确认）
 
-- 新应用在不继承旧历史的独立 orphan 分支（`rewrite/tauri-emby`）上从零实现；旧 Qt 项目与 `main` 保持原样。
+- 应用已并入 `main`；旧 Qt 项目归档在 tag `archive/qt-final`。
 - 目标平台为 Windows 10/11；产品只支持 Emby。
 - UI 使用 React + TypeScript + Tauri 2；播放引擎使用 libmpv。
 - 首版范围：登录、媒体库浏览、媒体详情、播放与暂停、seek、音量、续播/进度，以及基本音轨和字幕选择。
@@ -27,11 +27,10 @@
 - mpv 子窗口会吞掉鼠标事件，所以“点击视频激活窗口”和“双击视频切换全屏”由 `overlay.rs` 的光标轮询线程实现，不依赖网页里的点击事件。
 - 界面位于 `src/screens/`（登录、影库、详情）并由 `src/emby/` 调用 Tauri 命令：登录页提交服务器地址、用户名和密码；影库展示服务器返回的视图、条目和“继续观看”；详情页的播放按钮调用 `emby_playback_target`，拿到直链后交给播放页。
 - 播放中每 10 秒上报一次进度；暂停/继续、seek、播放结束和离开播放页也会上报。登出会删除本地会话并要求重新登录。
-- 会话持久化在 Tauri `app_config_dir()` 下的 `session.json`。服务器地址会归一化：没有 scheme 时补 `http://`，并去掉尾部 `/`。收到 401/403 时清除会话并要求重新登录。当前会话是明文 JSON 文件，尚未使用系统密钥库。
+- 会话持久化在 Tauri `app_config_dir()` 下的 `session.json`。服务器地址会归一化：没有 scheme 时补 `http://`，并去掉尾部 `/`。Windows 上用当前用户 DPAPI 加密整个 JSON；非 Windows 构建为明文。收到 401 才清除会话；403 视为 token 有效但权限不足；启动 probe 遇 404 保留 session，只退出登录，避免代理路径或服务器变更误删凭据。
 - 播放 URL 使用 Emby 的 `api_key` 查询参数鉴权，因此不向 mpv 注入 header；图片 URL 也经 `emby_image_url` 返回带 `api_key` 的绝对地址。
 - 验证范围：
-  - Windows CI（见下文）每次运行 `cargo test -p emby-mpv`、`cargo test -p emby-api`、`tsc -b` 和 `tauri build --no-bundle`。2026-11-10 的 run `42718300778`（commit `7eecc7a`）中 emby-mpv 63 个、emby-api 44 个单测全部通过。
-  - 前端没有自动化测试。早期曾用 Playwright + Tauri IPC mock 手动走通“登录 → 影库 → 详情 → 播放 → 上报 → 登出”，脚本没有入库。
+  - Windows CI（见下文）每次运行 `cargo test --workspace`、`tauri build --no-bundle`（`beforeBuildCommand` 会跑 `tsc -b` 和 `vite build`）。前端没有自动化测试。早期曾用 Playwright + Tauri IPC mock 手动走通“登录 → 影库 → 详情 → 播放 → 上报 → 登出”，脚本没有入库。
   - 2026-11-09 在 Windows 实机连真实 Emby 服务器走过一轮验收清单，发现 4 个问题：点视频不激活窗口、双击视频不切全屏、展开音轨/字幕菜单闪屏、控制条显示时窗口边角无法缩放。均已在 `5f2bebe` 修复并复测通过。
 
 ## 如何测试播放
@@ -44,7 +43,7 @@
    gh run download <run-id>
    ```
 
-   默认 artifact `emby-desktop-windows-x64-<sha>` 只含 `emby-desktop.exe`。第一次安装还需要 `libmpv-2.dll`：手动触发时勾选 `bundle_libmpv`（命令行加 `-f bundle_libmpv=true`），会另外产出含 exe 和 DLL 的 `emby-desktop-windows-x64-full-<sha>`。
+   默认 artifact 是单个 `emby-desktop.exe`，浏览器直接下载，不再套 zip。第一次安装还需要 `libmpv-2.dll`：手动触发时勾选 `bundle_libmpv`（命令行加 `-f bundle_libmpv=true`），会另外产出含 exe 和 DLL 的 zip 包 `emby-desktop-windows-x64-full-<sha>`。
 2. 确认 `emby-desktop.exe` 与 `libmpv-2.dll` 位于同一目录，两者缺一不可。libmpv 版本没变时，之后更新只需替换 exe。
 3. 运行 `emby-desktop.exe`。构建未签名，Windows 可能弹出 SmartScreen 提示；仅在确认产物来自本项目 CI 后继续。
 4. 启动后进入登录页，填写服务器地址（如 `https://<server>` 或 `<host>:<port>`；省略 scheme 时按 `http://` 处理）、用户名和密码，点击登录。登录成功后会话写入 `session.json`；若提示登录失效，需要重新登录。
@@ -110,13 +109,13 @@ pnpm tauri dev
 workflow 为 `.github/workflows/emby-desktop-windows.yml`，只配置了 `workflow_dispatch`，提交不会自动触发。手动启动命令：
 
 ```sh
-gh workflow run emby-desktop-windows.yml --ref rewrite/tauri-emby
+gh workflow run emby-desktop-windows.yml --ref "$(git branch --show-current)"
 ```
 
 - 运行环境：`windows-2022`、Node 20、pnpm 9.15.4（`pnpm-lock.yaml` 已入库）、Rust stable MSVC x64。
-- 构建步骤包括 `pnpm exec tsc -b`、Rust 单测（步骤名 `Test workspace crates (if present)`，会运行 `cargo test -p emby-mpv` 与 `cargo test -p emby-api`）和 `pnpm tauri build --no-bundle`；不产 MSI。
-- workflow 下载固定版本 libmpv `20261108`，校验 SHA-256 后把 `libmpv-2.dll` 复制到 exe 同目录。
-- 默认 artifact `emby-desktop-windows-x64-<sha>` 只含 `emby-desktop.exe`，保留 3 天；加 `-f bundle_libmpv=true` 触发时，另外产出 `emby-desktop-windows-x64-full-<sha>`（exe + `libmpv-2.dll`，约 49 MB），保留 1 天。CI 通过只说明能编译、单测通过，不代表播放已验收。
+- 构建步骤包括 `cargo test --workspace` 和 `pnpm tauri build --no-bundle`（`beforeBuildCommand` 跑 `tsc -b` + `vite build`）；不产 MSI。
+- 只有勾选 `bundle_libmpv` 时才下载固定版本 libmpv `20261108`、校验 SHA-256 并把 `libmpv-2.dll` 复制到 exe 同目录；默认 exe-only 构建不跑这些步骤。
+- 默认 artifact `emby-desktop.exe` 是单文件（`archive:false`，直接下载，保留 3 天）；加 `-f bundle_libmpv=true` 时另外产出 `emby-desktop-windows-x64-full-<sha>`（zip，exe + `libmpv-2.dll`，约 49 MB，保留 1 天）。CI 通过只说明能编译、单测通过，不代表播放已验收。
 - libmpv 来自 GPLv2+ 构建，分发 exe 与 DLL 前需确认许可证合规。
 
 ## 待验证与未决事项
