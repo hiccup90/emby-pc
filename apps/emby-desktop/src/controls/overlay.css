@@ -416,6 +416,30 @@ input:focus:not(:focus-visible) {
   color: var(--ov-accent-ink);
 }
 
+/* Emby-style intro action: a compact pill inside the existing bottom bar, so
+ * the native overlay region does not need a second interactive strip. */
+.ov-btn--skip-intro {
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(12, 14, 16, 0.58);
+  color: var(--ov-text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.ov-btn--skip-intro:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--ov-accent);
+  color: var(--ov-accent-ink);
+}
+
 /* ---- top-left return + logo ------------------------------------------------
  * Emby Theater keeps the back arrow and the item's transparent wordmark in
  * the top-left corner, over the video. The Rust window region exposes only
@@ -668,9 +692,64 @@ input:focus:not(:focus-visible) {
   margin: 0 10px 0 4px;
 }
 
+/* The intro pill adds a seventh control to the right-hand group. In narrow
+ * windows the slider is the least useful way to keep that row inside the bar. */
+@media (max-width: 960px) {
+  .ov-controls.has-skip .ov-slider--volume {
+    display: none;
+  }
+}
+
 @media (max-width: 760px) {
   .ov-slider--volume {
     display: none;
+  }
+
+  /* With the intro pill seven controls plus the elapsed time do not fit on
+   * one line. Put the transport on the left, time on top and the action row
+   * underneath; everything stays inside the existing bottom strip. */
+  .ov-controls.has-skip {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 30px 36px;
+    align-content: center;
+    gap: 0 8px;
+    padding: 0 8px 6px;
+  }
+
+  .ov-controls.has-skip .ov-group--left {
+    grid-row: 2;
+    grid-column: 1;
+    gap: 2px;
+  }
+
+  .ov-controls.has-skip .ov-group--center {
+    grid-row: 1;
+    grid-column: 1 / -1;
+    justify-self: center;
+  }
+
+  .ov-controls.has-skip .ov-group--right {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    gap: 0;
+  }
+
+  .ov-btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  .ov-btn--play {
+    width: 36px;
+    height: 36px;
+  }
+
+  .ov-btn--skip-intro {
+    width: auto;
+    height: 30px;
+    padding: 0 8px;
+    font-size: 11px;
   }
 }
 
@@ -693,29 +772,6 @@ input:focus:not(:focus-visible) {
   .ov-top__sub {
     max-width: 54vw;
     font-size: 11px;
-  }
-
-  .ov-controls {
-    gap: 8px;
-    padding: 0 8px 6px;
-  }
-
-  .ov-group--left {
-    gap: 2px;
-  }
-
-  .ov-group--right {
-    gap: 0;
-  }
-
-  .ov-btn {
-    width: 30px;
-    height: 30px;
-  }
-
-  .ov-btn--play {
-    width: 38px;
-    height: 38px;
   }
 
   .ov-status {

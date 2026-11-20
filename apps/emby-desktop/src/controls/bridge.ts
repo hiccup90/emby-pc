@@ -241,6 +241,9 @@ export function createPreviewMeta(): PlaybackMeta {
       { seconds: 1500, title: "第三幕" },
       { seconds: 2100, title: "结尾" },
     ],
+    // Preview-only segment: the real one comes from PlaybackInfo markers.
+    intro: { startSeconds: 0, endSeconds: 95 },
+    skipIntroButton: true,
   };
 }
 

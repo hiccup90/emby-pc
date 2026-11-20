@@ -5,6 +5,7 @@ import { describeEmbyError, hasTauriRuntime } from "../emby/client";
 import { collectionTypeOf, defaultHomeViewIds } from "../emby/library";
 import { DEFAULT_APP_SETTINGS, getSettings, saveSettings } from "../settings/tauri";
 import type { AppSettings, VideoQuality } from "../settings/tauri";
+import type { SkipIntroMode } from "../player/contract";
 import { useAsyncResource } from "../emby/useAsyncResource";
 import { ErrorNotice, Icon, useEscape } from "./shared";
 import "./SettingsScreen.css";
@@ -35,6 +36,12 @@ function homeViewKind(view: EmbyView): string {
 const QUALITY_OPTIONS: Array<{ value: VideoQuality; label: string; title: string }> = [
   { value: "default", label: "默认", title: "原始画质，优先直接播放" },
   { value: "low", label: "低开销", title: "降低解码与渲染开销，适合低配设备" },
+];
+
+const SKIP_INTRO_OPTIONS: Array<{ value: SkipIntroMode; label: string; title: string }> = [
+  { value: "off", label: "关闭", title: "不显示按钮，也不自动跳过" },
+  { value: "button", label: "按钮", title: "片头期间显示「跳过片头」按钮" },
+  { value: "auto", label: "自动", title: "进入片头后自动跳到片头结束" },
 ];
 
 const PAGE_SIZE_OPTIONS: readonly number[] = [60, 120, 240];
@@ -355,6 +362,37 @@ export default function SettingsScreen({ views, onBack, onSettingsChange }: Sett
                   <span className="settings-toggle__thumb" aria-hidden="true" />
                   <span className="visually-hidden">{settings.autoPlay ? "已开启" : "已关闭"}</span>
                 </button>
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-row__text" id="settings-skip-intro-label">
+                  <span className="settings-row__label">跳过片头</span>
+                  <span className="settings-row__hint">
+                    需要 Emby 已生成片头标记；无标记的条目不显示也不跳过。
+                  </span>
+                </span>
+                <span
+                  className="settings-segmented"
+                  role="radiogroup"
+                  aria-labelledby="settings-skip-intro-label"
+                >
+                  {SKIP_INTRO_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={settings.skipIntro === option.value}
+                      title={option.title}
+                      disabled={busy}
+                      className={`settings-segmented__option${
+                        settings.skipIntro === option.value ? " settings-segmented__option--active" : ""
+                      }`}
+                      onClick={() => update({ skipIntro: option.value })}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </span>
               </div>
 
               <div className="settings-row">

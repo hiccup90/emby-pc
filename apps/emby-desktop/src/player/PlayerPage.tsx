@@ -11,7 +11,7 @@ import type { OverlayAction, OverlayStateInput } from "../controls/contract";
 import type { EmbyPlaybackTarget } from "../emby/contract";
 import { embyImageUrl, embyItem } from "../emby/client";
 import { reportEmbyPlayback } from "../emby/playback";
-import type { PlaybackMeta, PlayerStats, PlayerStatus } from "./contract";
+import type { PlaybackMeta, PlayerStats, PlayerStatus, SkipIntroMode } from "./contract";
 import { invokePlayerStats, invokePlayerStop } from "./tauri";
 import { usePlayer } from "./usePlayer";
 import { useVideoSync } from "./useVideoSync";
@@ -92,6 +92,8 @@ interface PlayerPageProps {
   launchError?: string | null;
   /** Whether finishing an episode auto-advances (the "autoplay" setting). */
   autoPlayNext?: boolean;
+  /** Emby intro markers: off, show the button, or skip automatically. */
+  skipIntro?: SkipIntroMode;
   /**
    * Ordered ids of the current series' episodes, from the shell's queue. Null
    * means "not an episode": the controls then show neither transport button.
@@ -151,6 +153,7 @@ export default function PlayerPage({
   onPrevious,
   launchError = null,
   autoPlayNext = false,
+  skipIntro = "auto",
   episodeRun = null,
   onBack,
 }: PlayerPageProps) {
@@ -181,6 +184,10 @@ export default function PlayerPage({
   const playbackKey = playback
     ? `${playback.itemId}:${playback.playSessionId ?? ""}`
     : null;
+  /** Intro key already auto-skipped for the current episode. */
+  const autoSkippedRef = useRef<string | null>(null);
+  /** Playback key whose `player_open` call has completed successfully. */
+  const openedPlaybackRef = useRef<string | null>(null);
 
   /** Playback key whose saved track choice has already been applied. */
   const restoredTracksForRef = useRef<string | null>(null);
@@ -256,9 +263,13 @@ export default function PlayerPage({
             ...(episodeNav
               ? { hasPrevEpisode: episodeNav.hasPrev, hasNextEpisode: episodeNav.hasNext }
               : {}),
+            // Auto mode still carries `intro` for the seek, but the controls
+            // must not show a manual button that the automatic skip already
+            // handles. Off mode carries neither.
+            skipIntroButton: skipIntro === "button",
           }
         : null,
-    [episodeNav, meta, logoUrl],
+    [episodeNav, meta, logoUrl, skipIntro],
   );
 
   const isFullscreenRef = useRef(isFullscreen);
@@ -288,6 +299,9 @@ export default function PlayerPage({
     lastStatusRef.current = "idle";
     // A new item on screen supersedes whatever the last step press reported.
     setStepFailure(null);
+    // A new episode gets its own auto-skip budget.
+    autoSkippedRef.current = null;
+    openedPlaybackRef.current = null;
   }, [playbackKey]);
 
   useEffect(() => {
@@ -299,7 +313,13 @@ export default function PlayerPage({
     const key = `${playbackKey}:${playback.url}:${playback.startSeconds}`;
     if (autoOpenedRef.current === key) return;
     autoOpenedRef.current = key;
-    void open(playback.url, playback.startSeconds);
+    openedPlaybackRef.current = null;
+    const openedKey = playbackKey;
+    void open(playback.url, playback.startSeconds).then((opened) => {
+      if (opened && autoOpenedRef.current === key) {
+        openedPlaybackRef.current = openedKey;
+      }
+    });
   }, [isDesktop, open, playback, playbackKey]);
 
   useEffect(() => {
@@ -520,10 +540,50 @@ export default function PlayerPage({
     [playback, seek],
   );
 
+  /**
+   * Auto mode: seek to IntroEnd once per segment. The "skipped" key is cleared
+   * only after the playhead leaves the segment on the left (a manual rewind
+   * before IntroStart), so a normal seek or a late snapshot cannot loop.
+   */
+  const intro = meta?.intro ?? null;
+  const autoSkipKey =
+    intro && playbackKey
+      ? `${playbackKey}:${intro.startSeconds}:${intro.endSeconds}`
+      : null;
+  useEffect(() => {
+    if (skipIntro !== "auto" || !intro || !autoSkipKey || !playbackKey) return;
+    // A route change leaves the previous episode's snapshot in place until
+    // `player_open` resolves; seeking it would hit the old file.
+    if (openedPlaybackRef.current !== playbackKey) return;
+    if (!snapshot || snapshot.status !== "playing" || snapshot.durationSeconds <= 0) return;
+    const position = snapshot.positionSeconds;
+    if (position < intro.startSeconds) {
+      autoSkippedRef.current = null;
+      return;
+    }
+    if (position >= intro.endSeconds) return;
+    if (autoSkippedRef.current === autoSkipKey) return;
+    autoSkippedRef.current = autoSkipKey;
+    handleSeek(Math.min(intro.endSeconds, snapshot.durationSeconds));
+  }, [
+    autoSkipKey,
+    handleSeek,
+    intro,
+    playbackKey,
+    skipIntro,
+    snapshot?.durationSeconds,
+    snapshot?.positionSeconds,
+    snapshot?.seq,
+    snapshot?.status,
+  ]);
+
   const retryPlayback = useCallback(() => {
-    if (!playback) return;
-    void open(playback.url, playback.startSeconds);
-  }, [open, playback]);
+    if (!playback || !playbackKey) return;
+    openedPlaybackRef.current = null;
+    void open(playback.url, playback.startSeconds).then((opened) => {
+      if (opened) openedPlaybackRef.current = playbackKey;
+    });
+  }, [open, playback, playbackKey]);
 
   /**
    * Run one previous/next press and keep its outcome.
@@ -699,6 +759,9 @@ export default function PlayerPage({
     meta?.title ?? "",
     meta?.subtitle ?? "",
     meta?.chapters?.length ?? 0,
+    meta?.intro?.startSeconds ?? -1,
+    meta?.intro?.endSeconds ?? -1,
+    skipIntro === "button" ? 1 : 0,
     logoUrl ?? "",
     episodeNav ? `${episodeNav.hasPrev}:${episodeNav.hasNext}` : "none",
     stats ? 1 : 0,

@@ -45,11 +45,20 @@ export interface VideoSync {
   dpr: number;
 }
 
-/** A chapter marker shown in the player's chapter menu. */
+/** A normal chapter shown in the player's chapter menu. */
 export interface PlaybackChapter {
   seconds: number;
   title: string;
 }
+
+/** Intro segment derived from Emby's `IntroStart` / `IntroEnd` markers. */
+export interface PlaybackIntro {
+  startSeconds: number;
+  endSeconds: number;
+}
+
+/** How the player handles an available intro segment. */
+export type SkipIntroMode = "off" | "button" | "auto";
 
 /** What the player shows about the current item (title row of the controls). */
 export interface PlaybackMeta {
@@ -57,8 +66,15 @@ export interface PlaybackMeta {
   title: string;
   /** Secondary line: the year for movies, "S1 · E3 — 集名" for episodes. */
   subtitle: string | null;
-  /** Chapter markers; empty or absent when the item has none. */
+  /** Normal chapters for the chapter menu; marker rows are filtered out. */
   chapters?: PlaybackChapter[];
+  /** Intro segment from Emby markers; absent when the item has none. */
+  intro?: PlaybackIntro;
+  /**
+   * True only in button mode. Auto mode still carries `intro` (the player
+   * uses it to seek) but the controls must not render a second skip button.
+   */
+  skipIntroButton?: boolean;
   /**
    * Emby image tag for the item's own transparent `Logo`, copied from
    * `imageTags.Logo` when the item has one. Absent means "no logo": the

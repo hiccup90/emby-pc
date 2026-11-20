@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { hasTauriRuntime } from "../emby/client";
 import type { EmbyLibraryQuery } from "../emby/useEmby";
+import type { SkipIntroMode } from "../player/contract";
 
 /** Player quality preset; matches the Rust `VideoQuality` enum. */
 export type VideoQuality = "default" | "low";
@@ -12,6 +13,8 @@ export type LibraryViewMode = "poster" | "thumbnail";
 export interface AppSettings {
   videoQuality: VideoQuality;
   autoPlay: boolean;
+  /** Emby intro markers: off, show the button, or skip automatically. */
+  skipIntro: SkipIntroMode;
   pageSize: number;
   /** Per Emby view id; absent means the library's own default. */
   libraryViewModes: Record<string, LibraryViewMode>;
@@ -31,6 +34,7 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   videoQuality: "low",
   autoPlay: true,
+  skipIntro: "auto",
   pageSize: 120,
   libraryViewModes: {},
   libraryQueries: {},

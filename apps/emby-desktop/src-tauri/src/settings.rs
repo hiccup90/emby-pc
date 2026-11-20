@@ -65,6 +65,21 @@ impl Default for LibraryViewMode {
     }
 }
 
+/// How the player handles Emby's `IntroStart`/`IntroEnd` chapter markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkipIntroMode {
+    Off,
+    Button,
+    Auto,
+}
+
+impl Default for SkipIntroMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 /// One library's persisted sort/filter state. Strings mirror the frontend
 /// `EmbyLibraryQuery` wire values; `normalized` rejects values from hand-edited
 /// or older settings files.
@@ -112,6 +127,9 @@ impl LibraryQuerySettings {
 pub struct AppSettings {
     pub video_quality: VideoQuality,
     pub auto_play: bool,
+    /// Emby intro markers: off, show the button, or skip automatically.
+    #[serde(default)]
+    pub skip_intro: SkipIntroMode,
     pub page_size: u32,
     /// Per-library card shape. Missing ids use the view's own default in the UI.
     #[serde(default)]
@@ -131,6 +149,7 @@ impl Default for AppSettings {
         Self {
             video_quality: VideoQuality::default(),
             auto_play: true,
+            skip_intro: SkipIntroMode::default(),
             page_size: DEFAULT_PAGE_SIZE,
             library_view_modes: BTreeMap::new(),
             library_queries: BTreeMap::new(),
@@ -296,6 +315,7 @@ mod tests {
         assert_eq!(settings.video_quality, VideoQuality::Low);
         assert_eq!(settings.video_quality.mpv_profile(), Some("fast"));
         assert!(settings.auto_play);
+        assert_eq!(settings.skip_intro, SkipIntroMode::Auto);
         assert_eq!(settings.page_size, DEFAULT_PAGE_SIZE);
         assert_eq!(VideoQuality::Default.mpv_profile(), None);
     }
@@ -325,6 +345,7 @@ mod tests {
         let settings = AppSettings {
             video_quality: VideoQuality::Default,
             auto_play: false,
+            skip_intro: SkipIntroMode::Button,
             page_size: 60,
             library_view_modes,
             library_queries,
@@ -336,6 +357,7 @@ mod tests {
         let text = fs::read_to_string(store.path()).expect("read settings file");
         assert!(text.contains("\"videoQuality\": \"default\""), "{text}");
         assert!(text.contains("\"autoPlay\": false"), "{text}");
+        assert!(text.contains("\"skipIntro\": \"button\""), "{text}");
         assert!(text.contains("\"pageSize\": 60"), "{text}");
         assert!(text.contains("\"libraryViewModes\""), "{text}");
         assert!(text.contains("\"thumbnail\""), "{text}");
@@ -381,6 +403,7 @@ mod tests {
         let loaded = store.load();
         assert!(!loaded.auto_play);
         assert_eq!(loaded.video_quality, VideoQuality::Low);
+        assert_eq!(loaded.skip_intro, SkipIntroMode::Auto);
         assert_eq!(loaded.page_size, DEFAULT_PAGE_SIZE);
         let _ = fs::remove_dir_all(dir);
     }

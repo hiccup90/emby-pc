@@ -14,7 +14,7 @@ import {
   clearEpisodeRunCache,
 } from "./emby/useEmby";
 import { resolveHomeViews } from "./emby/library";
-import { episodePlaybackMeta, itemChapters, itemPlaybackMeta, itemStartSeconds } from "./emby/format";
+import { itemStartSeconds, playbackMeta } from "./emby/format";
 import ActorScreen from "./screens/ActorScreen";
 import DetailScreen from "./screens/DetailScreen";
 import HomeScreen from "./screens/HomeScreen";
@@ -584,10 +584,7 @@ export default function App() {
         const target = await launch(next.id, itemStartSeconds(next));
         if (!target) return false;
         playingItemRef.current = next;
-        const meta =
-          next.type === "Episode"
-            ? { ...episodePlaybackMeta(next.seriesName, next), chapters: itemChapters(next) }
-            : { ...itemPlaybackMeta(next), chapters: itemChapters(next) };
+        const meta = playbackMeta(next, target.chapters);
         setRoute((current) =>
           current.screen === "player"
             ? { ...current, playback: target, meta, trackScope: next.seriesId ?? next.id }
@@ -646,10 +643,7 @@ export default function App() {
       // failed "continue watching" click must never look like a dead button.
       if (!target) return;
       failedPlayItemRef.current = null;
-      const meta =
-        item.type === "Episode"
-          ? { ...episodePlaybackMeta(item.seriesName, item), chapters: itemChapters(item) }
-          : { ...itemPlaybackMeta(item), chapters: itemChapters(item) };
+      const meta = playbackMeta(item, target.chapters);
       const current = routeRef.current;
       const returnTo: DetailRoute =
         item.type === "Episode" && item.seriesId
@@ -702,6 +696,7 @@ export default function App() {
           // failed launch during a step would show nothing at all.
           launchError={playbackError}
           autoPlayNext={autoPlay}
+          skipIntro={settings.skipIntro}
           episodeRun={episodeRunIds}
           onBack={() => {
             clearEpisodeRunCache();

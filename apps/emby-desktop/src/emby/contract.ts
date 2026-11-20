@@ -90,6 +90,8 @@ export interface EmbyItem {
 export interface EmbyChapter {
   startSeconds: number;
   name: string;
+  /** Emby `MarkerType`: `Chapter`, `IntroStart`, `IntroEnd`, `CreditsStart`. */
+  markerType?: string | null;
 }
 
 export interface EmbyPerson {
@@ -202,4 +204,6 @@ export interface EmbyPlaybackTarget {
   playSessionId: string | null;
   mediaSourceId: string | null;
   startSeconds: number;
+  /** Chapters of the selected media source, intro markers included. */
+  chapters?: EmbyChapter[];
 }

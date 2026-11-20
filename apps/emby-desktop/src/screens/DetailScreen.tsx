@@ -6,16 +6,14 @@ import { useEmbyDetail, useEmbyEpisodes, useEmbySimilar, usePlaybackLauncher } f
 import { describeEmbyError, embySetFavorite, embySetPlayed } from "../emby/client";
 import {
   audioStreamSummary,
-  episodePlaybackMeta,
+  playbackMeta,
   formatCommunityRating,
   formatPremiereDate,
   formatRemainingTicks,
   formatRuntimeTicks,
   itemEpisodeLabel,
-  itemPlaybackMeta,
   itemProgress,
   itemStartSeconds,
-  itemChapters,
   itemYearLabel,
   seriesStatusLabel,
   subtitleStreamSummary,
@@ -452,7 +450,7 @@ export default function DetailScreen({
     if (!item || playback.pending || !isPlayableItemType(item.type)) return;
     const target = await playback.launch(item.id, itemStartSeconds(item));
     if (target) {
-      onPlay(target, { ...itemPlaybackMeta(item), chapters: itemChapters(item) }, [item], item.id);
+      onPlay(target, playbackMeta(item, target.chapters), [item], item.id);
     }
   };
 
@@ -466,12 +464,7 @@ export default function DetailScreen({
     const list = episodes.items.length > 0 ? episodes.items : [episode];
     const index = list.findIndex((entry) => entry.id === episode.id);
     const queue = index >= 0 ? list.slice(index) : [episode];
-    onPlay(
-      target,
-      { ...episodePlaybackMeta(item.name, episode), chapters: itemChapters(episode) },
-      queue,
-      item.id,
-    );
+    onPlay(target, playbackMeta(episode, target.chapters), queue, item.id);
   };
 
   if (!item) {

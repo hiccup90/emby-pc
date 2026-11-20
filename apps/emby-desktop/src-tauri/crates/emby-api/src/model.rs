@@ -98,6 +98,10 @@ pub struct EmbyItem {
 pub struct EmbyChapter {
     pub start_seconds: f64,
     pub name: String,
+    /// Emby `MarkerType`: `Chapter`, `IntroStart`, `IntroEnd`, `CreditsStart`.
+    /// `None` for older payloads and normal chapters without a marker type.
+    #[serde(default)]
+    pub marker_type: Option<String>,
 }
 
 /// Cast or crew member of an item.
@@ -149,6 +153,11 @@ pub struct EmbyPlaybackTarget {
     pub play_session_id: Option<String>,
     pub media_source_id: Option<String>,
     pub start_seconds: f64,
+    /// Chapters of the selected media source. `PlaybackInfo` carries them, so
+    /// launching from a list does not need an extra detail request to obtain
+    /// chapter/intro markers.
+    #[serde(default)]
+    pub chapters: Vec<EmbyChapter>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -286,11 +295,12 @@ pub(crate) struct RawItem {
     pub chapters: Option<Vec<RawChapter>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
 pub(crate) struct RawChapter {
     pub start_position_ticks: Option<i64>,
     pub name: Option<String>,
+    pub marker_type: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -413,6 +423,8 @@ pub(crate) struct RawMediaSource {
     pub play_session_id: Option<String>,
     #[serde(deserialize_with = "lenient_list")]
     pub media_streams: Option<Vec<RawMediaStream>>,
+    #[serde(deserialize_with = "lenient_list")]
+    pub chapters: Option<Vec<RawChapter>>,
 }
 
 impl From<RawUserData> for EmbyUserData {
@@ -468,13 +480,7 @@ impl RawItem {
             end_date: trim_optional(self.end_date),
             status: trim_optional(self.status),
             media_streams: pick_media_streams(self.media_streams, self.media_sources),
-            chapters: self
-                .chapters
-                .unwrap_or_default()
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, chapter)| RawChapter::into_chapter(chapter, index))
-                .collect(),
+            chapters: chapters_from_raw(self.chapters),
         }
     }
 
@@ -550,6 +556,15 @@ fn pick_media_streams(
         .collect()
 }
 
+pub(crate) fn chapters_from_raw(chapters: Option<Vec<RawChapter>>) -> Vec<EmbyChapter> {
+    chapters
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, chapter)| RawChapter::into_chapter(chapter, index))
+        .collect()
+}
+
 impl RawChapter {
     fn into_chapter(self, index: usize) -> Option<EmbyChapter> {
         let ticks = self.start_position_ticks.filter(|ticks| *ticks >= 0)?;
@@ -557,6 +572,7 @@ impl RawChapter {
         Some(EmbyChapter {
             start_seconds: ticks as f64 / 10_000_000.0,
             name,
+            marker_type: trim_optional(self.marker_type),
         })
     }
 }
@@ -791,7 +807,7 @@ mod tests {
             {"Name": "  ", "Id": "p3"}
         ],
         "Chapters": [
-            {"StartPositionTicks": 0, "Name": "Opening"},
+            {"StartPositionTicks": 0, "Name": "Opening", "MarkerType": "IntroStart"},
             {"StartPositionTicks": 150000000, "Name": "  "},
             {"StartPositionTicks": -5, "Name": "Broken"}
         ],
@@ -823,8 +839,10 @@ mod tests {
 
         assert_eq!(item.chapters.len(), 2, "{:?}", item.chapters);
         assert_eq!(item.chapters[0].start_seconds, 0.0);
+        assert_eq!(item.chapters[0].marker_type.as_deref(), Some("IntroStart"));
         assert_eq!(item.chapters[1].start_seconds, 15.0);
         assert_eq!(item.chapters[1].name, "第 2 章");
+        assert_eq!(item.chapters[1].marker_type, None);
 
         let kinds: Vec<&str> = item.media_streams.iter().map(|s| s.kind.as_str()).collect();
         assert_eq!(kinds, ["Video", "Audio", "Subtitle"]);
@@ -941,12 +959,18 @@ mod tests {
             play_session_id: Some("ps".into()),
             media_source_id: Some("s1".into()),
             start_seconds: 12.5,
+            chapters: vec![EmbyChapter {
+                start_seconds: 0.0,
+                name: "Intro".into(),
+                marker_type: Some("IntroStart".into()),
+            }],
         };
         let value = serde_json::to_value(&target).unwrap();
         assert_eq!(value["itemId"], "i1");
         assert_eq!(value["playSessionId"], "ps");
         assert_eq!(value["mediaSourceId"], "s1");
         assert_eq!(value["startSeconds"], 12.5);
+        assert_eq!(value["chapters"][0]["markerType"], "IntroStart");
     }
 
     #[test]
@@ -964,7 +988,11 @@ mod tests {
             r#"{
                 "PlaySessionId": "top",
                 "MediaSources": [
-                    {"Id": "s1", "Container": "mkv", "DirectStreamUrl": "/videos/i1/stream?static=true&mediaSourceId=s1"},
+                    {"Id": "s1", "Container": "mkv", "DirectStreamUrl": "/videos/i1/stream?static=true&mediaSourceId=s1",
+                     "Chapters": [
+                        {"StartPositionTicks": 0, "Name": "Intro", "MarkerType": "IntroStart"},
+                        {"StartPositionTicks": 900000000, "Name": "Main", "MarkerType": "IntroEnd"}
+                     ]},
                     {"Id": "s2", "Container": "mp4"}
                 ]
             }"#,
@@ -974,6 +1002,11 @@ mod tests {
         assert_eq!(source.id.as_deref(), Some("s1"));
         assert!(source.direct_stream_url.is_some());
         assert_eq!(info.play_session_id.as_deref(), Some("top"));
+        let chapters = chapters_from_raw(source.chapters.clone());
+        assert_eq!(chapters.len(), 2);
+        assert_eq!(chapters[0].marker_type.as_deref(), Some("IntroStart"));
+        assert_eq!(chapters[1].start_seconds, 90.0);
+        assert_eq!(chapters[1].marker_type.as_deref(), Some("IntroEnd"));
     }
 
     #[test]

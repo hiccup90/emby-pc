@@ -356,6 +356,7 @@ const MOCK_SETTINGS_KEY = "emby.mock.settings";
 const DEFAULT_MOCK_SETTINGS: AppSettings = {
   videoQuality: "low",
   autoPlay: true,
+  skipIntro: "auto",
   pageSize: 120,
   libraryViewModes: {},
   libraryQueries: {},
@@ -401,6 +402,8 @@ function normalizeMockSettings(value: Partial<AppSettings> | null | undefined): 
   return {
     videoQuality: value?.videoQuality === "default" ? "default" : "low",
     autoPlay: value?.autoPlay !== false,
+    skipIntro:
+      value?.skipIntro === "off" || value?.skipIntro === "button" ? value.skipIntro : "auto",
     pageSize,
     libraryViewModes,
     libraryQueries,
@@ -561,10 +564,19 @@ function buildChapters(item: EmbyItem): EmbyChapter[] {
   const seconds = (item.runTimeTicks ?? 0) / 10_000_000;
   if (item.type === "Video" || seconds < 600) return [];
   const names = ["开场", "第一幕", "第二幕", "第三幕", "结尾"];
-  return names.map((name, index) => ({
+  const chapters: EmbyChapter[] = names.map((name, index) => ({
     startSeconds: Math.round((seconds * index) / (names.length + 1)),
     name,
   }));
+  if (item.type === "Episode") {
+    // Exercise the same shape Emby's Detect Episode Intros writes: marker
+    // rows live inside Chapters, and the normal chapter list must hide them.
+    chapters.push(
+      { startSeconds: 8, name: "片头", markerType: "IntroStart" },
+      { startSeconds: 98, name: "正片", markerType: "IntroEnd" },
+    );
+  }
+  return chapters;
 }
 
 /** What `emby_item` adds over the list item: cast, studios, ratings, streams. */
@@ -1024,6 +1036,7 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
         playSessionId: "mock-play-session",
         mediaSourceId: "mock-source",
         startSeconds: (item?.userData.playbackPositionTicks ?? 0) / TICKS,
+        chapters: item ? buildChapters(item) : [],
       };
       return target;
     }

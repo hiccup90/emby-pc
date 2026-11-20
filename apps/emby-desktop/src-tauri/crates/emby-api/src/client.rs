@@ -16,10 +16,10 @@ use crate::auth::{authorization_header, CLIENT_NAME, CLIENT_VERSION};
 use crate::clean;
 use crate::error::{ApiError, ApiErrorKind, ApiResult};
 use crate::model::{
-    pick_playback_source, EmbyApplyRemoteSearchRequest, EmbyImageRequest, EmbyItem, EmbyItemsPage,
-    EmbyItemsRequest, EmbyPlaybackRequest, EmbyPlaybackTarget, EmbyRemoteSearchRequest,
-    EmbyReportRequest, EmbyView, RawAuthResponse, RawItem, RawItemsResponse, RawPlaybackInfo,
-    RawPublicSystemInfo, DEFAULT_IMAGE_WIDTH,
+    chapters_from_raw, pick_playback_source, EmbyApplyRemoteSearchRequest, EmbyImageRequest,
+    EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyPlaybackRequest, EmbyPlaybackTarget,
+    EmbyRemoteSearchRequest, EmbyReportRequest, EmbyView, RawAuthResponse, RawItem,
+    RawItemsResponse, RawPlaybackInfo, RawPublicSystemInfo, DEFAULT_IMAGE_WIDTH,
 };
 use crate::report::{ReportBody, ReportEvent};
 use crate::ticks::ticks_to_seconds;
@@ -675,6 +675,10 @@ impl EmbyClient {
             play_session_id,
             media_source_id: source_id.map(str::to_string),
             start_seconds,
+            // The source is borrowed from `info`; chapters are tiny and this is
+            // one launch per playback, so cloning them is cheaper than adding a
+            // second representation just to move them out.
+            chapters: chapters_from_raw(source.chapters.clone()),
         })
     }
 
@@ -1084,6 +1088,44 @@ mod tests {
             error.kind(),
             ApiErrorKind::NoPlayableSource
         );
+    }
+
+    #[tokio::test]
+    async fn playback_target_carries_source_chapters_and_marker_types() {
+        const INFO: &str = r#"{
+            "PlaySessionId": "ps-top",
+            "MediaSources": [{
+                "Id": "src1",
+                "DirectStreamUrl": "/videos/i1/stream?static=true&mediaSourceId=src1",
+                "Chapters": [
+                    {"StartPositionTicks": 0, "Name": "Intro", "MarkerType": "IntroStart"},
+                    {"StartPositionTicks": 900000000, "Name": "Main", "MarkerType": "IntroEnd"}
+                ]
+            }]
+        }"#;
+        let (server_url, server) = spawn_mock_server(INFO);
+        let target = test_client(server_url)
+            .playback_target(
+                "u1",
+                &EmbyPlaybackRequest {
+                    item_id: "i1".to_string(),
+                    // Supplying the start skips the extra item request, so the
+                    // mock only has to answer PlaybackInfo.
+                    start_seconds: Some(0.0),
+                },
+            )
+            .await
+            .expect("playback target");
+        let request = server.join().expect("mock server thread");
+        let request_line = request.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("POST /Items/i1/PlaybackInfo?UserId=u1 "),
+            "{request_line}"
+        );
+        assert_eq!(target.chapters.len(), 2);
+        assert_eq!(target.chapters[0].marker_type.as_deref(), Some("IntroStart"));
+        assert_eq!(target.chapters[1].start_seconds, 90.0);
+        assert_eq!(target.chapters[1].marker_type.as_deref(), Some("IntroEnd"));
     }
 
     #[tokio::test]

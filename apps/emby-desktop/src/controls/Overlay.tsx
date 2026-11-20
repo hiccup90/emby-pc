@@ -512,18 +512,10 @@ export default function Overlay() {
     });
   }, [desktop, menu]);
 
-  // ---- auto hide -----------------------------------------------------------
+  // ---- derived player values ----------------------------------------------
   const status = snapshot?.status ?? "idle";
   const playing = status === "playing" || status === "loading";
   const buffering = snapshot?.buffering ?? false;
-  const autoHideAllowed = status === "playing" && !buffering && menu === null;
-
-  useEffect(() => {
-    autoHideAllowedRef.current = autoHideAllowed;
-    scheduleAutoHide();
-  }, [autoHideAllowed, scheduleAutoHide]);
-
-  // ---- derived player values ----------------------------------------------
   const duration = snapshot?.durationSeconds ?? 0;
   const position = seekDraft ?? snapshot?.positionSeconds ?? 0;
   const boundedPosition = duration > 0 ? Math.min(Math.max(0, position), duration) : 0;
@@ -532,6 +524,36 @@ export default function Overlay() {
   const hasMedia =
     snapshot !== null && status !== "idle" && status !== "error";
   const canSeek = snapshot !== null && duration > 0 && status !== "idle" && status !== "error";
+
+  // Keep the bar visible while the intro button is actionable. The Rust
+  // overlay only exposes the bottom strip; moving the button into a separate
+  // region would need new native geometry, so the controls stay awake instead.
+  const intro = meta?.intro ?? null;
+  const introEnd =
+    intro !== null
+      ? Math.min(intro.endSeconds, duration > 0 ? duration : intro.endSeconds)
+      : null;
+  const skipIntroTarget =
+    meta?.skipIntroButton === true &&
+    intro !== null &&
+    introEnd !== null &&
+    canSeek &&
+    status !== "ended" &&
+    boundedPosition >= intro.startSeconds &&
+    boundedPosition < introEnd
+      ? introEnd
+      : null;
+  const autoHideAllowed =
+    status === "playing" && !buffering && menu === null && skipIntroTarget === null;
+
+  useEffect(() => {
+    autoHideAllowedRef.current = autoHideAllowed;
+    scheduleAutoHide();
+  }, [autoHideAllowed, scheduleAutoHide]);
+
+  useEffect(() => {
+    if (skipIntroTarget !== null) wake();
+  }, [skipIntroTarget, wake]);
   const selectedAudio = snapshot?.audioTracks.find((track) => track.selected);
   const audioTitle = selectedAudio ? trackLabel(selectedAudio, "音轨").title : "默认";
   const selectedSubtitle = snapshot?.subtitleTracks.find((track) => track.selected);
@@ -997,7 +1019,7 @@ export default function Overlay() {
           />
         </div>
 
-        <div className="ov-controls">
+        <div className={`ov-controls${skipIntroTarget !== null ? " has-skip" : ""}`}>
           <div className="ov-group ov-group--left">
             {episodeNav && (
               <button
@@ -1072,6 +1094,24 @@ export default function Overlay() {
           </div>
 
           <div className="ov-group ov-group--right">
+            {skipIntroTarget !== null && (
+              <button
+                className="ov-btn ov-btn--skip-intro"
+                type="button"
+                data-no-drag="true"
+                onPointerDown={actionPointerDown(() =>
+                  send({ type: "seek", seconds: skipIntroTarget })
+                )}
+                onKeyDown={actionKeyDown(() =>
+                  send({ type: "seek", seconds: skipIntroTarget })
+                )}
+                onClick={swallowClick}
+                aria-label="跳过片头"
+                title="跳过片头"
+              >
+                跳过片头
+              </button>
+            )}
             <button
               className="ov-btn"
               type="button"

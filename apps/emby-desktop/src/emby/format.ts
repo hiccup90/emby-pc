@@ -1,6 +1,5 @@
-import type { PlaybackMeta } from "../player/contract";
-import type { EmbyItem, EmbyMediaStream } from "./contract";
-import type { PlaybackChapter } from "../player/contract";
+import type { PlaybackChapter, PlaybackIntro, PlaybackMeta } from "../player/contract";
+import type { EmbyChapter, EmbyItem, EmbyMediaStream } from "./contract";
 
 const TICKS_PER_SECOND = 10_000_000;
 
@@ -110,12 +109,68 @@ export function formatPremiereDate(value: string | null | undefined): string | n
   return `${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日`;
 }
 
-/** Chapter list for the player, or undefined when there is nothing to show. */
-export function itemChapters(item: EmbyItem): PlaybackChapter[] | undefined {
-  const chapters = (item.chapters ?? [])
-    .filter((chapter) => Number.isFinite(chapter.startSeconds) && chapter.startSeconds >= 0)
+function markerKind(chapter: EmbyChapter): string {
+  return (chapter.markerType ?? "").trim().toLowerCase();
+}
+
+function isNormalChapter(chapter: EmbyChapter): boolean {
+  const kind = markerKind(chapter);
+  return kind === "" || kind === "chapter";
+}
+
+/** Normal chapters for the menu; undefined when there is nothing to show. */
+function playbackChapters(
+  chapters: EmbyChapter[] | null | undefined,
+): PlaybackChapter[] | undefined {
+  const rows = (chapters ?? [])
+    .filter(
+      (chapter) =>
+        isNormalChapter(chapter) &&
+        Number.isFinite(chapter.startSeconds) &&
+        chapter.startSeconds >= 0,
+    )
     .map((chapter) => ({ seconds: chapter.startSeconds, title: chapter.name }));
-  return chapters.length > 1 ? chapters : undefined;
+  return rows.length > 1 ? rows : undefined;
+}
+
+/**
+ * The first `IntroStart` followed by an `IntroEnd`. Emby emits both inside the
+ * normal `Chapters` array; an unpaired start (or invalid/duplicate markers) is
+ * not a playable segment. Sorted defensively: the server normally sends them
+ * in playback order, but a malformed payload must not create a negative span.
+ */
+export function introSegment(
+  chapters: EmbyChapter[] | null | undefined,
+): PlaybackIntro | null {
+  const ordered = (chapters ?? [])
+    .filter((chapter) => Number.isFinite(chapter.startSeconds) && chapter.startSeconds >= 0)
+    .slice()
+    .sort((a, b) => a.startSeconds - b.startSeconds);
+  const startIndex = ordered.findIndex((chapter) => markerKind(chapter) === "introstart");
+  if (startIndex < 0) return null;
+  const startSeconds = ordered[startIndex].startSeconds;
+  for (let index = startIndex + 1; index < ordered.length; index += 1) {
+    const chapter = ordered[index];
+    if (markerKind(chapter) !== "introend") continue;
+    if (chapter.startSeconds > startSeconds) {
+      return { startSeconds, endSeconds: chapter.startSeconds };
+    }
+  }
+  return null;
+}
+
+/**
+ * Player metadata for one item. `PlaybackInfo` supplies the media source's
+ * chapters on every launch (list/continue-watching included); detail responses
+ * are the fallback when the server omits them there.
+ */
+export function playbackMeta(item: EmbyItem, chapters?: EmbyChapter[]): PlaybackMeta {
+  const source = chapters && chapters.length > 0 ? chapters : item.chapters;
+  return {
+    ...itemPlaybackMeta(item),
+    chapters: playbackChapters(source),
+    intro: introSegment(source) ?? undefined,
+  };
 }
 
 export function formatCommunityRating(value: number | null | undefined): string | null {
