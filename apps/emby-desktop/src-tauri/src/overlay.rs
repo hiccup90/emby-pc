@@ -22,7 +22,9 @@
 //! Visibility is driven only by `player_ui_mode` and `video_sync.visible`. While
 //! the video is visible the overlay is shown once and then only moved/resized;
 //! it is never hidden on focus changes. This avoids the show/hide + ex-style
-//! churn that made the bar flicker.
+//! churn that made the bar flicker. Pointer-move wakes, however, are gated on
+//! the app being foreground: a player that is merely visible behind another
+//! window must not pop its controls when the pointer crosses the video rect.
 //!
 //! Coordinate contract: `VideoSync.x/y/w/h` are CSS pixels relative to the
 //! main webview client area. The client origin comes from `inner_position()`
@@ -1023,8 +1025,8 @@ impl OverlayState {
 
     /// Cursor-vs-video test for the wake poller. Returns `false` when the rect
     /// is unavailable so a transient failure cannot wake a hidden overlay.
-    /// Focus is deliberately not consulted: the overlay is an owned window, so
-    /// the OS hides it with its owner and focus changes must not drive it.
+    /// This is geometry only; the poller separately requires the app to be
+    /// foreground and the pointer to be over our own window hierarchy.
     #[cfg(windows)]
     fn cursor_inside_video(&self, cursor: (i32, i32)) -> bool {
         let (mode, sync, video_rect) = {
@@ -1077,9 +1079,6 @@ impl OverlayState {
         if !point_in_rect(cursor, video_rect) {
             return false;
         }
-        let Some(main) = app.get_webview_window(MAIN_LABEL) else {
-            return false;
-        };
         // Clicks on a visible strip belong to the controls window, not the
         // stage. Only the two strips the window region exposes count: anywhere
         // else the window is clipped and the click reaches the video.
@@ -1109,21 +1108,7 @@ impl OverlayState {
         // The pointer must actually be over our own window hierarchy: clicking
         // another app that happens to sit above the video rect must not steal
         // focus.
-        let Ok(main_hwnd) = main.hwnd() else {
-            return false;
-        };
-        let main_hwnd = main_hwnd.0 as isize as windows_sys::Win32::Foundation::HWND;
-        let point = windows_sys::Win32::Foundation::POINT {
-            x: cursor.0,
-            y: cursor.1,
-        };
-        let under = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::WindowFromPoint(point) };
-        if under.is_null() {
-            return false;
-        }
-        let ours = under == main_hwnd
-            || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsChild(main_hwnd, under) } != 0;
-        ours
+        cursor_over_main(app, cursor)
     }
 
     /// Focus the app (the native video window eats the click that would do it)
@@ -2281,6 +2266,16 @@ pub fn spawn_wake_poller(app: AppHandle) {
                     continue;
                 }
                 interval = WAKE_POLL_ACTIVE;
+                // A visible player is not necessarily the active one. Do not
+                // wake its bar while another app owns the foreground, or while
+                // another window covers the video rect. Keep the fast poll
+                // rate: a click on the inactive video still has to reach
+                // `on_stage_click`, which activates the app and wakes the bar
+                // itself.
+                if !foreground_is_ours() || !cursor_over_main(&app, cursor) {
+                    last = None;
+                    continue;
+                }
                 // Compare against the last wake, not the previous tick: slow
                 // movement then still crosses the 3 px threshold eventually.
                 match last {
@@ -2315,6 +2310,47 @@ fn cursor_position() -> Option<(i32, i32)> {
     let mut point = POINT::default();
     let ok = unsafe { GetCursorPos(&mut point) };
     (ok != 0).then_some((point.x, point.y))
+}
+
+/// Whether the foreground window belongs to this process.
+///
+/// The wake poller sees the video rectangle even when another application is
+/// in front. Hover must only bring the controls back for the active player;
+/// clicks are handled separately and still activate the app via
+/// [`OverlayState::on_stage_click`].
+#[cfg(windows)]
+fn foreground_is_ours() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() {
+        return false;
+    }
+    let mut process_id = 0;
+    unsafe {
+        GetWindowThreadProcessId(foreground, &mut process_id);
+    }
+    process_id == std::process::id()
+}
+
+/// Whether `cursor` is actually over the main window (or one of its children),
+/// rather than another window that happens to cover the video rectangle.
+#[cfg(windows)]
+fn cursor_over_main(app: &AppHandle, cursor: (i32, i32)) -> bool {
+    use windows_sys::Win32::Foundation::{HWND, POINT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsChild, WindowFromPoint};
+
+    let Some(main) = app.get_webview_window(MAIN_LABEL) else {
+        return false;
+    };
+    let Ok(main) = main.hwnd() else {
+        return false;
+    };
+    let main = main.0 as isize as HWND;
+    let under = unsafe { WindowFromPoint(POINT { x: cursor.0, y: cursor.1 }) };
+    !under.is_null() && (under == main || unsafe { IsChild(main, under) } != 0)
 }
 
 // ---- Tauri commands ----------------------------------------------------------
