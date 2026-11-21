@@ -16,10 +16,11 @@ use crate::auth::{authorization_header, CLIENT_NAME, CLIENT_VERSION};
 use crate::clean;
 use crate::error::{ApiError, ApiErrorKind, ApiResult};
 use crate::model::{
-    chapters_from_raw, pick_playback_source, EmbyApplyRemoteSearchRequest, EmbyImageRequest,
-    EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyPlaybackRequest, EmbyPlaybackTarget,
-    EmbyRemoteSearchRequest, EmbyReportRequest, EmbyView, RawAuthResponse, RawItem,
-    RawItemsResponse, RawPlaybackInfo, RawPublicSystemInfo, DEFAULT_IMAGE_WIDTH,
+    chapters_from_raw, pick_playback_source, EmbyApplyRemoteSearchRequest, EmbyChapter,
+    EmbyImageRequest, EmbyItem, EmbyItemsPage, EmbyItemsRequest, EmbyPlaybackRequest,
+    EmbyPlaybackTarget, EmbyRemoteSearchRequest, EmbyReportRequest, EmbyView, RawAuthResponse,
+    RawChapter, RawItem, RawItemsResponse, RawPlaybackInfo, RawPublicSystemInfo,
+    DEFAULT_IMAGE_WIDTH,
 };
 use crate::report::{ReportBody, ReportEvent};
 use crate::ticks::ticks_to_seconds;
@@ -586,14 +587,15 @@ impl EmbyClient {
 
     /// Resolves a directly playable URL.
     ///
-    /// 1. When `start_seconds` is not supplied, the item's saved position is
-    ///    used as the resume point.
+    /// 1. The item is read first: it carries the saved position and, before
+    ///    `PlaybackInfo` can replace them, the chapters (see step 4).
     /// 2. `PlaybackInfo` is requested with a `DeviceProfile` and transcoding
     ///    disabled.
     /// 3. The first source with a `DirectStreamUrl` wins; otherwise the
     ///    `/Videos/{id}/stream?static=true` fallback is built.
-    /// 4. The URL is made absolute and gets `api_key` (the player does not
-    ///    inject headers).
+    /// 4. Chapters come from the media source, or from the item read when the
+    ///    source list lost its intro markers (`playback_chapters`). The URL is
+    ///    made absolute and gets `api_key` (the player does not inject headers).
     pub async fn playback_target(
         &self,
         user_id: &str,
@@ -602,16 +604,21 @@ impl EmbyClient {
         let token = self.token()?.to_string();
         let item_id = required_item_id(&req.item_id)?.to_string();
 
+        // Read the item before `PlaybackInfo`. Emby probes a strm media source
+        // the first time it is played — the `PlaybackInfo` call below is what
+        // triggers it — and saves the probe result over the item's chapters, so
+        // that one launch comes back without the `IntroStart`/`IntroEnd`
+        // markers. The item read is a database read and still has them.
+        let item = self.item(user_id, &item_id).await?;
+
         let start_seconds = match req.start_seconds.filter(|seconds| seconds.is_finite()) {
             Some(seconds) => seconds.max(0.0),
-            None => {
-                let item = self.item(user_id, &item_id).await?;
-                item.user_data
-                    .playback_position_ticks
-                    .map(ticks_to_seconds)
-                    .unwrap_or(0.0)
-                    .max(0.0)
-            }
+            None => item
+                .user_data
+                .playback_position_ticks
+                .map(ticks_to_seconds)
+                .unwrap_or(0.0)
+                .max(0.0),
         };
 
         let url = self.endpoint(&["Items", &item_id, "PlaybackInfo"], &[("UserId", user_id)])?;
@@ -678,7 +685,7 @@ impl EmbyClient {
             // The source is borrowed from `info`; chapters are tiny and this is
             // one launch per playback, so cloning them is cheaper than adding a
             // second representation just to move them out.
-            chapters: chapters_from_raw(source.chapters.clone()),
+            chapters: playback_chapters(source.chapters.clone(), item.chapters),
         })
     }
 
@@ -814,6 +821,25 @@ fn no_source_error() -> ApiError {
     ApiError::no_playable_source("该媒体没有可直接播放的源（需要转码，当前版本尚未实现）")
 }
 
+/// Chapters for the player: the media source's own list wins, unless it no
+/// longer carries an intro marker and the item still does — Emby's playback
+/// probe replaces an item's chapters with the probe result on a strm source's
+/// first playback, so the source list can be the one that lost the markers.
+fn playback_chapters(
+    source: Option<Vec<RawChapter>>,
+    item_chapters: Vec<EmbyChapter>,
+) -> Vec<EmbyChapter> {
+    let chapters = chapters_from_raw(source);
+    if chapters.iter().any(has_intro_start) || !item_chapters.iter().any(has_intro_start) {
+        return chapters;
+    }
+    item_chapters
+}
+
+fn has_intro_start(chapter: &EmbyChapter) -> bool {
+    chapter.marker_type.as_deref() == Some("IntroStart")
+}
+
 /// Emby's `SortOrder` query value. Anything other than an explicit descending
 /// value keeps the historical default (`Ascending`), so older callers that do
 /// not send `sortOrder` are unaffected.
@@ -897,62 +923,90 @@ mod tests {
     /// The test thread drives reqwest while this thread only blocks on the
     /// loopback socket, so no extra runtime feature is needed.
     fn spawn_mock_server(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
-        use std::io::{Read, Write};
+        let (server_url, handled) = spawn_mock_sequence(vec![body]);
+        let handle = std::thread::spawn(move || {
+            handled
+                .join()
+                .expect("mock server thread")
+                .pop()
+                .expect("one request")
+        });
+        (server_url, handle)
+    }
+
+    /// Serves `bodies` in order, one fresh connection per request, and returns
+    /// the raw request text of each (used by flows that issue more than one
+    /// call, e.g. the item read before `PlaybackInfo`).
+    fn spawn_mock_sequence(
+        bodies: Vec<&'static str>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
         let addr = listener.local_addr().expect("mock server address");
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept request");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("read timeout");
-
-            let mut request = Vec::new();
-            let mut chunk = [0_u8; 1024];
-            let header_end = loop {
-                let read = stream.read(&mut chunk).expect("read request");
-                if read == 0 {
-                    break request.len();
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if let Some(start) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                    break start + 4;
-                }
-            };
-            // POST bodies may arrive in a separate packet; drain the declared
-            // Content-Length so tests can inspect JSON payloads too.
-            let headers = String::from_utf8_lossy(&request[..header_end.min(request.len())]);
-            let content_length = headers
-                .lines()
-                .find_map(|line| {
-                    line.split_once(':').and_then(|(name, value)| {
-                        name.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().ok())
-                            .flatten()
-                    })
+            bodies
+                .into_iter()
+                .map(|body| {
+                    let (mut stream, _) = listener.accept().expect("accept request");
+                    answer_mock_request(&mut stream, body)
                 })
-                .unwrap_or(0);
-            let wanted = header_end + content_length;
-            while request.len() < wanted {
-                let read = stream.read(&mut chunk).expect("read request body");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-            }
-
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write response");
-            String::from_utf8(request).expect("utf-8 request")
+                .collect()
         });
         (format!("http://{addr}"), handle)
+    }
+
+    /// Reads one request off `stream` and answers it with `body`.
+    fn answer_mock_request(stream: &mut std::net::TcpStream, body: &'static str) -> String {
+        use std::io::{Read, Write};
+
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).expect("read request");
+            if read == 0 {
+                break request.len();
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(start) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break start + 4;
+            }
+        };
+        // POST bodies may arrive in a separate packet; drain the declared
+        // Content-Length so tests can inspect JSON payloads too.
+        let headers = String::from_utf8_lossy(&request[..header_end.min(request.len())]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        let wanted = header_end + content_length;
+        while request.len() < wanted {
+            let read = stream.read(&mut chunk).expect("read request body");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+        String::from_utf8(request).expect("utf-8 request")
     }
 
     fn test_client(server_url: String) -> EmbyClient {
@@ -1092,6 +1146,7 @@ mod tests {
 
     #[tokio::test]
     async fn playback_target_carries_source_chapters_and_marker_types() {
+        const ITEM: &str = r#"{"Id": "i1", "Name": "Episode", "Type": "Episode"}"#;
         const INFO: &str = r#"{
             "PlaySessionId": "ps-top",
             "MediaSources": [{
@@ -1103,21 +1158,25 @@ mod tests {
                 ]
             }]
         }"#;
-        let (server_url, server) = spawn_mock_server(INFO);
+        let (server_url, server) = spawn_mock_sequence(vec![ITEM, INFO]);
         let target = test_client(server_url)
             .playback_target(
                 "u1",
                 &EmbyPlaybackRequest {
                     item_id: "i1".to_string(),
-                    // Supplying the start skips the extra item request, so the
-                    // mock only has to answer PlaybackInfo.
                     start_seconds: Some(0.0),
                 },
             )
             .await
             .expect("playback target");
-        let request = server.join().expect("mock server thread");
-        let request_line = request.lines().next().unwrap_or_default();
+        let requests = server.join().expect("mock server thread");
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(
+            requests[0].starts_with("GET /Users/u1/Items/i1?"),
+            "{}",
+            requests[0]
+        );
+        let request_line = requests[1].lines().next().unwrap_or_default();
         assert!(
             request_line.starts_with("POST /Items/i1/PlaybackInfo?UserId=u1 "),
             "{request_line}"
@@ -1126,6 +1185,77 @@ mod tests {
         assert_eq!(target.chapters[0].marker_type.as_deref(), Some("IntroStart"));
         assert_eq!(target.chapters[1].start_seconds, 90.0);
         assert_eq!(target.chapters[1].marker_type.as_deref(), Some("IntroEnd"));
+    }
+
+    /// Emby probes a strm source on its first playback and saves the probe
+    /// result over the item's chapters, so `PlaybackInfo` can come back without
+    /// the markers the item read (sent before the probe) still has.
+    #[tokio::test]
+    async fn playback_target_falls_back_to_item_chapters_when_the_source_lost_them() {
+        const ITEM: &str = r#"{
+            "Id": "i1",
+            "Name": "Episode",
+            "Type": "Episode",
+            "UserData": {"PlaybackPositionTicks": 20000000},
+            "Chapters": [
+                {"StartPositionTicks": 0, "Name": "Intro", "MarkerType": "IntroStart"},
+                {"StartPositionTicks": 670000000, "Name": "Main", "MarkerType": "IntroEnd"},
+                {"StartPositionTicks": 1861600000, "Name": "Part 2"}
+            ]
+        }"#;
+        const INFO: &str = r#"{
+            "MediaSources": [{
+                "Id": "src1",
+                "DirectStreamUrl": "/videos/i1/stream?static=true&mediaSourceId=src1",
+                "Chapters": [{"StartPositionTicks": 1861600000, "Name": "Part 2"}]
+            }]
+        }"#;
+        let (server_url, server) = spawn_mock_sequence(vec![ITEM, INFO]);
+        let target = test_client(server_url)
+            .playback_target(
+                "u1",
+                &EmbyPlaybackRequest {
+                    item_id: "i1".to_string(),
+                    start_seconds: None,
+                },
+            )
+            .await
+            .expect("playback target");
+        server.join().expect("mock server thread");
+        // Resume point still comes from the item read.
+        assert_eq!(target.start_seconds, 2.0);
+        // Chapters come from the item, markers included.
+        assert_eq!(target.chapters.len(), 3, "{:?}", target.chapters);
+        assert_eq!(target.chapters[0].marker_type.as_deref(), Some("IntroStart"));
+        assert_eq!(target.chapters[1].start_seconds, 67.0);
+        assert_eq!(target.chapters[1].marker_type.as_deref(), Some("IntroEnd"));
+    }
+
+    /// When neither list has an intro marker, the source list stays as-is.
+    #[tokio::test]
+    async fn playback_target_keeps_the_source_chapters_without_markers() {
+        const ITEM: &str = r#"{"Id": "i1", "Name": "Episode", "Type": "Episode"}"#;
+        const INFO: &str = r#"{
+            "MediaSources": [{
+                "Id": "src1",
+                "DirectStreamUrl": "/videos/i1/stream?static=true&mediaSourceId=src1",
+                "Chapters": [{"StartPositionTicks": 4009200000, "Name": "Part 2"}]
+            }]
+        }"#;
+        let (server_url, server) = spawn_mock_sequence(vec![ITEM, INFO]);
+        let target = test_client(server_url)
+            .playback_target(
+                "u1",
+                &EmbyPlaybackRequest {
+                    item_id: "i1".to_string(),
+                    start_seconds: Some(0.0),
+                },
+            )
+            .await
+            .expect("playback target");
+        server.join().expect("mock server thread");
+        assert_eq!(target.chapters.len(), 1);
+        assert_eq!(target.chapters[0].start_seconds, 400.92);
     }
 
     #[tokio::test]

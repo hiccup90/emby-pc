@@ -1,5 +1,6 @@
 import type { PlaybackChapter, PlaybackIntro, PlaybackMeta } from "../player/contract";
 import type { EmbyChapter, EmbyItem, EmbyMediaStream } from "./contract";
+import { recallIntro, rememberIntro } from "./introCache";
 
 const TICKS_PER_SECOND = 10_000_000;
 
@@ -162,14 +163,20 @@ export function introSegment(
 /**
  * Player metadata for one item. `PlaybackInfo` supplies the media source's
  * chapters on every launch (list/continue-watching included); detail responses
- * are the fallback when the server omits them there.
+ * are the fallback when the server omits them there. When neither list carries
+ * an intro marker, the range this item reported earlier is used instead — the
+ * server drops those markers when it probes a strm source (`introCache`).
  */
 export function playbackMeta(item: EmbyItem, chapters?: EmbyChapter[]): PlaybackMeta {
   const source = chapters && chapters.length > 0 ? chapters : item.chapters;
+  const intro = introSegment(source);
+  if (intro) {
+    rememberIntro(item.id, intro);
+  }
   return {
     ...itemPlaybackMeta(item),
     chapters: playbackChapters(source),
-    intro: introSegment(source) ?? undefined,
+    intro: intro ?? recallIntro(item.id) ?? undefined,
   };
 }
 
