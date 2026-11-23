@@ -126,11 +126,7 @@ impl SnapshotAssembler {
         self.paused = paused;
         match self.status {
             PlayerStatus::Playing => self.status = PlayerStatus::Paused,
-            PlayerStatus::Paused => {
-                if !paused {
-                    self.status = PlayerStatus::Playing
-                }
-            }
+            PlayerStatus::Paused if !paused => self.status = PlayerStatus::Playing,
             _ => {}
         }
         self.dirty = true;

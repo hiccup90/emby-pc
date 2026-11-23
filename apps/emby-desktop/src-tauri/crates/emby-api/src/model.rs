@@ -207,6 +207,7 @@ pub struct EmbyReportRequest {
     pub play_session_id: Option<String>,
     pub position_seconds: f64,
     pub paused: bool,
+    pub muted: bool,
     /// `start` | `progress` | `pause` | `unpause` | `seek` | `stop` | `ended`
     pub event: String,
 }

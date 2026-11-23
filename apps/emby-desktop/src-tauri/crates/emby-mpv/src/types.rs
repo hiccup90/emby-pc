@@ -137,10 +137,6 @@ impl VideoSync {
 pub struct OpenRequest {
     pub url: String,
     pub start_seconds: Option<f64>,
-    /// Reserved for `http-header-fields`. libmpv only accepts that option
-    /// before `mpv_initialize()`, so it is applied when a session is created
-    /// for this request; later opens reuse the running session without it.
-    pub headers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,7 +309,6 @@ mod tests {
             serde_json::from_str(r#"{"url":"https://example/media/1.mkv"}"#).unwrap();
         assert_eq!(req.url, "https://example/media/1.mkv");
         assert_eq!(req.start_seconds, None);
-        assert_eq!(req.headers, None);
     }
 
     #[test]

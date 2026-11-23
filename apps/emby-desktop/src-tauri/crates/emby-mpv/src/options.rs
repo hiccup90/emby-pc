@@ -13,10 +13,6 @@
 //! preset passes `None`, leaving mpv's own quality defaults untouched.
 //! Individual options can be overridden in mpv.conf (later options win).
 //!
-//! `http-header-fields` is the only sensitive option (auth headers). libmpv
-//! only accepts it before initialization; setting it at runtime writes the
-//! value into mpv's log, so we never do that.
-//!
 //! `log-file` is opt-in ([`LOG_ENV_VAR`]). mpv forces at least `-v -v` for a
 //! file log and writes the full stream URL ("Playing: <url>"); Emby stream URLs
 //! carry `api_key`, so an always-on log would leave a token on disk for every
@@ -91,25 +87,17 @@ pub fn base_options(
     options
 }
 
-/// Like [`base_options`], but appends `extra` (the user's `mpv.conf`) and then
-/// `http-header-fields` when the caller has headers. Only valid for a freshly
-/// created handle (pre-initialize). Later values win in mpv, so user options
-/// override the built-in ones.
-///
-/// mpv expects a comma-separated list of `Name: value` pairs. Headers carrying
-/// CR/LF are dropped to avoid option injection, and empty entries are ignored.
+/// Like [`base_options`], but appends `extra` (the user's `mpv.conf`). Only
+/// valid for a freshly created handle (pre-initialize). Later values win in
+/// mpv, so user options override the built-in ones.
 pub fn build_initial_options(
     host_hwnd: u64,
     log_path: Option<&Path>,
     profile: Option<&str>,
     extra: &[MpvOption],
-    headers: Option<&[String]>,
 ) -> Vec<MpvOption> {
     let mut options = base_options(host_hwnd, log_path, profile);
     options.extend(extra.iter().cloned());
-    if let Some(value) = headers_option_value(headers) {
-        options.push(MpvOption::new("http-header-fields", value));
-    }
     options
 }
 
@@ -147,23 +135,6 @@ pub fn parse_user_options(text: &str) -> (Vec<MpvOption>, Vec<String>) {
         options.push(MpvOption::new(name, value));
     }
     (options, warnings)
-}
-
-/// Build the `http-header-fields` value, or `None` when nothing usable is left.
-pub fn headers_option_value(headers: Option<&[String]>) -> Option<String> {
-    let cleaned: Vec<&str> = headers
-        .unwrap_or(&[])
-        .iter()
-        .map(|header| header.trim())
-        .filter(|header| !header.is_empty())
-        .filter(|header| !header.contains('\r') && !header.contains('\n'))
-        .filter(|header| header.contains(':'))
-        .collect();
-    if cleaned.is_empty() {
-        None
-    } else {
-        Some(cleaned.join(","))
-    }
 }
 
 /// Test helper: the value mpv would end up with, i.e. the **last** occurrence
@@ -276,48 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn headers_are_joined_and_none_by_default() {
-        let no_headers = build_initial_options(1, None, None, &[], None);
-        assert!(find_option(&no_headers, "http-header-fields").is_none());
-
-        let empty = build_initial_options(1, None, None, &[], Some(&[]));
-        assert!(find_option(&empty, "http-header-fields").is_none());
-
-        let headers = vec![
-            "Authorization: Bearer secret-token".to_string(),
-            "X-Emby-Token: secret-token".to_string(),
-            "   ".to_string(),
-        ];
-        let with_headers = build_initial_options(1, None, Some("fast"), &[], Some(&headers));
-        assert_eq!(
-            find_option(&with_headers, "http-header-fields"),
-            Some("Authorization: Bearer secret-token,X-Emby-Token: secret-token")
-        );
-        // http-header-fields must come last, after every non-sensitive option
-        // (including an opted-in log-file).
-        assert_eq!(with_headers.last().unwrap().name, "http-header-fields");
+    fn built_in_options_carry_no_tokens() {
+        // Nothing in the built-in option set may contain credential material.
         let path = log_path();
-        let logged = build_initial_options(1, Some(path.as_path()), None, &[], Some(&headers));
-        assert_eq!(logged.last().unwrap().name, "http-header-fields");
-    }
-
-    #[test]
-    fn header_injection_is_filtered() {
-        let headers = vec![
-            "Authorization: Bearer ok".to_string(),
-            "X-Evil: value\r\nlog-file=oops".to_string(),
-            "NoColonHere".to_string(),
-        ];
-        let value = headers_option_value(Some(&headers)).unwrap();
-        assert_eq!(value, "Authorization: Bearer ok");
-    }
-
-    #[test]
-    fn no_token_leaks_into_non_header_options() {
-        // Simulates the "runtime setter leaks the token into mpv.log" pitfall:
-        // with no headers requested, no value may contain header material.
-        let path = log_path();
-        let options = build_initial_options(1, Some(path.as_path()), None, &[], None);
+        let options = build_initial_options(1, Some(path.as_path()), None, &[]);
         for option in &options {
             assert!(!option.value.contains("Bearer"));
             assert!(!option.value.contains("Token"));
@@ -335,7 +268,7 @@ mod tests {
         assert_eq!(find_option(&options, "profile"), Some("fast"));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
 
-        let merged = build_initial_options(1, None, Some("fast"), &options, None);
+        let merged = build_initial_options(1, None, Some("fast"), &options);
         // User options come after every built-in option, so mpv applies them last.
         let vo_values: Vec<&str> = merged
             .iter()
@@ -354,7 +287,7 @@ mod tests {
     #[test]
     fn user_mpv_conf_can_override_the_quality_profile() {
         let (options, _) = parse_user_options("profile=gpu-hq");
-        let merged = build_initial_options(1, None, Some("fast"), &options, None);
+        let merged = build_initial_options(1, None, Some("fast"), &options);
         let profiles: Vec<&str> = merged
             .iter()
             .filter(|option| option.name == "profile")
@@ -365,28 +298,9 @@ mod tests {
     }
 
     #[test]
-    fn header_option_stays_last_with_user_options() {
-        let (options, _) = parse_user_options("vo=gpu");
-        let merged = build_initial_options(
-            1,
-            None,
-            Some("fast"),
-            &options,
-            Some(&["Authorization: Bearer abc".to_string()]),
-        );
-        assert_eq!(merged.last().unwrap().name, "http-header-fields");
-    }
-
-    #[test]
     fn all_option_values_are_non_empty_and_nul_free() {
         let path = log_path();
-        let options = build_initial_options(
-            42,
-            Some(path.as_path()),
-            None,
-            &[],
-            Some(&["Authorization: Bearer abc".to_string()]),
-        );
+        let options = build_initial_options(42, Some(path.as_path()), None, &[]);
         for option in &options {
             assert!(!option.name.is_empty());
             assert!(!option.value.is_empty(), "{} has empty value", option.name);

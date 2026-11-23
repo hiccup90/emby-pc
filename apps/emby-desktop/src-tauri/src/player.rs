@@ -37,18 +37,6 @@ const STATS_TIMEOUT: Duration = Duration::from_millis(800);
 struct SessionKey {
     /// Quality preset; maps to an mpv profile.
     quality: VideoQuality,
-    /// `http-header-fields`. Empty and absent are the same thing.
-    headers: Option<Vec<String>>,
-}
-
-impl SessionKey {
-    fn new(quality: VideoQuality, headers: Option<Vec<String>>) -> Self {
-        // An empty list would be passed to mpv as an empty option string; treat
-        // it as "no headers" so a caller sending `Some(vec![])` does not force a
-        // pointless rebuild.
-        let headers = headers.filter(|list| !list.is_empty());
-        Self { quality, headers }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,15 +242,10 @@ impl PlayerService {
         let library = MpvLibrary::load().map_err(|err| err.to_string())?;
         library.check_api_version().map_err(|err| err.to_string())?;
         let desired = *self.lock_desired();
-        eprintln!(
-            "[player] creating mpv session (quality={:?}, headers={})",
-            key.quality,
-            if key.headers.is_some() { "yes" } else { "no" }
-        );
+        eprintln!("[player] creating mpv session (quality={:?})", key.quality);
         let config = SessionConfig {
             host_hwnd: host.hwnd(),
             log_path: self.log_path.clone(),
-            headers: key.headers.clone(),
             profile: key.quality.mpv_profile().map(str::to_string),
             extra_options: self.user_options(),
             volume: desired.volume,
@@ -319,7 +302,9 @@ impl PlayerService {
         let start_seconds = request.start_seconds.filter(|s| s.is_finite() && *s > 0.0);
         // Read settings before taking the session lock so a slow disk cannot
         // block player controls; the quality preset only matters when spawning.
-        let key = SessionKey::new(self.current_settings().video_quality, request.headers);
+        let key = SessionKey {
+            quality: self.current_settings().video_quality,
+        };
         let open_generation = self.open_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -332,9 +317,9 @@ impl PlayerService {
                 return Err("player_open: the application is shutting down".to_string());
             }
             // mpv options are fixed before `mpv_initialize()`, so a request that
-            // needs different ones can only be served by a new session. Both
-            // causes are logged by `rebuild_session`/`spawn_session` above;
-            // nothing is rebuilt when the key is unchanged.
+            // needs different ones can only be served by a new session. The
+            // change is logged by `spawn_session` above; nothing is rebuilt
+            // when the key is unchanged.
             // The retire-and-respawn pair stays under the session lock on
             // purpose: releasing it between the two would let a concurrent open
             // spawn a second worker for the same host window. This only runs on
@@ -344,8 +329,7 @@ impl PlayerService {
                 *self.lock_session_key() = None;
                 if let Some(mut running) = running {
                     eprintln!(
-                        "[player] open: recreating the mpv session for the requested \
-                         quality/headers"
+                        "[player] open: recreating the mpv session for the requested quality"
                     );
                     if !running.shutdown(SHUTDOWN_TIMEOUT) {
                         eprintln!(
@@ -511,10 +495,6 @@ impl PlayerService {
         Ok(())
     }
 
-    pub fn snapshot(&self) -> PlayerSnapshot {
-        self.hub.latest()
-    }
-
     /// Live mpv statistics; fails when no session exists yet.
     ///
     /// The 800 ms wait for mpv happens **after** the session lock is released:
@@ -594,10 +574,14 @@ impl PlayerService {
         self.resync_pending.store(true, Ordering::SeqCst);
 
         if let Err(err) = window.set_fullscreen(next) {
-            // The window did not change state: put the overlay back at once so
-            // the failure does not also hide the controls, and drop the pending
-            // re-sync (the old rect is still valid).
-            self.resync_pending.store(false, Ordering::SeqCst);
+            // The window did not change state, so the video must come back with
+            // the rect it had: the `Resized` handler that usually consumes
+            // `resync_pending` never runs (nothing was resized), and the hide
+            // above already latched a newer seq than the last `VideoSync`. Push
+            // that last sync again (seq 0 resets the host latch) before putting
+            // the overlay back, or the native child stays SW_HIDE while audio
+            // keeps playing.
+            self.resync_video();
             crate::overlay::resume(app);
             return Err(err.to_string());
         }
@@ -772,11 +756,6 @@ pub fn player_set_track(
 #[tauri::command]
 pub fn player_stop(state: State<'_, PlayerService>) -> Result<(), String> {
     state.stop()
-}
-
-#[tauri::command]
-pub fn player_snapshot(state: State<'_, PlayerService>) -> Result<PlayerSnapshot, String> {
-    Ok(state.snapshot())
 }
 
 // Runs on Tauri's thread pool: the 800 ms bound on mpv's reply must never be

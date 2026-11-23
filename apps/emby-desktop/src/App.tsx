@@ -497,12 +497,6 @@ export default function App() {
     clearPlaybackError();
   }, [clearPlaybackError, route.screen]);
 
-  /**
-   * The whole ordered episode run of the series on screen, fetched once per
-   * series and shared by auto-play, the previous-episode action and the
-   * previous/next availability the controls show. One request per series, no
-   * matter how many episodes the user walks through.
-   */
   /** The item actually on screen in the player (auto-play and step both update it). */
   const playingItemRef = useRef<EmbyItem | null>(null);
   /** One episode switch at a time: a double click must not skip two episodes. */

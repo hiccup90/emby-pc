@@ -37,6 +37,9 @@ impl SeqLatch {
     }
 
     /// Next synthetic sequence, used internally for "hide" requests.
+    // `next` here is the sequence API, not `Iterator::next`: this type is a
+    // latch, and renaming it would obscure the call sites.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> u64 {
         let seq = self.last.map(|last| last.saturating_add(1)).unwrap_or(1);
         self.last = Some(seq);

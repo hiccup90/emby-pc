@@ -1062,8 +1062,6 @@ async function handle(cmd: string, args: Record<string, unknown>): Promise<unkno
     }
     case "player_open":
       return openPlayer(req as unknown as OpenRequest);
-    case "player_snapshot":
-      return snapshot;
     case "player_set_paused":
       publish({ status: args.paused ? "paused" : "playing" });
       return null;

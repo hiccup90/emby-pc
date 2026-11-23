@@ -106,15 +106,6 @@ impl MpvLibrary {
             }};
         }
 
-        macro_rules! optional {
-            ($name:literal, $ty:ty) => {{
-                match unsafe { library.get::<$ty>($name.as_bytes()) } {
-                    Ok(symbol) => Some(*symbol),
-                    Err(_) => None,
-                }
-            }};
-        }
-
         let api = MpvApi {
             create: required!("mpv_create", MpvCreateFn),
             initialize: required!("mpv_initialize", MpvInitializeFn),
@@ -128,7 +119,6 @@ impl MpvLibrary {
             terminate_destroy: required!("mpv_terminate_destroy", MpvTerminateDestroyFn),
             error_string: required!("mpv_error_string", MpvErrorStringFn),
             client_api_version: required!("mpv_client_api_version", MpvClientApiVersionFn),
-            request_log_messages: optional!("mpv_request_log_messages", MpvRequestLogMessagesFn),
         };
 
         Ok(Self {
@@ -142,7 +132,10 @@ impl MpvLibrary {
     /// is 32-bit on Windows.
     pub fn client_api_version(&self) -> u64 {
         let version = unsafe { (self.api.client_api_version)() };
-        version as u64
+        // `c_ulong` is 32-bit on Windows and 64-bit here, so one platform
+        // always sees a no-op cast.
+        #[allow(clippy::useless_conversion)]
+        u64::from(version)
     }
 
     /// Reject anything that is not client API major version 2.

@@ -47,7 +47,7 @@ pub fn resolve_placement(sync: &VideoSync, client_width: i32, client_height: i32
     {
         return None;
     }
-    if !(sync.w > 0.0) || !(sync.h > 0.0) || !(sync.dpr > 0.0) {
+    if sync.w <= 0.0 || sync.h <= 0.0 || sync.dpr <= 0.0 {
         return None;
     }
 

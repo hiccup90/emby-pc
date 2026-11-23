@@ -158,6 +158,7 @@ fn overlay_margin_css() -> i32 {
 /// `is_stage_click` maps them to screen space for hit-testing, so clipping and
 /// click routing cannot drift apart. With `margin == 0` this is exactly the
 /// pre-margin region: the top strip starts at the window's top edge.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))] // only the windows/test paths call it
 fn region_rects(width: u32, height: u32, bands: Bands, margin: i32) -> [(i32, i32, i32, i32); 2] {
     let width = width as i32;
     let height = height as i32;

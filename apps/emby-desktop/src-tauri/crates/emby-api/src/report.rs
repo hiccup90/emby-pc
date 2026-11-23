@@ -97,7 +97,7 @@ impl ReportBody {
             play_session_id: clean(req.play_session_id.as_deref()),
             position_ticks: seconds_to_ticks(req.position_seconds),
             is_paused: event.is_paused(req.paused),
-            is_muted: false,
+            is_muted: req.muted,
             can_seek: true,
             // Direct play/stream only: the URL resolved by `playback_target` is
             // always a direct stream URL.
@@ -118,6 +118,7 @@ mod tests {
             play_session_id: Some("ps1".into()),
             position_seconds: 12.5,
             paused,
+            muted: false,
             event: event.into(),
         }
     }
@@ -176,6 +177,12 @@ mod tests {
         assert_eq!(value["PositionTicks"].as_i64(), Some(125_000_000));
         assert_eq!(value["IsPaused"], false);
         assert_eq!(value["IsMuted"], false);
+
+        // The snapshot's mute state is reported, not a hardcoded false.
+        let mut muted_request = request("progress", false);
+        muted_request.muted = true;
+        let muted = ReportBody::new(&muted_request, ReportEvent::Progress);
+        assert_eq!(serde_json::to_value(&muted).unwrap()["IsMuted"], true);
         assert_eq!(value["CanSeek"], true);
         assert_eq!(value["PlayMethod"], "DirectStream");
         assert_eq!(value["EventName"], "TimeUpdate");

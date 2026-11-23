@@ -32,7 +32,6 @@ pub const MPV_FORMAT_BYTE_ARRAY: MpvFormat = 9;
 // ---- enum mpv_event_id (client.h:1246) ---------------------------------------------
 pub const MPV_EVENT_NONE: MpvEventId = 0;
 pub const MPV_EVENT_SHUTDOWN: MpvEventId = 1;
-pub const MPV_EVENT_LOG_MESSAGE: MpvEventId = 2;
 pub const MPV_EVENT_GET_PROPERTY_REPLY: MpvEventId = 3;
 pub const MPV_EVENT_SET_PROPERTY_REPLY: MpvEventId = 4;
 pub const MPV_EVENT_COMMAND_REPLY: MpvEventId = 5;
@@ -83,16 +82,6 @@ pub struct MpvEventEndFile {
     pub playlist_insert_num_entries: c_int,
 }
 
-/// `mpv_event_log_message`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct MpvEventLogMessage {
-    pub prefix: *const c_char,
-    pub level: *const c_char,
-    pub text: *const c_char,
-    pub log_level: c_int,
-}
-
 /// `mpv_event`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -121,7 +110,6 @@ pub type MpvWaitEventFn = unsafe extern "C" fn(ctx: *mut MpvHandle, timeout: f64
 pub type MpvTerminateDestroyFn = unsafe extern "C" fn(ctx: *mut MpvHandle);
 pub type MpvErrorStringFn = unsafe extern "C" fn(error: c_int) -> *const c_char;
 pub type MpvClientApiVersionFn = unsafe extern "C" fn() -> c_ulong;
-pub type MpvRequestLogMessagesFn = unsafe extern "C" fn(ctx: *mut MpvHandle, min_level: *const c_char) -> c_int;
 
 /// The subset of libmpv symbols this player needs.
 ///
@@ -140,26 +128,6 @@ pub struct MpvApi {
     pub terminate_destroy: MpvTerminateDestroyFn,
     pub error_string: MpvErrorStringFn,
     pub client_api_version: MpvClientApiVersionFn,
-    /// Optional: absent in very old builds only.
-    pub request_log_messages: Option<MpvRequestLogMessagesFn>,
-}
-
-impl MpvApi {
-    /// Symbol names in load order, used by the loader for required symbols.
-    pub const REQUIRED_SYMBOLS: &'static [&'static str] = &[
-        "mpv_create",
-        "mpv_initialize",
-        "mpv_set_option_string",
-        "mpv_set_property_string",
-        "mpv_get_property_string",
-        "mpv_free",
-        "mpv_command",
-        "mpv_observe_property",
-        "mpv_wait_event",
-        "mpv_terminate_destroy",
-        "mpv_error_string",
-        "mpv_client_api_version",
-    ];
 }
 
 #[cfg(test)]
@@ -190,7 +158,6 @@ mod tests {
             [
                 MPV_EVENT_NONE,
                 MPV_EVENT_SHUTDOWN,
-                MPV_EVENT_LOG_MESSAGE,
                 MPV_EVENT_END_FILE,
                 MPV_EVENT_FILE_LOADED,
                 MPV_EVENT_SEEK,
@@ -198,7 +165,7 @@ mod tests {
                 MPV_EVENT_PROPERTY_CHANGE,
                 MPV_EVENT_QUEUE_OVERFLOW,
             ],
-            [0, 1, 2, 7, 8, 20, 21, 22, 24]
+            [0, 1, 7, 8, 20, 21, 22, 24]
         );
         // client.h enum mpv_end_file_reason
         assert_eq!(
@@ -246,32 +213,6 @@ mod tests {
         assert_eq!(offset_of!(MpvEventEndFile, playlist_insert_num_entries), 24);
 
         // struct mpv_event_log_message { const char *prefix; const char *level; const char *text; mpv_log_level log_level; }
-        assert_eq!(size_of::<MpvEventLogMessage>(), 32);
-        assert_eq!(offset_of!(MpvEventLogMessage, prefix), 0);
-        assert_eq!(offset_of!(MpvEventLogMessage, level), 8);
-        assert_eq!(offset_of!(MpvEventLogMessage, text), 16);
-        assert_eq!(offset_of!(MpvEventLogMessage, log_level), 24);
     }
 
-    #[test]
-    fn required_symbol_list_covers_every_used_entry_point() {
-        // Guard against adding a call to `MpvApi` without loading its symbol.
-        for name in [
-            "mpv_create",
-            "mpv_initialize",
-            "mpv_set_option_string",
-            "mpv_set_property_string",
-            "mpv_get_property_string",
-            "mpv_free",
-            "mpv_command",
-            "mpv_observe_property",
-            "mpv_wait_event",
-            "mpv_terminate_destroy",
-            "mpv_error_string",
-            "mpv_client_api_version",
-        ] {
-            assert!(MpvApi::REQUIRED_SYMBOLS.contains(&name), "missing {name}");
-        }
-        assert!(!MpvApi::REQUIRED_SYMBOLS.contains(&"mpv_render_context_create"));
-    }
 }

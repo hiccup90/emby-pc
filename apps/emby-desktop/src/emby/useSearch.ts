@@ -12,8 +12,6 @@ const SEARCH_ITEM_TYPES = "Movie,Series,Episode";
 
 export type SearchStatus = "idle" | "loading" | "ready" | "error";
 
-// The implementation lives in artwork.ts (single source of truth).
-
 interface SearchResults {
   items: EmbyLibraryItem[];
   totalItems: number;

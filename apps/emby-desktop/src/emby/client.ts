@@ -58,6 +58,7 @@ interface EmbyPlaybackReportRequest {
   playSessionId?: string;
   positionSeconds: number;
   paused: boolean;
+  muted: boolean;
   event: EmbyPlaybackEvent;
 }
 

@@ -11,6 +11,7 @@ export function reportEmbyPlayback(
   event: EmbyPlaybackEvent,
   positionSeconds: number,
   paused: boolean,
+  muted: boolean,
 ): void {
   if (!target || !hasTauriRuntime()) return;
 
@@ -24,6 +25,7 @@ export function reportEmbyPlayback(
     ...(target.playSessionId ? { playSessionId: target.playSessionId } : {}),
     positionSeconds: safePosition,
     paused,
+    muted,
     event,
   }).catch((reason: unknown) => {
     console.warn(

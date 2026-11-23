@@ -522,8 +522,11 @@ export default function DetailScreen({
     try {
       await embySetPlayed(item.id, next);
       setWatchedOverride(next);
-      // Re-read the item so counts/progress reflect the server state.
+      // A Series toggle marks the whole season on the server, so the episode
+      // rows, the season tab counts and the "continue playing" target are all
+      // stale too: re-read both.
       detail.reload();
+      if (isSeries) episodes.reload();
     } catch (reason) {
       setActionError(describeEmbyError(reason, "更新观看状态失败，请稍后重试。"));
     } finally {

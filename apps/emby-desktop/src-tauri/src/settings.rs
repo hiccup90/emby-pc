@@ -24,20 +24,15 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const DEFAULT_PAGE_SIZE: u32 = 120;
 
 /// Player quality preset exposed to the settings page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoQuality {
     /// mpv's own defaults; no quality profile is forced.
     Default,
     /// Low-overhead preset: `profile=fast` (the old hard-coded behaviour).
+    /// Also the first-run/default fallback.
+    #[default]
     Low,
-}
-
-impl Default for VideoQuality {
-    fn default() -> Self {
-        // Preserve the pre-settings behaviour on first run / broken file.
-        Self::Low
-    }
 }
 
 impl VideoQuality {
@@ -52,32 +47,22 @@ impl VideoQuality {
 
 /// Card shape chosen for one library view. Stored per Emby view id so each
 /// library keeps its own poster/thumbnail choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LibraryViewMode {
+    #[default]
     Poster,
     Thumbnail,
 }
 
-impl Default for LibraryViewMode {
-    fn default() -> Self {
-        Self::Poster
-    }
-}
-
 /// How the player handles Emby's `IntroStart`/`IntroEnd` chapter markers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkipIntroMode {
     Off,
     Button,
+    #[default]
     Auto,
-}
-
-impl Default for SkipIntroMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// One library's persisted sort/filter state. Strings mirror the frontend

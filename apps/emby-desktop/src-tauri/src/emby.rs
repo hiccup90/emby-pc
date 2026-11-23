@@ -725,7 +725,7 @@ mod tests {
             user_id: "user-1".into(),
             user_name: "alice".into(),
             device_id: "device-1".into(),
-            access_token: vec!["test", "access", "token"].join("-"),
+            access_token: ["test", "access", "token"].join("-"),
             version: SESSION_VERSION,
         }
     }

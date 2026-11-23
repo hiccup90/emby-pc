@@ -103,16 +103,6 @@ export function isDefaultLibraryQuery(query: EmbyLibraryQuery): boolean {
   );
 }
 
-/** Field-wise comparison, used when restoring a view's saved toolbar state. */
-export function sameLibraryQuery(a: EmbyLibraryQuery, b: EmbyLibraryQuery): boolean {
-  return (
-    a.sortBy === b.sortBy &&
-    a.sortOrder === b.sortOrder &&
-    a.unplayedOnly === b.unplayedOnly &&
-    a.itemType === b.itemType
-  );
-}
-
 export interface EmbyLibraryOptions {
   query?: EmbyLibraryQuery;
   /** Items per page; comes from `AppSettings.pageSize`. */

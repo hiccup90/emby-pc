@@ -444,7 +444,7 @@ mod tests {
     }
 
     fn test_token() -> String {
-        vec!["test", "access", "token"].join("-")
+        ["test", "access", "token"].join("-")
     }
 
     fn session() -> StoredSession {

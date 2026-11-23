@@ -114,7 +114,7 @@ export function usePlayer() {
     });
 
     // `player_subscribe` delivers the current snapshot to the new sink right
-    // away (SnapshotHub::set_sink), so no extra `player_snapshot` fetch is owed.
+    // away (SnapshotHub::set_sink); there is no snapshot command to call.
 
     return () => {
       cancelled = true;

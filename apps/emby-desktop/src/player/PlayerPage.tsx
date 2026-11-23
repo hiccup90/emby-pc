@@ -178,6 +178,8 @@ export default function PlayerPage({
   const startReportedRef = useRef(false);
   const stopReportedRef = useRef(false);
   const positionRef = useRef(0);
+  /** Latest mute state, for reports sent outside a render (stop/unmount). */
+  const mutedRef = useRef(false);
   const lastStatusRef = useRef<PlayerStatus>("idle");
   const overlayActionRef = useRef<(action: OverlayAction) => void>(() => undefined);
 
@@ -192,6 +194,12 @@ export default function PlayerPage({
   /** Playback key whose saved track choice has already been applied. */
   const restoredTracksForRef = useRef<string | null>(null);
   const savedTracksRef = useRef<string>("");
+  /**
+   * Whether the current selection came from the user. A restore must not be
+   * written back, and the freshly loaded file's default tracks must not
+   * overwrite the saved preference either: only an explicit pick does.
+   */
+  const userPickedTracksRef = useRef(false);
   const [nextUnavailable, setNextUnavailable] = useState(false);
   /**
    * Label of the last failed previous/next press, or null. The transport
@@ -302,11 +310,13 @@ export default function PlayerPage({
     // A new episode gets its own auto-skip budget.
     autoSkippedRef.current = null;
     openedPlaybackRef.current = null;
+    userPickedTracksRef.current = false;
   }, [playbackKey]);
 
   useEffect(() => {
     positionRef.current = snapshot?.positionSeconds ?? 0;
-  }, [snapshot?.positionSeconds]);
+    mutedRef.current = snapshot?.muted ?? false;
+  }, [snapshot?.positionSeconds, snapshot?.muted]);
 
   useEffect(() => {
     if (!isDesktop || !playback || !playbackKey) return;
@@ -328,12 +338,18 @@ export default function PlayerPage({
       !playback ||
       startReportedRef.current ||
       !snapshot ||
+      // `playbackKey` changes before `player_open` returns, and until it does
+      // the snapshot still belongs to the previous file: reporting `start` for
+      // the new item off that snapshot fires while the old frame is on screen
+      // (observed as a 12 ms gap after PlaybackInfo) and skews Emby's play
+      // history and the intro plugin's START event.
+      openedPlaybackRef.current !== playbackKey ||
       (snapshot.status !== "playing" && snapshot.status !== "paused")
     ) {
       return;
     }
     startReportedRef.current = true;
-    reportEmbyPlayback(playback, "start", playback.startSeconds, false);
+    reportEmbyPlayback(playback, "start", playback.startSeconds, false, mutedRef.current);
   }, [isDesktop, playback, snapshot]);
 
   useEffect(() => {
@@ -344,21 +360,21 @@ export default function PlayerPage({
     }
     const position = positionRef.current;
     if (status === "ended" && previous !== "ended") {
-      reportEmbyPlayback(playback, "ended", position, false);
+      reportEmbyPlayback(playback, "ended", position, false, mutedRef.current);
     } else if (previous === "paused" && status === "playing") {
-      reportEmbyPlayback(playback, "unpause", position, false);
+      reportEmbyPlayback(playback, "unpause", position, false, mutedRef.current);
     } else if (
       (previous === "playing" || previous === "loading") &&
       status === "paused"
     ) {
-      reportEmbyPlayback(playback, "pause", position, true);
+      reportEmbyPlayback(playback, "pause", position, true, mutedRef.current);
     }
   }, [isDesktop, playback, status]);
 
   useEffect(() => {
     if (!isDesktop || !playback || status !== "playing") return;
     const timer = window.setInterval(() => {
-      reportEmbyPlayback(playback, "progress", positionRef.current, false);
+      reportEmbyPlayback(playback, "progress", positionRef.current, false, mutedRef.current);
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [isDesktop, playback, status]);
@@ -389,6 +405,7 @@ export default function PlayerPage({
   useEffect(() => {
     if (!snapshot || !trackScope || !playbackKey) return;
     if (restoredTracksForRef.current !== playbackKey) return;
+    if (!userPickedTracksRef.current) return;
     const audio = snapshot.audioTracks.find((track) => track.selected);
     const subtitle = snapshot.subtitleTracks.find((track) => track.selected);
     if (!audio && !subtitle) return;
@@ -476,6 +493,7 @@ export default function PlayerPage({
           "stop",
           positionRef.current,
           lastStatusRef.current === "paused",
+          mutedRef.current,
         );
       }
     };
@@ -533,6 +551,7 @@ export default function PlayerPage({
             "seek",
             seconds,
             lastStatusRef.current === "paused",
+            mutedRef.current,
           );
         }
       });
@@ -628,6 +647,7 @@ export default function PlayerPage({
           void toggleMuted();
           break;
         case "set-track":
+          userPickedTracksRef.current = true;
           void selectTrack(action.kind, action.id === "no" ? -1 : action.id);
           break;
         case "toggle-fullscreen":

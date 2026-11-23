@@ -97,5 +97,4 @@ export interface PlaybackMeta {
 export interface OpenRequest {
   url: string;
   startSeconds?: number | null;
-  headers?: string[] | null;
 }

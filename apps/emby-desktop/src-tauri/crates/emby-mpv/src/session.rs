@@ -63,8 +63,6 @@ pub struct SessionConfig {
     /// Opt-in mpv log file (`EMBY_MPV_LOG`); `None` means no file log. When
     /// set, it contains stream URLs and therefore their `api_key`.
     pub log_path: Option<PathBuf>,
-    /// Only used when this config creates a fresh handle (pre-initialize).
-    pub headers: Option<Vec<String>>,
     /// Optional mpv quality profile applied before user `mpv.conf` overrides:
     /// `Some("fast")` for the low-overhead preset, `None` for mpv's default.
     pub profile: Option<String>,
@@ -686,14 +684,12 @@ impl<'a> MpvCore<'a> {
             terminated: false,
         };
 
-        // Options must be set before mpv_initialize(). `http-header-fields`
-        // especially is rejected at runtime (and would leak into mpv.log).
+        // Options must be set before mpv_initialize().
         for option in build_initial_options(
             config.host_hwnd,
             config.log_path.as_deref(),
             config.profile.as_deref(),
             &config.extra_options,
-            config.headers.as_deref(),
         ) {
             let name = cstring("option name", &option.name)?;
             let value = cstring("option value", &option.value)?;
@@ -715,12 +711,6 @@ impl<'a> MpvCore<'a> {
         let rc = unsafe { (lib.api.initialize)(core.handle) };
         if rc < 0 {
             return Err(core.failure("mpv_initialize", rc));
-        }
-
-        if let Some(request_log_messages) = lib.api.request_log_messages {
-            if let Ok(level) = CString::new("warn") {
-                let _ = unsafe { request_log_messages(core.handle, level.as_ptr()) };
-            }
         }
 
         core.set_property_string("volume", &format!("{:.1}", config.volume.clamp(0.0, 100.0)))?;
@@ -876,9 +866,15 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the whole point is guarding constants
     fn shutdown_timeout_is_two_seconds() {
         assert_eq!(SHUTDOWN_TIMEOUT, Duration::from_secs(2));
-        assert!(SNAPSHOT_INTERVAL <= Duration::from_millis(200));
+        // The UI coalesces position updates on this budget, so a larger
+        // interval would make the progress bar visibly jump.
+        assert!(
+            SNAPSHOT_INTERVAL <= Duration::from_millis(200),
+            "snapshot interval must stay within the UI's 200 ms budget"
+        );
         assert!(EVENT_TIMEOUT_SECS > 0.0 && EVENT_TIMEOUT_SECS <= 0.05);
     }
 }

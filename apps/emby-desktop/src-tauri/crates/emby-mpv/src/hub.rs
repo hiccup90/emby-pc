@@ -201,8 +201,11 @@ mod tests {
     #[test]
     fn seq_is_monotonic_and_assigned_by_hub() {
         let hub = SnapshotHub::new();
-        let mut snapshot = PlayerSnapshot::default();
-        snapshot.seq = 999; // caller-supplied seq must be overwritten
+        // A caller-supplied seq must be overwritten by the hub.
+        let snapshot = PlayerSnapshot {
+            seq: 999,
+            ..PlayerSnapshot::default()
+        };
         let first = hub.publish(snapshot.clone());
         let second = hub.publish(snapshot);
         assert_eq!(first.seq, 1);
@@ -229,9 +232,10 @@ mod tests {
             // The mpv thread publishes `ended` while this update is mid-way.
             let other = Arc::clone(&hub);
             worker = Some(std::thread::spawn(move || {
-                let mut ended = PlayerSnapshot::default();
-                ended.status = STATUS_ENDED.to_string();
-                other.publish(ended);
+                other.publish(PlayerSnapshot {
+                    status: STATUS_ENDED.to_string(),
+                    ..PlayerSnapshot::default()
+                });
             }));
             // Give it time to run if it could; with the lock held it cannot.
             std::thread::sleep(std::time::Duration::from_millis(50));

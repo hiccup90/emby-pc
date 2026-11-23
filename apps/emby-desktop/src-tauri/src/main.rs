@@ -209,7 +209,6 @@ fn main() {
             player::player_set_muted,
             player::player_set_track,
             player::player_stop,
-            player::player_snapshot,
             player::player_stats,
             player::player_toggle_fullscreen,
             player::player_subscribe,
