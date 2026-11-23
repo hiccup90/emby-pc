@@ -151,6 +151,11 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   /** Library scroll offset to restore when coming back from a detail page. */
   const libraryScrollRef = useRef(0);
+  /** Home/search offsets, restored the same way when their detail page closes. */
+  const homeScrollRef = useRef(0);
+  const searchScrollRef = useRef(0);
+  /** Screen seen by the previous rendered route, for the scroll restore above. */
+  const lastScreenRef = useRef<Route["screen"] | null>(null);
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
   /** Card right-click / multi-select state; only the current page may keep it. */
@@ -201,11 +206,20 @@ export default function App() {
   }, [refreshResume, route.screen]);
 
   // Pages scroll inside `.app-content` (title bar and sidebar stay put): detail
-  // pages start at the top, the library returns to where the user left it.
+  // pages start at the top, while home/search/library resume where the user
+  // left them after a detail round-trip. Clicking their sidebar icon clears
+  // the saved offset, so an explicit navigation still starts at the top.
   useLayoutEffect(() => {
     const box = contentRef.current;
+    const previous = lastScreenRef.current;
+    lastScreenRef.current = route.screen;
     if (!box) return;
-    box.scrollTop = route.screen === "library" ? libraryScrollRef.current : 0;
+    if (route.screen === "library") box.scrollTop = libraryScrollRef.current;
+    else if (route.screen === "home") {
+      box.scrollTop = previous === "detail" ? homeScrollRef.current : 0;
+    } else if (route.screen === "search") {
+      box.scrollTop = previous === "detail" ? searchScrollRef.current : 0;
+    } else box.scrollTop = 0;
   }, [route]);
 
   // A new page size refetches page 0; the old scroll offset would land in the
@@ -223,7 +237,11 @@ export default function App() {
    */
   const openItem = useCallback(
     (item: EmbyLibraryItem) => {
-      libraryScrollRef.current = contentRef.current?.scrollTop ?? 0;
+      const top = contentRef.current?.scrollTop ?? 0;
+      const origin = routeRef.current.screen;
+      if (origin === "home") homeScrollRef.current = top;
+      else if (origin === "search") searchScrollRef.current = top;
+      else if (origin === "library") libraryScrollRef.current = top;
       setRoute((current) => ({
         screen: "detail",
         itemId: item.id,
@@ -768,8 +786,14 @@ export default function App() {
                     ? "settings"
                     : null
             }
-            onHome={() => setRoute({ screen: "home" })}
-            onSearch={() => setRoute({ screen: "search" })}
+            onHome={() => {
+              homeScrollRef.current = 0;
+              setRoute({ screen: "home" });
+            }}
+            onSearch={() => {
+              searchScrollRef.current = 0;
+              setRoute({ screen: "search" });
+            }}
             onSettings={() => setRoute({ screen: "settings" })}
           />
         )}
@@ -805,6 +829,7 @@ export default function App() {
               onOpen={openItem}
               onPlay={resumeItem}
               onSeeAll={goToLibrary}
+              onSeeLibrary={chooseView}
               onRetryResume={library.retryResume}
             />
           )}

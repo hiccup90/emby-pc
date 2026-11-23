@@ -158,6 +158,7 @@ export function ContinueCard({
       >
         <span className="continue-card__frame">
           <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
+          {remaining && <span className="continue-card__remaining">{remaining}</span>}
           <ProgressBar value={progress} className="continue-card__progress" />
           {selecting && (
             <span className="continue-card__select" aria-hidden="true">
@@ -168,7 +169,6 @@ export function ContinueCard({
         <span className="continue-card__title">{title}</span>
         <span className="continue-card__meta">
           <span className="continue-card__meta-main">{metaMain || "继续观看"}</span>
-          {remaining && <span className="continue-card__meta-sub">{remaining}</span>}
         </span>
       </button>
       <button
@@ -189,10 +189,13 @@ type HubVariant = "landscape" | "poster" | "person";
 
 export function HubRow({
   title,
+  meta,
   variant = "landscape",
   children,
 }: {
   title: string;
+  /** Muted suffix after the title, e.g. "最近入库". */
+  meta?: ReactNode;
   /** Card shape, sets the column width: 16:9 cards, 2:3 posters or people. */
   variant?: HubVariant;
   children: ReactNode;
@@ -286,7 +289,10 @@ export function HubRow({
   return (
     <section className="hub" aria-label={title}>
       <div className="hub__header">
-        <h2 className="hub__title">{title}</h2>
+        <div className="hub__heading">
+          <h2 className="hub__title">{title}</h2>
+          {meta && <span className="hub__meta">{meta}</span>}
+        </div>
       </div>
       <div
         className={`hub__track hub__track--${variant}`}

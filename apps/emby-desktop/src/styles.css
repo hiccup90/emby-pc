@@ -364,6 +364,20 @@ button:disabled {
   list-style: none;
 }
 
+/* Libraries are a separate group from the app's own navigation. */
+.sidebar__list--views {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* Settings stays at the bottom however many libraries the server has. */
+.sidebar__list--footer {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
 .sidebar__item {
   position: relative;
   display: flex;
@@ -525,13 +539,55 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 0 0 12px;
+  gap: 16px;
+  margin: 0 0 14px;
+}
+
+.hub__heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
 }
 
 .hub__title {
   margin: 0;
   font-size: 21px;
   font-weight: 700;
+}
+
+.hub__meta {
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.hub__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-3);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.hub__more:hover {
+  color: var(--accent);
+}
+
+.hub__more svg {
+  transition: transform 0.15s ease;
+}
+
+.hub__more:hover svg {
+  transform: translateX(2px);
 }
 
 .hub__track {
@@ -734,7 +790,7 @@ button:disabled {
 .poster-card__title {
   overflow: hidden;
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 400;
   line-height: 24px;
   text-overflow: ellipsis;
@@ -764,8 +820,19 @@ button:disabled {
   white-space: nowrap;
 }
 
-.continue-card__meta-sub {
-  flex: 0 0 auto;
+/* Remaining time sits on the artwork so the title/meta line stays short. */
+.continue-card__remaining {
+  position: absolute;
+  right: 10px;
+  bottom: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(6px);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 18px;
   white-space: nowrap;
 }
 
@@ -834,7 +901,14 @@ button:disabled {
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 0.25s ease;
+  transition: opacity 0.25s ease, transform 0.4s ease;
+}
+
+.continue-card:hover .media-artwork img,
+.poster-card:hover .media-artwork img,
+.continue-card__open:focus-visible .media-artwork img,
+.poster-card:focus-visible .media-artwork img {
+  transform: scale(1.035);
 }
 
 .media-artwork[data-loaded="true"] img {

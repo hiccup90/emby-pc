@@ -71,7 +71,7 @@ export default function Sidebar({
         {navItem("search", "搜索", "search", onSearch)}
       </ul>
       {views.length > 0 ? (
-        <ul className="sidebar__list">
+        <ul className="sidebar__list sidebar__list--views">
           {views.map((view) => {
             // While Home/Search/Settings is the active nav item, no library
             // should keep its amber selection bar.
