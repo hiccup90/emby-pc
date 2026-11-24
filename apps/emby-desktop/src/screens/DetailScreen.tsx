@@ -300,16 +300,14 @@ function DetailFacts({ item }: { item: EmbyLibraryItem }) {
 
 function DetailSkeleton() {
   return (
-    <div className="detail-hero" role="status" aria-live="polite">
+    <div className="detail-cinema detail-cinema--skeleton" role="status" aria-live="polite">
       <span className="visually-hidden">正在读取条目详情…</span>
-      <span className="detail-art skeleton-block" aria-hidden="true" />
-      <div className="detail-info" aria-hidden="true">
+      <div className="detail-cinema__content" aria-hidden="true">
+        <span className="skeleton-line skeleton-line--short" />
         <span className="skeleton-line skeleton-line--title" />
         <span className="skeleton-line skeleton-line--meta" />
         <span className="skeleton-line skeleton-line--button" />
         <span className="skeleton-line" />
-        <span className="skeleton-line" />
-        <span className="skeleton-line skeleton-line--short" />
       </div>
     </div>
   );
@@ -537,8 +535,7 @@ export default function DetailScreen({
     item && (item.type === "Movie" || item.type === "Series") ? item.id : null,
     desktop && Boolean(session),
   );
-  const landscapeArt = item?.type === "Episode" || item?.type === "Video";
-  const backdrop = item ? item.backdropUrl ?? (landscapeArt ? item.posterUrl : null) : null;
+  const backdrop = item ? item.backdropUrl ?? item.posterUrl : null;
 
   useEffect(() => {
     onBackdrop?.(backdrop);
@@ -619,7 +616,7 @@ export default function DetailScreen({
   // Episode pages read like Plex Web: series, season, "第 8 集 · name".
   const seasonLabel =
     item.parentIndexNumber === null ? null : item.parentIndexNumber === 0 ? "特别篇" : `第 ${item.parentIndexNumber} 季`;
-  const episodeLine = item.indexNumber === null ? item.name : `第 ${item.indexNumber} 集 · ${item.name}`;
+  const episodeLine = [episode ? compactEpisodeLabel(item) : "", item.name].filter(Boolean).join(" · ");
 
   const metaParts: string[] = [];
   const year = itemYearLabel(item);
@@ -628,9 +625,22 @@ export default function DetailScreen({
   if (isSeries && episodes.items.length > 0) {
     metaParts.push(`${seasonCount} 季`, `${episodes.items.length} 集`);
   }
+  if (item.genres.length > 0) metaParts.push(item.genres.slice(0, 2).join(" / "));
 
   const remaining = formatRemainingTicks(progressItem);
   const rating = formatCommunityRating(item.communityRating);
+  const displayTitle = episode && item.seriesName ? item.seriesName : item.name;
+  const progressLabel =
+    progressItem.type === "Episode"
+      ? [compactEpisodeLabel(progressItem), progressItem.name].filter(Boolean).join(" · ")
+      : "上次看到";
+  const mediaKicker = episode
+    ? ["剧集", seasonLabel].filter(Boolean).join(" · ")
+    : isSeries
+      ? "剧集"
+      : item.type === "Movie"
+        ? "电影"
+        : "视频";
   const cast = castAndCrew(item.people);
   const supportsWatchState = isSeries || playable;
   const trackStreams = isSeries ? trackSource.data?.mediaStreams ?? [] : item.mediaStreams;
@@ -679,26 +689,24 @@ export default function DetailScreen({
         </div>
       )}
 
-      <section
-        className={`detail-hero${landscapeArt ? " detail-hero--landscape" : ""}`}
-        aria-labelledby="detail-title"
-        aria-busy={detail.loading}
-      >
-        <div className={`detail-art${landscapeArt ? " detail-art--landscape" : ""}`}>
-          <MediaArtwork src={item.posterUrl ?? item.backdropUrl} alt={`《${item.name}》海报`} title={item.name} loading="eager" />
-          {progress > 0 && <ProgressBar value={progress} className="detail-art__progress" />}
-        </div>
-
-        <div className="detail-info">
+      <section className="detail-cinema" aria-labelledby="detail-title" aria-busy={detail.loading}>
+        <MediaArtwork
+          className="detail-cinema__art"
+          src={item.backdropUrl ?? item.posterUrl}
+          alt=""
+          title={displayTitle}
+          loading="eager"
+        />
+        <div className="detail-cinema__scrim" aria-hidden="true" />
+        <div className="detail-cinema__content">
+          <p className="detail-kicker">
+            <span className="detail-kicker__dot" aria-hidden="true" />
+            {mediaKicker}
+          </p>
           <h1 id="detail-title" className="detail-title" ref={headingRef} tabIndex={-1}>
-            {episode && item.seriesName ? item.seriesName : item.name}
+            {displayTitle}
           </h1>
-          {episode && item.seriesName && (
-            <>
-              {seasonLabel && <p className="detail-season">{seasonLabel}</p>}
-              <p className="detail-subtitle">{episodeLine}</p>
-            </>
-          )}
+          {episode && item.seriesName && <p className="detail-subtitle">{episodeLine}</p>}
           {(metaParts.length > 0 || rating || item.officialRating || effectiveWatched) && (
             <p className="detail-meta">
               {metaParts.map((part, index) => (
@@ -713,7 +721,16 @@ export default function DetailScreen({
               {effectiveWatched && <span className="chip">已看完</span>}
             </p>
           )}
-          {item.genres.length > 0 && <p className="detail-genres">{item.genres.join(" · ")}</p>}
+
+          {progress > 0 && (
+            <div className="detail-progress">
+              <ProgressBar value={progress} className="detail-progress__bar" />
+              <div className="detail-progress__copy">
+                <span>{progressLabel}</span>
+                <span>{remaining ?? `已观看 ${Math.round(progress * 100)}%`}</span>
+              </div>
+            </div>
+          )}
 
           <div className="detail-actions">
             {isSeries && nextEpisode && (
@@ -730,7 +747,7 @@ export default function DetailScreen({
                 )}
                 {episodes.loading
                   ? "正在读取剧集…"
-                  : `${nextEpisode.mode === "resume" ? "继续播放" : nextEpisode.mode === "restart" ? "重新播放" : "播放"} ${compactEpisodeLabel(nextEpisode.episode)} · ${nextEpisode.episode.name}`}
+                  : `${nextEpisode.mode === "resume" ? "继续播放" : nextEpisode.mode === "restart" ? "重新播放" : "播放"} ${compactEpisodeLabel(nextEpisode.episode)}`}
               </button>
             )}
             {playable && (
@@ -758,9 +775,8 @@ export default function DetailScreen({
                   {pendingAction === "played" ? (
                     <span className="spinner spinner--small" aria-hidden="true" />
                   ) : (
-                    <Icon name="check" size={16} />
+                    <Icon name="check" size={17} />
                   )}
-                  {effectiveWatched ? "已看" : "标记为已看"}
                 </button>
                 <button
                   type="button"
@@ -776,15 +792,8 @@ export default function DetailScreen({
                   ) : (
                     <HeartIcon filled={favoriteState === true} />
                   )}
-                  {favoriteState === true ? "已收藏" : "收藏"}
                 </button>
               </>
-            )}
-            {progress > 0 && (
-              <span className="detail-resume">
-                <ProgressBar value={progress} />
-                {remaining ?? `已观看 ${Math.round(progress * 100)}%`}
-              </span>
             )}
             {item.type === "MusicAlbum" && <span className="detail-hint">音乐专辑暂不支持播放。</span>}
           </div>
@@ -793,73 +802,78 @@ export default function DetailScreen({
 
           {playback.error && <ErrorNotice message={playback.error} />}
           {actionError && <ErrorNotice message={actionError} />}
-
-          {item.tagline && <p className="detail-tagline">{item.tagline}</p>}
-          <p className="detail-overview">{item.overview?.trim() || "暂无简介。"}</p>
-          <DetailFacts item={item} />
         </div>
       </section>
 
-      {isSeries && (
-        <section className="episodes" aria-labelledby="episodes-title">
-          <div className="section-header">
-            <h2 className="section-title" id="episodes-title">
-              剧集
-            </h2>
+      <div className="detail-body">
+        {isSeries && (
+          <section className="episodes" aria-labelledby="episodes-title">
+            <div className="section-header">
+              <h2 className="section-title" id="episodes-title">
+                剧集
+              </h2>
+              {episodes.items.length > 0 && (
+                <span className="section-summary">
+                  {episodes.items.length} 集 · 已看 {episodes.items.filter((entry) => entry.userData.played).length}
+                </span>
+              )}
+            </div>
+            {episodes.loading && (
+              <p className="status-line">
+                <span className="spinner spinner--small" aria-hidden="true" /> 正在读取剧集…
+              </p>
+            )}
+            {episodes.error && <ErrorNotice message={episodes.error} onRetry={episodes.reload} retryLabel="重新读取" />}
+            {!episodes.loading && !episodes.error && episodes.items.length === 0 && <p className="empty-state">未找到剧集。</p>}
             {episodes.items.length > 0 && (
-              <span className="section-summary">
-                {episodes.items.length} 集 · 已看 {episodes.items.filter((entry) => entry.userData.played).length}
-              </span>
+              <EpisodeSection
+                episodes={episodes.items}
+                seriesName={item.name}
+                focusEpisodeId={focusEpisodeId ?? null}
+                nextEpisodeId={nextEpisode && nextEpisode.mode !== "restart" ? nextEpisode.episode.id : null}
+                pendingId={pendingEpisodeId}
+                playbackPending={playback.pending}
+                onPlay={(next) => void playEpisode(next)}
+              />
+            )}
+          </section>
+        )}
+
+        <section className="detail-about" aria-label="简介">
+          {item.tagline && <p className="detail-tagline">{item.tagline}</p>}
+          <p className="detail-overview">{item.overview?.trim() || "暂无简介。"}</p>
+        </section>
+
+        <DetailFacts item={item} />
+
+        {(cast.length > 0 || similar.items.length > 0) && (
+          <div className="detail-rows">
+            {cast.length > 0 && (
+              <HubRow title="演职人员" variant="person">
+                {cast.map((person, index) => (
+                  <PersonCard
+                    key={`${person.id ?? person.name}-${person.kind}-${index}`}
+                    person={person}
+                    photo={person.id ? detail.photos[person.id] : undefined}
+                    onOpen={
+                      onOpenPerson && person.id
+                        ? () => onOpenPerson(person)
+                        : undefined
+                    }
+                  />
+                ))}
+              </HubRow>
+            )}
+            {similar.items.length > 0 && (
+              <HubRow title="更多类似内容" variant="poster">
+                {similar.items.map((other) => (
+                  <PosterCard key={other.id} item={other} landscape={false} onSelect={onOpenItem} />
+                ))}
+              </HubRow>
             )}
           </div>
-          {episodes.loading && (
-            <p className="status-line">
-              <span className="spinner spinner--small" aria-hidden="true" /> 正在读取剧集…
-            </p>
-          )}
-          {episodes.error && <ErrorNotice message={episodes.error} onRetry={episodes.reload} retryLabel="重新读取" />}
-          {!episodes.loading && !episodes.error && episodes.items.length === 0 && <p className="empty-state">未找到剧集。</p>}
-          {episodes.items.length > 0 && (
-            <EpisodeSection
-              episodes={episodes.items}
-              seriesName={item.name}
-              focusEpisodeId={focusEpisodeId ?? null}
-              nextEpisodeId={nextEpisode && nextEpisode.mode !== "restart" ? nextEpisode.episode.id : null}
-              pendingId={pendingEpisodeId}
-              playbackPending={playback.pending}
-              onPlay={(next) => void playEpisode(next)}
-            />
-          )}
-        </section>
-      )}
-
-      {(cast.length > 0 || similar.items.length > 0) && (
-        <div className="detail-rows">
-          {cast.length > 0 && (
-            <HubRow title="演职人员" variant="person">
-              {cast.map((person, index) => (
-                <PersonCard
-                  key={`${person.id ?? person.name}-${person.kind}-${index}`}
-                  person={person}
-                  photo={person.id ? detail.photos[person.id] : undefined}
-                  onOpen={
-                    onOpenPerson && person.id
-                      ? () => onOpenPerson(person)
-                      : undefined
-                  }
-                />
-              ))}
-            </HubRow>
-          )}
-          {similar.items.length > 0 && (
-            <HubRow title="更多类似内容" variant="poster">
-              {similar.items.map((other) => (
-                <PosterCard key={other.id} item={other} landscape={false} onSelect={onOpenItem} />
-              ))}
-            </HubRow>
-          )}
-        </div>
-      )}
+        )}
+      </div>
     </main>
   );
 }

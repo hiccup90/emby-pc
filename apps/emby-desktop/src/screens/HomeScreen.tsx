@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ReactNode, RefObject } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import type { EmbyView } from "../emby/contract";
 import { embyItems } from "../emby/client";
 import { decorateItems } from "../emby/artwork";
 import { includeItemTypesForView } from "../emby/library";
+import {
+  formatCommunityRating,
+  formatRemainingTicks,
+  formatRuntimeTicks,
+  itemProgress,
+  itemYearLabel,
+} from "../emby/format";
 import { useAsyncResource } from "../emby/useAsyncResource";
 import type { EmbyLibraryItem, EmbyLoadStatus } from "../emby/useEmby";
 import { ContinueCard, HubRow, PosterCard } from "./cards";
-import { Icon } from "./shared";
+import { useItemActions } from "./ItemActions";
+import { Icon, MediaArtwork, ProgressBar } from "./shared";
 import "./HomeScreen.css";
 
 /** Fetch enough for a wide window; the grid only renders what fits. */
@@ -17,6 +25,138 @@ const HOME_ROW_SKELETON = 8;
 
 /** Whether a library row has data, is empty, or is still deciding. */
 type HomeRowState = "pending" | "empty" | "filled";
+
+/** Short "S1E8" label for the hero's secondary line. */
+function compactEpisodeLabel(item: EmbyLibraryItem): string {
+  const { parentIndexNumber, indexNumber } = item;
+  if (parentIndexNumber === null || indexNumber === null) return "";
+  return `S${parentIndexNumber}E${indexNumber}`;
+}
+
+/**
+ * The first continue-watching item, blown up into a full-width still. It is
+ * the same item the old continue row put first, so the page opens on what the
+ * user was already watching instead of a generic heading.
+ */
+function HomeHero({
+  item,
+  onOpen,
+  onPlay,
+}: {
+  item: EmbyLibraryItem;
+  onOpen: (item: EmbyLibraryItem) => void;
+  onPlay: (item: EmbyLibraryItem) => void;
+}) {
+  const actions = useItemActions();
+  const episode = item.type === "Episode";
+  const episodeLabel = episode ? compactEpisodeLabel(item) : "";
+  const title = episode && item.seriesName ? item.seriesName : item.name;
+  const subtitle = episode
+    ? [episodeLabel, item.name].filter(Boolean).join(" · ")
+    : null;
+  const progress = itemProgress(item);
+  const remaining = formatRemainingTicks(item);
+  const runtime = formatRuntimeTicks(item.runTimeTicks);
+  const rating = formatCommunityRating(item.communityRating);
+  const meta = [
+    itemYearLabel(item),
+    item.genres.slice(0, 2).join(" / "),
+    runtime !== "时长未知" && item.type !== "Series" ? runtime : null,
+  ].filter((part): part is string => Boolean(part));
+
+  const openMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (!actions) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    actions.openMenu(item, rect.left, rect.bottom + 8);
+  };
+
+  return (
+    <section className="home-hero" aria-labelledby="home-hero-title">
+      <MediaArtwork
+        className="home-hero__art"
+        src={item.backdropUrl ?? item.posterUrl}
+        alt=""
+        title={title}
+        loading="eager"
+      />
+      <div className="home-hero__scrim" aria-hidden="true" />
+      <div className="home-hero__content">
+        <p className="home-hero__kicker">
+          <span className="home-hero__kicker-dot" aria-hidden="true" />
+          继续观看
+        </p>
+        <h1 className="home-hero__title" id="home-hero-title">
+          {title}
+        </h1>
+        {subtitle && <p className="home-hero__subtitle">{subtitle}</p>}
+        {(meta.length > 0 || rating || item.officialRating) && (
+          <p className="home-hero__meta">
+            {meta.length > 0 && <span>{meta.join(" · ")}</span>}
+            {rating && (
+              <span className="home-hero__rating">
+                <span aria-hidden="true">★</span> {rating}
+              </span>
+            )}
+            {item.officialRating && <span className="home-hero__cert">{item.officialRating}</span>}
+          </p>
+        )}
+        {progress > 0 && (
+          <div className="home-hero__progress">
+            <ProgressBar value={progress} className="home-hero__bar" />
+            <div className="home-hero__progress-copy">
+              <span>{episode ? `${episodeLabel} · ${item.name}` : "上次看到"}</span>
+              {remaining && <span>{remaining}</span>}
+            </div>
+          </div>
+        )}
+        <div className="home-hero__actions">
+          <button
+            type="button"
+            className="button button--primary button--large home-hero__play"
+            onClick={() => onPlay(item)}
+          >
+            <Icon name="play" size={18} />
+            {progress > 0 ? "继续播放" : "播放"}
+          </button>
+          <button
+            type="button"
+            className="home-hero__icon"
+            onClick={() => onOpen(item)}
+            aria-label={`查看《${title}》详情`}
+            title="查看详情"
+          >
+            <Icon name="info" size={20} />
+          </button>
+          {actions && (
+            <button
+              type="button"
+              className="home-hero__icon"
+              onClick={openMenu}
+              aria-label={`更多《${title}》操作`}
+              title="更多操作"
+            >
+              <Icon name="more" size={20} />
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Keeps the hero's height while continue-watching is still loading. */
+function HomeHeroSkeleton() {
+  return (
+    <div className="home-hero home-hero--skeleton" aria-hidden="true">
+      <div className="home-hero__content">
+        <span className="skeleton-line skeleton-line--short" />
+        <span className="skeleton-line skeleton-line--title" />
+        <span className="skeleton-line skeleton-line--meta" />
+        <span className="skeleton-line skeleton-line--button" />
+      </div>
+    </div>
+  );
+}
 
 export interface HomeScreenProps {
   /** Changes after delete/identify so every library row re-reads its items. */
@@ -277,20 +417,20 @@ export default function HomeScreen({
     resumeStatus === "ready" &&
     resume.length === 0 &&
     (views.length === 0 || allRowsEmpty);
-  // A soft colour wash from the most recent in-progress title: the page gets a
-  // sense of place without a header, and the image is already in the card row
-  // (same URL), so it costs no extra request.
-  const ambient =
-    resume.find((item) => item.backdropUrl)?.backdropUrl ?? resume[0]?.posterUrl ?? null;
+  // The hero is the first continue-watching entry. Removing it from the row
+  // below keeps the same title from appearing twice on one screen.
+  const hero = resume[0] ?? null;
+  const resumeRest = hero ? resume.slice(1) : resume;
+  const showResumeRow = resumeRest.length > 0 || resumeStatus === "error";
 
   return (
     <main className="page home-page">
-      {ambient && (
-        <div className="home-ambient" aria-hidden="true">
-          <img src={ambient} alt="" decoding="async" />
-        </div>
-      )}
-      {!(resumeStatus === "ready" && resume.length === 0) && (
+      {hero ? (
+        <HomeHero item={hero} onOpen={onOpen} onPlay={onPlay} />
+      ) : resumeStatus === "loading" || resumeStatus === "idle" ? (
+        <HomeHeroSkeleton />
+      ) : null}
+      {showResumeRow && (
         <HomeSection
           title="继续观看"
           meta={resume.length > 0 ? `${resume.length} 部未看完` : undefined}
@@ -298,7 +438,7 @@ export default function HomeScreen({
           error={resumeError}
           onRetry={onRetryResume}
         >
-          {resume.map((item) => (
+          {resumeRest.map((item) => (
             <ContinueCard key={item.id} item={item} onPlay={onPlay} onDetails={onOpen} />
           ))}
         </HomeSection>

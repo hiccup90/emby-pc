@@ -15,6 +15,8 @@ export type IconName =
   | "chevron-right"
   | "chevron-up"
   | "chevron-down"
+  | "info"
+  | "more"
   | "check"
   | "select"
   | "identify"
@@ -101,6 +103,19 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     "chevron-right": <path d="m9.5 18 6-6-6-6" />,
     "chevron-up": <path d="m6 14.5 6-6 6 6" />,
     "chevron-down": <path d="m6 9.5 6 6 6-6" />,
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v5M12 8h.01" />
+      </>
+    ),
+    more: (
+      <>
+        <circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+        <circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      </>
+    ),
     check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
     select: (
       <>

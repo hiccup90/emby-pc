@@ -1,43 +1,230 @@
-/* Home page: "继续观看" plus one fixed-size "recently added" grid per selected
-   library. The rows themselves reuse HubRow/ContinueCard from cards.tsx and
-   take their horizontal layout from styles.css; only the page shell, the
-   library grids and the loading/error/empty states live here. */
+/* Home page: the first in-progress title is the full-width hero; below it
+   "继续观看" and one fixed-size "最近入库" grid per selected library. The
+   cards themselves live in cards.tsx / styles.css; this file owns the page
+   shell, the hero and the library grids. */
 
 .home-page {
   position: relative;
-  isolation: isolate;
+  padding-top: 0;
 }
 
-/* A soft colour wash pulled from the most recent in-progress title. The image
-   URL is the same one used by its continue card, so this adds no request.
-   It sits behind the whole page column and fades into the field. */
-.home-ambient {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: -1;
-  height: 440px;
+/* The hero is the first continue-watching item: same image as its card would
+   use, no extra request. Negative side margins let it run to the window edge
+   while the page keeps its normal gutter for the rows below. */
+.home-hero {
+  position: relative;
+  display: flex;
+  min-height: clamp(340px, 46vh, 480px);
+  align-items: flex-end;
+  margin: 0 calc(var(--page-x) * -1) 26px;
   overflow: hidden;
-  pointer-events: none;
+  background: #0b0c0e;
 }
 
-.home-ambient img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  filter: blur(72px) saturate(1.45);
-  transform: scale(1.3);
-  opacity: 0.5;
+.home-hero .home-hero__art {
+  position: absolute;
+  inset: 0;
+  background: #0b0c0e;
 }
 
-.home-ambient::after {
+.home-hero__art img {
+  object-position: center 32%;
+}
+
+.home-hero__art .media-artwork__fallback {
+  background: linear-gradient(150deg, #1a1d21, #0b0c0e 70%);
+}
+
+.home-hero__art .media-artwork__fallback span {
+  display: none;
+}
+
+.home-hero__scrim {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(90deg, rgba(31, 31, 31, 0.72), rgba(31, 31, 31, 0.25) 55%, rgba(31, 31, 31, 0.5)),
-    linear-gradient(180deg, rgba(31, 31, 31, 0.25), rgba(31, 31, 31, 0.6) 48%, var(--bg) 100%);
-  content: "";
+    linear-gradient(90deg, rgba(11, 12, 14, 0.96) 0%, rgba(11, 12, 14, 0.58) 44%, rgba(11, 12, 14, 0.1) 76%, rgba(11, 12, 14, 0.28) 100%),
+    linear-gradient(0deg, #0b0c0e 0%, rgba(11, 12, 14, 0.72) 24%, transparent 62%),
+    linear-gradient(180deg, rgba(11, 12, 14, 0.6) 0%, transparent 24%);
+}
+
+.home-hero__content {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: min(720px, 100%);
+  align-content: end;
+  gap: 9px;
+  padding: 0 var(--page-x) clamp(30px, 4.5vh, 46px);
+}
+
+.home-hero__kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.home-hero__kicker-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(229, 160, 13, 0.55);
+}
+
+.home-hero__title {
+  max-width: 12ch;
+  margin: 0;
+  color: var(--text);
+  font-family: var(--display-font);
+  font-size: clamp(46px, 6.2vw, 100px);
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  line-height: 0.84;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+  text-shadow: 0 4px 34px rgba(0, 0, 0, 0.45);
+}
+
+.home-hero__subtitle {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.home-hero__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 0;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.home-hero__meta > span + span::before {
+  margin: 0 9px;
+  color: var(--text-3);
+  content: "·";
+}
+
+.home-hero__rating > span {
+  color: var(--accent);
+}
+
+.home-hero__cert {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 17px;
+}
+
+.home-hero__progress {
+  display: grid;
+  width: min(330px, 100%);
+  gap: 7px;
+  margin-top: 3px;
+}
+
+.home-hero__bar {
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.home-hero__bar > span {
+  box-shadow: 0 0 10px rgba(229, 160, 13, 0.42);
+}
+
+.home-hero__progress-copy {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.home-hero__actions {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 6px;
+}
+
+/* The one solid button on the page: warm white, amber is left for progress. */
+.home-hero .button--primary {
+  border: 0;
+  color: #121316;
+  background: #f4f1ea;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
+}
+
+.home-hero .button--primary:hover:not(:disabled) {
+  background: #fff;
+}
+
+.home-hero .button--primary:active:not(:disabled) {
+  background: #e4dfd4;
+}
+
+.home-hero__play {
+  min-height: 46px;
+  padding: 0 22px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.home-hero__icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--text-2);
+  background: rgba(0, 0, 0, 0.26);
+  backdrop-filter: blur(14px);
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.home-hero__icon:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Keep the page from jumping while the first continue-watching response lands. */
+.home-hero--skeleton {
+  background:
+    radial-gradient(ellipse at 72% 26%, rgba(255, 255, 255, 0.07), transparent 46%),
+    var(--surface);
+}
+
+.home-hero--skeleton .home-hero__content {
+  width: min(640px, 100%);
+  gap: 14px;
+}
+
+.home-hero--skeleton .skeleton-line--title {
+  width: 58%;
+  height: 62px;
+}
+
+.home-hero--skeleton .skeleton-line--meta {
+  width: 42%;
 }
 
 .home-hub {
@@ -54,9 +241,51 @@
 }
 
 @media (max-width: 900px) {
+  .home-hero {
+    min-height: 310px;
+  }
+
+  .home-hero__title {
+    font-size: clamp(42px, 9vw, 66px);
+  }
+
+  .home-hero__content {
+    gap: 8px;
+    padding-bottom: 26px;
+  }
+
   .home-library-grid {
     grid-template-columns: repeat(auto-fill, 136px);
     gap: 22px 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  .home-hero {
+    min-height: 280px;
+  }
+
+  .home-hero__title {
+    max-width: 100%;
+    font-size: clamp(36px, 11vw, 52px);
+  }
+
+  .home-hero__meta {
+    font-size: 11.5px;
+  }
+
+  .home-hero__actions {
+    gap: 9px;
+  }
+
+  .home-hero__play {
+    min-height: 42px;
+    padding: 0 18px;
+  }
+
+  .home-hero__icon {
+    width: 40px;
+    height: 40px;
   }
 }
 

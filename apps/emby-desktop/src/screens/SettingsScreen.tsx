@@ -234,7 +234,7 @@ export default function SettingsScreen({ views, onBack, onSettingsChange }: Sett
                 <span className="settings-row__text">
                   <span className="settings-row__label">首页媒体库</span>
                   <span className="settings-row__hint">
-                    选择要显示「最近入库」的媒体库，并按顺序排列；每行固定显示最新 8 部。
+                    选择要显示「最近入库」的媒体库，并按顺序排列；每行按窗口宽度显示一行，超出可点「查看全部」。
                   </span>
                 </span>
               </div>
