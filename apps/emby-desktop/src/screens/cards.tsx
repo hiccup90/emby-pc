@@ -218,7 +218,14 @@ export function HubRow({
     const onWheel = (event: WheelEvent) => {
       const max = track.scrollWidth - track.clientWidth;
       if (max <= 0) return;
-      const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+      // A precision touchpad's horizontal swipe usually carries a little
+      // vertical drift as well; picking deltaY first made that drift win and
+      // the row barely moved. Prefer the larger axis instead. Line/page
+      // deltas (some Windows drivers) are scaled to pixels.
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? track.clientWidth : 1;
+      const dx = event.deltaX * unit;
+      const dy = event.deltaY * unit;
+      const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
       if (delta === 0) return;
       const atStart = track.scrollLeft <= 0;
       const atEnd = track.scrollLeft >= max - 1;

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { EmbyView } from "../emby/contract";
 import { embyItems } from "../emby/client";
 import { decorateItems } from "../emby/artwork";
@@ -10,14 +10,16 @@ import { ContinueCard, HubRow, PosterCard } from "./cards";
 import { Icon } from "./shared";
 import "./HomeScreen.css";
 
-/** Number of newest items shown in each home library row. */
-const HOME_ROW_LIMIT = 8;
+/** Fetch enough for a wide window; the grid only renders what fits. */
+const HOME_ROW_FETCH = 16;
+/** Loading placeholder count; the real row is sized after its first layout. */
+const HOME_ROW_SKELETON = 8;
 
 /** Whether a library row has data, is empty, or is still deciding. */
 type HomeRowState = "pending" | "empty" | "filled";
 
 export interface HomeScreenProps {
-  /** Changes after delete/identify so every library row re-reads its 8 items. */
+  /** Changes after delete/identify so every library row re-reads its items. */
   refreshKey?: number;
   /** Continue-watching items (server order, usually most recent first). */
   resume: EmbyLibraryItem[];
@@ -52,14 +54,59 @@ function HomeSkeletonRow({ count }: { count: number }) {
 }
 
 function HomeLibrarySkeleton() {
+  const ref = useRef<HTMLDivElement>(null);
+  const columns = useGridColumns(ref);
+
   return (
-    <div className="home-library-grid home-skeleton" aria-hidden="true">
-      {Array.from({ length: HOME_ROW_LIMIT }, (_, index) => (
+    <div className="home-library-grid home-skeleton" ref={ref} aria-hidden="true">
+      {Array.from({ length: columns }, (_, index) => (
         <span className="skeleton-card" key={index}>
           <span className="skeleton-block" />
           <span className="skeleton-line" />
           <span className="skeleton-line skeleton-line--short" />
         </span>
+      ))}
+    </div>
+  );
+}
+
+/** How many fixed-width poster columns the grid currently fits. */
+function useGridColumns(ref: RefObject<HTMLDivElement | null>): number {
+  const [columns, setColumns] = useState(HOME_ROW_SKELETON);
+
+  useLayoutEffect(() => {
+    const grid = ref.current;
+    if (!grid) return undefined;
+    const update = () => {
+      // auto-fill exposes one computed track per column, including empty ones,
+      // so this is exactly how many cards fit on one line at the current width.
+      const tracks = getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length;
+      setColumns((current) => (current === tracks ? current : tracks));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return columns;
+}
+
+/** One library row: fixed-size posters, as many as the window fits on one line. */
+function HomeLibraryGrid({
+  items,
+  onOpen,
+}: {
+  items: EmbyLibraryItem[];
+  onOpen: (item: EmbyLibraryItem) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const columns = useGridColumns(ref);
+
+  return (
+    <div className="home-library-grid" ref={ref}>
+      {items.slice(0, columns).map((item) => (
+        <PosterCard key={item.id} item={item} landscape={false} onSelect={onOpen} />
       ))}
     </div>
   );
@@ -140,11 +187,11 @@ function HomeLibrarySection({
         recursive: true,
         sortBy: "DateCreated",
         sortOrder: "Descending",
-        limit: HOME_ROW_LIMIT,
+        limit: HOME_ROW_FETCH,
         ...(includeItemTypes ? { includeItemTypes } : {}),
       }).then((page) => decorateItems(page.items));
     },
-    `home-library:${userId}:${view.id}:${HOME_ROW_LIMIT}:${refreshKey}`,
+    `home-library:${userId}:${view.id}:${HOME_ROW_FETCH}:${refreshKey}`,
     {
       enabled: Boolean(userId),
       fallbackError: `无法读取「${view.name}」的最近入库。`,
@@ -192,11 +239,7 @@ function HomeLibrarySection({
           </button>
         </p>
       ) : (
-        <div className="home-library-grid">
-          {items.map((item) => (
-            <PosterCard key={item.id} item={item} landscape={false} onSelect={onOpen} />
-          ))}
-        </div>
+        <HomeLibraryGrid items={items} onOpen={onOpen} />
       )}
     </section>
   );

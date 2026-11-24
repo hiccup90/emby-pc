@@ -598,8 +598,6 @@ button:disabled {
   margin: -6px calc(var(--page-x) * -1) 0;
   padding: 6px var(--page-x) 8px;
   overflow-x: auto;
-  scroll-padding: 0 var(--page-x);
-  scroll-snap-type: x proximity;
   scrollbar-width: none;
   cursor: grab;
   user-select: none;
@@ -610,15 +608,10 @@ button:disabled {
 
 .hub__track.is-dragging {
   cursor: grabbing;
-  scroll-snap-type: none;
 }
 
 .hub__track img {
   -webkit-user-drag: none;
-}
-
-.hub__track > * {
-  scroll-snap-align: start;
 }
 
 .hub__track--poster {
@@ -947,14 +940,17 @@ button:disabled {
 
 /* ---- library grid -------------------------------------------------------------- */
 
+/* Fixed poster size, like the home rows: more window width adds columns
+   instead of stretching every poster. */
 .poster-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 28px 30px;
+  grid-template-columns: repeat(auto-fill, 140px);
+  justify-content: start;
+  gap: 24px 18px;
 }
 
 .poster-grid--landscape {
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, 230px);
 }
 
 .load-sentinel {
@@ -1819,8 +1815,12 @@ button:disabled {
   }
 
   .poster-grid {
-    grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+    grid-template-columns: repeat(auto-fill, 128px);
     gap: 22px 14px;
+  }
+
+  .poster-grid--landscape {
+    grid-template-columns: repeat(auto-fill, 208px);
   }
 }
 
