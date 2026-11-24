@@ -209,23 +209,26 @@ export function HubRow({
   } | null>(null);
   const suppressClickRef = useRef(false);
 
-  // Vertical wheel over a hub row pans it horizontally until the row hits an
-  // edge; after that the page scrolls normally again. The listener must be
-  // non-passive to be able to preventDefault.
+  // Horizontal wheel / touchpad gestures pan a hub row; vertical wheel and
+  // vertical touchpad scroll stay with the page. Wheel events do not expose
+  // whether they came from a mouse or a touchpad, so vertical-to-horizontal
+  // conversion is limited to Shift+wheel (the standard mouse gesture).
+  // The listener must be non-passive to be able to preventDefault.
   useEffect(() => {
     const track = trackRef.current;
     if (!track) return undefined;
     const onWheel = (event: WheelEvent) => {
       const max = track.scrollWidth - track.clientWidth;
       if (max <= 0) return;
-      // A precision touchpad's horizontal swipe usually carries a little
-      // vertical drift as well; picking deltaY first made that drift win and
-      // the row barely moved. Prefer the larger axis instead. Line/page
-      // deltas (some Windows drivers) are scaled to pixels.
+      // Line/page deltas (some Windows drivers) are scaled to pixels.
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? track.clientWidth : 1;
       const dx = event.deltaX * unit;
       const dy = event.deltaY * unit;
-      const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+      // A horizontal touchpad swipe carries a little vertical drift; ignore a
+      // gesture that is actually more vertical than horizontal. Shift+wheel is
+      // the standard mouse gesture for horizontal scrolling.
+      if (!event.shiftKey && Math.abs(dx) <= Math.abs(dy)) return;
+      const delta = event.shiftKey && Math.abs(dy) > Math.abs(dx) ? dy : dx;
       if (delta === 0) return;
       const atStart = track.scrollLeft <= 0;
       const atEnd = track.scrollLeft >= max - 1;
