@@ -1606,6 +1606,7 @@ button:disabled {
 }
 
 .episode-list > li {
+  position: relative;
   border-bottom: 1px solid var(--line);
 }
 
@@ -1615,7 +1616,7 @@ button:disabled {
   grid-template-columns: 48px minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
-  padding: 14px 12px 14px 4px;
+  padding: 14px 62px 14px 4px;
   border: 0;
   border-radius: 4px;
   color: inherit;
@@ -1724,20 +1725,6 @@ button:disabled {
   text-align: right;
 }
 
-/* The series page's "next up" row: subtly marked so the CTA has a target. */
-.next-chip {
-  display: inline-block;
-  padding: 1px 8px;
-  border: 1px solid rgba(229, 160, 13, 0.5);
-  border-radius: 999px;
-  color: var(--accent);
-  background: rgba(229, 160, 13, 0.1);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 17px;
-  white-space: nowrap;
-}
-
 .episode-list__item--next .episode-row {
   border-radius: var(--radius);
   background: rgba(229, 160, 13, 0.05);
@@ -1748,14 +1735,48 @@ button:disabled {
   background: rgba(229, 160, 13, 0.1);
 }
 
-.watched-mark {
-  display: inline-grid;
-  width: 22px;
-  height: 22px;
+/* Per-episode watched toggle. Sits outside the play button so clicking the
+   check never starts playback. Amber means watched; grey means unwatched. */
+.episode-watch {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  right: 12px;
+  display: grid;
+  width: 30px;
+  height: 30px;
   place-items: center;
+  border: 0;
   border-radius: 50%;
   color: var(--text-2);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-50%);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.episode-watch:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.episode-watch.is-watched {
+  color: var(--accent);
+  background: rgba(229, 160, 13, 0.16);
+}
+
+.episode-watch.is-watched:hover:not(:disabled) {
+  color: #ffd166;
+  background: rgba(229, 160, 13, 0.26);
+}
+
+.episode-watch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.episode-watch:disabled {
+  cursor: progress;
+  opacity: 0.55;
 }
 
 /* ---- login and boot ------------------------------------------------------------------ */

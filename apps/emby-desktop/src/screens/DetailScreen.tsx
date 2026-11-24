@@ -350,6 +350,7 @@ function EpisodeSection({
   pendingId,
   playbackPending,
   onPlay,
+  onTogglePlayed,
 }: {
   episodes: EmbyLibraryItem[];
   seriesName: string;
@@ -358,9 +359,49 @@ function EpisodeSection({
   pendingId: string | null;
   playbackPending: boolean;
   onPlay: (episode: EmbyLibraryItem) => void;
+  onTogglePlayed: (episode: EmbyLibraryItem, played: boolean) => Promise<void>;
 }) {
   const groups = useMemo(() => groupSeasons(episodes), [episodes]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [watchedOverrides, setWatchedOverrides] = useState<Record<string, boolean>>({});
+  const [pendingWatched, setPendingWatched] = useState<string | null>(null);
+  const [watchedError, setWatchedError] = useState<string | null>(null);
+
+  // Keep an optimistic mark only until the refreshed episode list agrees.
+  useEffect(() => {
+    setWatchedOverrides((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [id, played] of Object.entries(next)) {
+        const episode = episodes.find((entry) => entry.id === id);
+        if (episode?.userData.played === played) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [episodes]);
+
+  const toggleEpisodeWatched = async (episode: EmbyLibraryItem, played: boolean) => {
+    if (pendingWatched) return;
+    const next = !played;
+    setPendingWatched(episode.id);
+    setWatchedError(null);
+    setWatchedOverrides((current) => ({ ...current, [episode.id]: next }));
+    try {
+      await onTogglePlayed(episode, next);
+    } catch (reason) {
+      setWatchedOverrides((current) => {
+        const copy = { ...current };
+        delete copy[episode.id];
+        return copy;
+      });
+      setWatchedError(describeEmbyError(reason, "更新观看状态失败，请稍后重试。"));
+    } finally {
+      setPendingWatched(null);
+    }
+  };
 
   // Return from the player: open the season that holds the episode on screen.
   const focusSeasonKey = useMemo(() => {
@@ -371,8 +412,8 @@ function EpisodeSection({
     return group?.key ?? null;
   }, [focusEpisodeId, groups]);
 
-  // Open the season that holds the "next up" episode so its chip is visible
-  // without hunting through the season tabs.
+  // Open the season that holds the next episode so its row is visible without
+  // hunting through the season tabs.
   const nextGroupKey = useMemo(() => {
     if (!nextEpisodeId) return null;
     return (
@@ -410,11 +451,14 @@ function EpisodeSection({
           ))}
         </div>
       )}
+      {watchedError && <ErrorNotice message={watchedError} />}
       <ol className="episode-list" aria-label={active.label}>
         {active.episodes.map((episode) => {
           const progress = itemProgress(episode);
           const pending = pendingId === episode.id;
           const focused = focusEpisodeId === episode.id;
+          const played = watchedOverrides[episode.id] ?? episode.userData.played;
+          const watchPending = pendingWatched === episode.id;
           const label = itemEpisodeLabel(episode) ?? "";
           const meta = [label, formatRuntimeTicks(episode.runTimeTicks)].filter(
             (part) => part && part !== "时长未知",
@@ -451,18 +495,27 @@ function EpisodeSection({
                   {progress > 0 && <ProgressBar value={progress} className="episode-row__progress" />}
                 </span>
                 <span className="episode-row__state">
-                  {nextEpisodeId === episode.id && <span className="next-chip">下一集</span>}
                   {pending ? (
                     <span className="spinner spinner--small" aria-label="正在准备" />
-                  ) : episode.userData.played ? (
-                    <span className="watched-mark" title="已看完">
-                      <Icon name="check" size={14} />
-                      <span className="visually-hidden">已看完</span>
-                    </span>
-                  ) : progress > 0 ? (
+                  ) : progress > 0 && !played ? (
                     `${Math.round(progress * 100)}%`
                   ) : null}
                 </span>
+              </button>
+              <button
+                type="button"
+                className={`episode-watch${played ? " is-watched" : ""}`}
+                aria-label={`${played ? "标记为未看完" : "标记为已看完"}：${seriesName} ${label} ${episode.name}`}
+                aria-pressed={played}
+                title={played ? "已看完，点击标记为未看完" : "未看完，点击标记为已看完"}
+                disabled={pendingWatched !== null}
+                onClick={() => void toggleEpisodeWatched(episode, played)}
+              >
+                {watchPending ? (
+                  <span className="spinner spinner--small" aria-hidden="true" />
+                ) : (
+                  <Icon name="check" size={14} />
+                )}
               </button>
             </li>
           );
@@ -571,6 +624,15 @@ export default function DetailScreen({
     const index = list.findIndex((entry) => entry.id === episode.id);
     const queue = index >= 0 ? list.slice(index) : [episode];
     onPlay(target, playbackMeta(episode, target.chapters), queue, item.id);
+  };
+
+  const toggleEpisodeWatched = async (episode: EmbyLibraryItem, played: boolean) => {
+    await embySetPlayed(episode.id, played);
+    // The series' aggregate progress, the header count and the next-up target
+    // all derive from these two reads.
+    setWatchedOverride(null);
+    episodes.reload();
+    detail.reload();
   };
 
   if (!item) {
@@ -818,6 +880,7 @@ export default function DetailScreen({
             {!episodes.loading && !episodes.error && episodes.items.length === 0 && <p className="empty-state">未找到剧集。</p>}
             {episodes.items.length > 0 && (
               <EpisodeSection
+                key={item.id}
                 episodes={episodes.items}
                 seriesName={item.name}
                 focusEpisodeId={focusEpisodeId ?? null}
@@ -825,6 +888,7 @@ export default function DetailScreen({
                 pendingId={pendingEpisodeId}
                 playbackPending={playback.pending}
                 onPlay={(next) => void playEpisode(next)}
+                onTogglePlayed={toggleEpisodeWatched}
               />
             )}
           </section>
