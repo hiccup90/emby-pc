@@ -255,21 +255,6 @@ export function ErrorNotice({
   );
 }
 
-/**
- * Faded artwork behind the content column (detail pages). Rendered under the
- * scroll container, so it stays put while the page scrolls and also shows
- * through the scrollbar track. Hidden when the image fails.
- */
-export function PageBackdrop({ src }: { src: string }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) return null;
-  return (
-    <div className="page-backdrop" aria-hidden="true">
-      <img src={src} alt="" decoding="async" onError={() => setFailed(true)} />
-    </div>
-  );
-}
-
 /** Thin amber watch-progress bar (0..1). */
 export function ProgressBar({ value, className = "" }: { value: number; className?: string }) {
   const percent = Math.round(Math.min(1, Math.max(0, value)) * 100);

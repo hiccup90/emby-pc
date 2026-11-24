@@ -34,7 +34,7 @@ import {
   IDENTIFY_ITEM_TYPES,
 } from "./screens/ItemActions";
 import type { ItemActionContextValue, ItemMenuState } from "./screens/ItemActions";
-import { BrandMark, ErrorNotice, PageBackdrop } from "./screens/shared";
+import { BrandMark, ErrorNotice } from "./screens/shared";
 import PlayerPage from "./player/PlayerPage";
 import type { PlaybackMeta } from "./player/contract";
 import { DEFAULT_APP_SETTINGS, getSettings, saveSettings } from "./settings/tauri";
@@ -166,7 +166,6 @@ export default function App() {
   const searchScrollRef = useRef(0);
   /** Screen seen by the previous rendered route, for the scroll restore above. */
   const lastScreenRef = useRef<Route["screen"] | null>(null);
-  const [backdrop, setBackdrop] = useState<string | null>(null);
   const { refreshResume } = library;
   /** Card right-click / multi-select state; only the current page may keep it. */
   const [selection, setSelection] = useState<{ active: boolean; ids: Set<string> }>({
@@ -777,7 +776,6 @@ export default function App() {
         backLabel="返回"
       />
       <div className="app-body">
-        {route.screen === "detail" && backdrop && <PageBackdrop key={backdrop} src={backdrop} />}
         {browsing && (
           <Sidebar
             views={library.views}
@@ -907,7 +905,6 @@ export default function App() {
                   trackScope,
                 )
               }
-              onBackdrop={setBackdrop}
               onOpenPerson={openActor}
             />
           )}

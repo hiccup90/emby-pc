@@ -45,8 +45,6 @@ interface DetailScreenProps {
     queue?: EmbyLibraryItem[],
     trackScope?: string,
   ) => void;
-  /** The shell draws the backdrop under the scroll container. */
-  onBackdrop?: (src: string | null) => void;
   /** A "more like this" poster. */
   onOpenItem: (item: EmbyLibraryItem) => void;
   /** A cast member: open their filmography. */
@@ -482,7 +480,6 @@ export default function DetailScreen({
   desktop,
   onBack,
   onPlay,
-  onBackdrop,
   onOpenItem,
   onOpenPerson,
 }: DetailScreenProps) {
@@ -535,12 +532,6 @@ export default function DetailScreen({
     item && (item.type === "Movie" || item.type === "Series") ? item.id : null,
     desktop && Boolean(session),
   );
-  const backdrop = item ? item.backdropUrl ?? item.posterUrl : null;
-
-  useEffect(() => {
-    onBackdrop?.(backdrop);
-  }, [backdrop, onBackdrop]);
-  useEffect(() => () => onBackdrop?.(null), [onBackdrop]);
 
   const focusedItemRef = useRef<string | null>(null);
   useEffect(() => {
