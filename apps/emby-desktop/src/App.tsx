@@ -98,6 +98,16 @@ type Route =
       trackScope: string | null;
     };
 
+/** Episodes open their series page, the same page a TV-library click reaches. */
+function detailTarget(item: EmbyLibraryItem): Pick<DetailLocation, "itemId" | "seed" | "focusEpisodeId"> {
+  const seriesId = item.type === "Episode" ? item.seriesId : null;
+  return {
+    itemId: seriesId ?? item.id,
+    seed: seriesId ? null : item,
+    focusEpisodeId: seriesId ? item.id : undefined,
+  };
+}
+
 /** The page a detail view is being opened from, so "back" can return there. */
 function originOf(route: Route): DetailOrigin {
   switch (route.screen) {
@@ -244,8 +254,7 @@ export default function App() {
       else if (origin === "library") libraryScrollRef.current = top;
       setRoute((current) => ({
         screen: "detail",
-        itemId: item.id,
-        seed: item,
+        ...detailTarget(item),
         trail: [],
         origin: originOf(current),
       }));
@@ -429,8 +438,7 @@ export default function App() {
   const openRelated = useCallback((item: EmbyLibraryItem) => {
     setRoute((current) => ({
       screen: "detail",
-      itemId: item.id,
-      seed: item,
+      ...detailTarget(item),
       trail:
         current.screen === "detail"
           ? [...current.trail, { itemId: current.itemId, seed: current.seed }]

@@ -1299,25 +1299,36 @@ button:disabled {
   font-size: 14px;
 }
 
-/* Secondary "选择剧集" link: scrolls to the episode list instead of a grey hint. */
-.detail-link {
+.detail-tracks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+  margin: -2px 0 4px;
+}
+
+.detail-track {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 6px 2px;
-  border: 0;
+  gap: 8px;
   color: var(--text-2);
-  background: transparent;
-  font-size: 13.5px;
-  transition: color 0.15s ease;
+  font-size: 13px;
 }
 
-.detail-link:hover {
-  color: var(--accent);
+.detail-track__select {
+  max-width: 240px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 13px;
 }
 
-.detail-link svg {
-  opacity: 0.8;
+.detail-track__select option {
+  color: var(--text);
+  background: var(--menu);
 }
 
 .detail-overview {

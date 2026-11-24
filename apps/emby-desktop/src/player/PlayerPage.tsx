@@ -13,6 +13,12 @@ import { embyImageUrl, embyItem } from "../emby/client";
 import { reportEmbyPlayback } from "../emby/playback";
 import type { PlaybackMeta, PlayerStats, PlayerStatus, SkipIntroMode } from "./contract";
 import { invokePlayerStats, invokePlayerStop } from "./tauri";
+import {
+  findTrackIndexByChoice,
+  readTrackPreference,
+  writeTrackPreference,
+} from "./trackPreference";
+import type { TrackPreference } from "./trackPreference";
 import { usePlayer } from "./usePlayer";
 import { useVideoSync } from "./useVideoSync";
 
@@ -102,42 +108,6 @@ interface PlayerPageProps {
    */
   episodeRun?: readonly string[] | null;
   onBack: () => void;
-}
-
-interface TrackChoice {
-  lang: string | null;
-  title: string;
-}
-
-/** Remembered per-series track choice (the ids change per file). */
-interface TrackPreference {
-  audio?: TrackChoice;
-  subtitle?: TrackChoice;
-}
-
-const TRACK_PREF_KEY = "emby.track-preference.";
-
-function readTrackPreference(scope: string): TrackPreference | null {
-  try {
-    const raw = window.localStorage.getItem(TRACK_PREF_KEY + scope);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as TrackPreference;
-    return value && typeof value === "object" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeTrackPreference(scope: string, value: TrackPreference) {
-  try {
-    window.localStorage.setItem(TRACK_PREF_KEY + scope, JSON.stringify(value));
-  } catch {
-    // Storage may be unavailable; remembering the choice is best effort.
-  }
-}
-
-function sameChoice(track: { lang: string | null; title: string }, choice: TrackChoice): boolean {
-  return (track.lang ?? null) === (choice.lang ?? null) && track.title === choice.title;
 }
 
 /**
@@ -392,12 +362,17 @@ export default function PlayerPage({
     if (!preference) return;
     const wantedAudio = preference.audio;
     if (wantedAudio) {
-      const audio = snapshot.audioTracks.find((track) => sameChoice(track, wantedAudio));
+      const index = findTrackIndexByChoice(snapshot.audioTracks, wantedAudio);
+      const audio = index >= 0 ? snapshot.audioTracks[index] : null;
       if (audio && !audio.selected) void selectTrack("audio", audio.id);
     }
-    const wantedSubtitle = preference.subtitle;
-    if (wantedSubtitle) {
-      const subtitle = snapshot.subtitleTracks.find((track) => sameChoice(track, wantedSubtitle));
+    if (preference.subtitle === null) {
+      if (snapshot.subtitleTracks.some((track) => track.selected)) {
+        void selectTrack("subtitle", -1);
+      }
+    } else if (preference.subtitle) {
+      const index = findTrackIndexByChoice(snapshot.subtitleTracks, preference.subtitle);
+      const subtitle = index >= 0 ? snapshot.subtitleTracks[index] : null;
       if (subtitle && !subtitle.selected) void selectTrack("subtitle", subtitle.id);
     }
   }, [snapshot, trackScope, playbackKey, selectTrack]);
@@ -408,10 +383,14 @@ export default function PlayerPage({
     if (!userPickedTracksRef.current) return;
     const audio = snapshot.audioTracks.find((track) => track.selected);
     const subtitle = snapshot.subtitleTracks.find((track) => track.selected);
-    if (!audio && !subtitle) return;
+    if (!audio && snapshot.subtitleTracks.length === 0) return;
     const preference: TrackPreference = {
       ...(audio ? { audio: { lang: audio.lang, title: audio.title } } : {}),
-      ...(subtitle ? { subtitle: { lang: subtitle.lang, title: subtitle.title } } : {}),
+      // There are subtitles but none selected: remember "off" explicitly so
+      // the next launch does not turn the default subtitle back on.
+      ...(snapshot.subtitleTracks.length > 0
+        ? { subtitle: subtitle ? { lang: subtitle.lang, title: subtitle.title } : null }
+        : {}),
     };
     const serialized = JSON.stringify(preference);
     if (serialized === savedTracksRef.current) return;

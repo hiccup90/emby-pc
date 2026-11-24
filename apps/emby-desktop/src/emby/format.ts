@@ -280,7 +280,8 @@ function pickStream(streams: EmbyMediaStream[], kind: string) {
   return { chosen: ofKind.find((stream) => stream.isDefault) ?? ofKind[0] ?? null, count: ofKind.length };
 }
 
-function streamLabel(stream: EmbyMediaStream): string {
+/** Human label for one media stream (audio/subtitle pickers and summaries). */
+export function mediaStreamLabel(stream: EmbyMediaStream): string {
   if (stream.displayTitle) return stream.displayTitle;
   const language = stream.language ? LANGUAGE_NAMES[stream.language.toLowerCase()] ?? stream.language : null;
   const channels = stream.kind === "Audio" ? channelLabel(stream.channels) : null;
@@ -303,12 +304,12 @@ export function videoStreamSummary(streams: EmbyMediaStream[]): string | null {
 
 export function audioStreamSummary(streams: EmbyMediaStream[]): string | null {
   const { chosen, count } = pickStream(streams, "Audio");
-  return chosen ? withCount(streamLabel(chosen), count) : null;
+  return chosen ? withCount(mediaStreamLabel(chosen), count) : null;
 }
 
 /** Null without stream info; "无" when there is video but no subtitle. */
 export function subtitleStreamSummary(streams: EmbyMediaStream[]): string | null {
   const { chosen, count } = pickStream(streams, "Subtitle");
-  if (chosen) return withCount(streamLabel(chosen), count);
+  if (chosen) return withCount(mediaStreamLabel(chosen), count);
   return streams.some((stream) => stream.kind === "Video") ? "无" : null;
 }

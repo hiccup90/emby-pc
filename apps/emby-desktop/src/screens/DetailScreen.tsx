@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
+import type { EmbyItem, EmbyMediaStream, EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
 import type { PlaybackMeta } from "../player/contract";
+import { findTrackIndexByChoice, readTrackPreference, writeTrackPreference } from "../player/trackPreference";
+import type { TrackChoice, TrackPreference } from "../player/trackPreference";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import { useEmbyDetail, useEmbyEpisodes, useEmbySimilar, usePlaybackLauncher } from "../emby/useEmby";
-import { describeEmbyError, embySetFavorite, embySetPlayed } from "../emby/client";
+import { useAsyncResource } from "../emby/useAsyncResource";
+import { describeEmbyError, embyItem, embySetFavorite, embySetPlayed } from "../emby/client";
 import {
   audioStreamSummary,
+  mediaStreamLabel,
   playbackMeta,
   formatCommunityRating,
   formatPremiereDate,
@@ -163,6 +167,102 @@ function namesOf(people: EmbyPerson[], kind: string): string | null {
   return names.length > 0 ? names.slice(0, 3).join("、") : null;
 }
 
+function streamChoice(stream: EmbyMediaStream): TrackChoice {
+  return { lang: stream.language, title: mediaStreamLabel(stream) };
+}
+
+function findStream(streams: EmbyMediaStream[], choice: TrackChoice): EmbyMediaStream | null {
+  const index = findTrackIndexByChoice(streams.map(streamChoice), choice);
+  return index >= 0 ? streams[index] : null;
+}
+
+/** Audio/subtitle choices for the next play, remembered per movie/series. */
+function TrackPickers({ scope, streams }: { scope: string; streams: EmbyMediaStream[] }) {
+  const audioStreams = useMemo(() => streams.filter((stream) => stream.kind === "Audio"), [streams]);
+  const subtitleStreams = useMemo(
+    () => streams.filter((stream) => stream.kind === "Subtitle"),
+    [streams],
+  );
+  const [version, setVersion] = useState(0);
+  const preference = useMemo(() => readTrackPreference(scope), [scope, version]);
+
+  const preferredAudio = preference?.audio ? findStream(audioStreams, preference.audio) : null;
+  const selectedAudio =
+    preferredAudio ?? audioStreams.find((stream) => stream.isDefault) ?? audioStreams[0] ?? null;
+  const wantedSubtitle =
+    preference && "subtitle" in preference ? preference.subtitle : undefined;
+  const preferredSubtitle =
+    wantedSubtitle === null
+      ? null
+      : wantedSubtitle
+        ? findStream(subtitleStreams, wantedSubtitle)
+        : undefined;
+  const selectedSubtitle =
+    preferredSubtitle === null
+      ? null
+      : preferredSubtitle ?? subtitleStreams.find((stream) => stream.isDefault) ?? null;
+
+  if (audioStreams.length <= 1 && subtitleStreams.length === 0) return null;
+
+  const audioIndex = selectedAudio ? audioStreams.indexOf(selectedAudio) : -1;
+  const subtitleIndex = selectedSubtitle ? subtitleStreams.indexOf(selectedSubtitle) : -1;
+
+  const choose = (next: TrackPreference) => {
+    writeTrackPreference(scope, next);
+    setVersion((value) => value + 1);
+  };
+
+  return (
+    <div className="detail-tracks" title="播放时使用，并按本片/本剧记住选择">
+      {audioStreams.length > 1 && (
+        <label className="detail-track">
+          <span>音轨</span>
+          <select
+            className="detail-track__select"
+            value={audioIndex}
+            onChange={(event) => {
+              const stream = audioStreams[Number(event.target.value)];
+              if (!stream) return;
+              choose({ ...(preference ?? {}), audio: streamChoice(stream) });
+            }}
+          >
+            {audioStreams.map((stream, index) => (
+              <option key={`${stream.index ?? "audio"}-${index}`} value={index}>
+                {mediaStreamLabel(stream)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {subtitleStreams.length > 0 && (
+        <label className="detail-track">
+          <span>字幕</span>
+          <select
+            className="detail-track__select"
+            value={subtitleIndex >= 0 ? subtitleIndex : "off"}
+            onChange={(event) => {
+              if (event.target.value === "off") {
+                choose({ ...(preference ?? {}), subtitle: null });
+                return;
+              }
+              const stream = subtitleStreams[Number(event.target.value)];
+              if (!stream) return;
+              choose({ ...(preference ?? {}), subtitle: streamChoice(stream) });
+            }}
+          >
+            <option value="off">关闭</option>
+            {subtitleStreams.map((stream, index) => (
+              <option key={`${stream.index ?? "sub"}-${index}`} value={index}>
+                {mediaStreamLabel(stream)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
 /** Plex's details grid: credits on the left, media on the right. */
 function DetailFacts({ item }: { item: EmbyLibraryItem }) {
   const isSeries = item.type === "Series";
@@ -285,6 +385,10 @@ function EpisodeSection({
     );
   }, [groups, nextEpisodeId]);
 
+  useEffect(() => {
+    if (focusSeasonKey) setSelected(focusSeasonKey);
+  }, [focusSeasonKey]);
+
   const activeKey = groups.some((group) => group.key === selected)
     ? selected
     : focusSeasonKey ?? nextGroupKey ?? defaultSeason(groups);
@@ -387,15 +491,12 @@ export default function DetailScreen({
   const detail = useEmbyDetail(itemId, seed, desktop && Boolean(session));
   const playback = usePlaybackLauncher();
   const headingRef = useRef<HTMLHeadingElement>(null);
-  /** Scroll target for the series page's "选择剧集" link. */
-  const episodesRef = useRef<HTMLElement>(null);
   const [pendingEpisodeId, setPendingEpisodeId] = useState<string | null>(null);
   const [watchedOverride, setWatchedOverride] = useState<boolean | null>(null);
   const [pendingAction, setPendingAction] = useState<"played" | "favorite" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const item = detail.item;
-  const progress = item ? itemProgress(item) : 0;
   const effectiveWatched = watchedOverride ?? item?.userData.played ?? false;
   const favoriteState = item?.userData.favorite === true;
   const isSeries = item?.type === "Series";
@@ -407,6 +508,14 @@ export default function DetailScreen({
    */
   const nextEpisode = useMemo(() => {
     if (!isSeries || episodes.items.length === 0) return null;
+    // The episode a Continue-watching card came from wins over the first
+    // in-progress episode, so its progress and season stay on screen.
+    const focused = focusEpisodeId
+      ? episodes.items.find((entry) => entry.id === focusEpisodeId)
+      : null;
+    if (focused && !focused.userData.played && itemProgress(focused) > 0) {
+      return { episode: focused, mode: "resume" as const };
+    }
     const inProgress = episodes.items.find(
       (entry) => !entry.userData.played && itemProgress(entry) > 0,
     );
@@ -414,7 +523,16 @@ export default function DetailScreen({
     const firstUnplayed = episodes.items.find((entry) => !entry.userData.played);
     if (firstUnplayed) return { episode: firstUnplayed, mode: "play" as const };
     return { episode: episodes.items[0], mode: "restart" as const };
-  }, [isSeries, episodes.items]);
+  }, [episodes.items, focusEpisodeId, isSeries]);
+
+  // A series itself has no streams: its next episode's detail supplies the
+  // audio/subtitle choices for the series-level (per-language) preference.
+  const trackEpisodeId = isSeries ? nextEpisode?.episode.id ?? null : null;
+  const trackSource = useAsyncResource<EmbyItem | null>(
+    () => (trackEpisodeId ? embyItem(trackEpisodeId) : Promise.resolve(null)),
+    `detail-streams:${trackEpisodeId ?? ""}`,
+    { enabled: Boolean(trackEpisodeId) && desktop && Boolean(session) },
+  );
   const similar = useEmbySimilar(
     item && (item.type === "Movie" || item.type === "Series") ? item.id : null,
     desktop && Boolean(session),
@@ -493,6 +611,8 @@ export default function DetailScreen({
 
   const episode = item.type === "Episode";
   const playable = isPlayableItemType(item.type);
+  const progressItem = isSeries && nextEpisode?.mode === "resume" ? nextEpisode.episode : item;
+  const progress = itemProgress(progressItem);
   const runtime = formatRuntimeTicks(item.runTimeTicks);
   const seasonCount = isSeries ? groupSeasons(episodes.items).length : 0;
 
@@ -509,10 +629,11 @@ export default function DetailScreen({
     metaParts.push(`${seasonCount} 季`, `${episodes.items.length} 集`);
   }
 
-  const remaining = formatRemainingTicks(item);
+  const remaining = formatRemainingTicks(progressItem);
   const rating = formatCommunityRating(item.communityRating);
   const cast = castAndCrew(item.people);
   const supportsWatchState = isSeries || playable;
+  const trackStreams = isSeries ? trackSource.data?.mediaStreams ?? [] : item.mediaStreams;
 
   const toggleWatched = async () => {
     if (pendingAction) return;
@@ -659,31 +780,16 @@ export default function DetailScreen({
                 </button>
               </>
             )}
-            {playable && progress > 0 && (
+            {progress > 0 && (
               <span className="detail-resume">
                 <ProgressBar value={progress} />
                 {remaining ?? `已观看 ${Math.round(progress * 100)}%`}
               </span>
             )}
-            {isSeries && (
-              <button
-                type="button"
-                className="detail-link"
-                onClick={() =>
-                  episodesRef.current?.scrollIntoView({
-                    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-                      ? "auto"
-                      : "smooth",
-                    block: "start",
-                  })
-                }
-              >
-                选择剧集
-                <Icon name="chevron-down" size={14} />
-              </button>
-            )}
             {item.type === "MusicAlbum" && <span className="detail-hint">音乐专辑暂不支持播放。</span>}
           </div>
+
+          <TrackPickers scope={item.id} streams={trackStreams} />
 
           {playback.error && <ErrorNotice message={playback.error} />}
           {actionError && <ErrorNotice message={actionError} />}
@@ -695,7 +801,7 @@ export default function DetailScreen({
       </section>
 
       {isSeries && (
-        <section className="episodes" aria-labelledby="episodes-title" ref={episodesRef}>
+        <section className="episodes" aria-labelledby="episodes-title">
           <div className="section-header">
             <h2 className="section-title" id="episodes-title">
               剧集
