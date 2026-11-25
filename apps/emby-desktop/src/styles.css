@@ -355,11 +355,13 @@ button:disabled {
   width: var(--sidebar-width);
   flex: 0 0 var(--sidebar-width);
   flex-direction: column;
-  margin: 8px 0 8px 8px;
-  padding: 6px 0;
+  /* Attach to the title bar so the rail and the page header share one seam.
+     The extra top padding keeps the first icon where the old 8px inset put it. */
+  margin: 0 0 8px 8px;
+  padding: 14px 0 6px;
   overflow-y: auto;
-  border-radius: 4px;
-  background: var(--sidebar);
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(180deg, var(--bg) 0, var(--sidebar) 26px);
 }
 
 .sidebar__list {
