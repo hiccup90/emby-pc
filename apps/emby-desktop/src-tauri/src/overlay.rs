@@ -480,6 +480,11 @@ impl OverlayState {
         self.lock().mode == UiMode::Player
     }
 
+    fn controls_hidden(&self) -> bool {
+        let inner = self.lock();
+        inner.mode == UiMode::Player && !inner.interactive
+    }
+
     /// Hide the OS cursor while the controls are gone. The cursor sits over the
     /// native mpv child window, where the page's CSS cannot reach it.
     #[cfg(windows)]
@@ -2339,6 +2344,11 @@ pub fn spawn_wake_poller(app: AppHandle) {
                     last = None;
                     continue;
                 }
+                // Keep the cursor hidden while the bar is gone. This also
+                // repairs the states the `set_interactive` call cannot cover:
+                // regaining the foreground, re-entering the video, or a hide
+                // timer that fired while the left button was held.
+                state.set_cursor_hidden(&app, state.controls_hidden() && !left_down);
                 // Compare against the last wake, not the previous tick: slow
                 // movement then still crosses the 3 px threshold eventually.
                 match last {
