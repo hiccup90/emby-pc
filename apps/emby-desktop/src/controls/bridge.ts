@@ -71,6 +71,16 @@ export async function sendOverlayAction(action: OverlayAction): Promise<void> {
   await emitTo("main", "overlay-action", action);
 }
 
+/**
+ * Overlay window: mirror the bar's visibility. The cursor belongs to the
+ * WebView under the mouse-transparent video host, so the main page has to set
+ * `cursor: none` itself; a Win32 `SetCursor` on our window thread never
+ * reaches the WebView's cursor.
+ */
+export async function publishOverlayVisibility(visible: boolean): Promise<void> {
+  await emitTo("main", "overlay-visible", visible);
+}
+
 /** Overlay window: Rust forwards cursor activity over the video as a wake. */
 export async function onOverlayWake(handler: () => void): Promise<() => void> {
   return listen("overlay-wake", () => handler());

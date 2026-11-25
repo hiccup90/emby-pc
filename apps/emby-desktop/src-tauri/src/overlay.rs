@@ -331,10 +331,6 @@ struct Inner {
     controls_shown: bool,
     /// Whether the controls should currently receive mouse input.
     interactive: bool,
-    /// The poller hid the OS cursor together with the controls; kept so a
-    /// show/hide cycle queues exactly one Win32 cursor update per transition.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    cursor_hidden: bool,
     /// Last click-through state actually applied to the controls window.
     /// `None` means "unknown"; it is forced to the desired value after `show()`.
     cursor_ignored: Option<bool>,
@@ -389,7 +385,6 @@ impl OverlayState {
                 last_bands: None,
                 controls_shown: false,
                 interactive: false,
-                cursor_hidden: false,
                 // `configure_controls_window` starts click-through before the
                 // state is created, so no first `set_ignore_cursor_events`
                 // round-trip is needed here.
@@ -480,35 +475,6 @@ impl OverlayState {
         self.lock().mode == UiMode::Player
     }
 
-    fn controls_hidden(&self) -> bool {
-        let inner = self.lock();
-        inner.mode == UiMode::Player && !inner.interactive
-    }
-
-    /// Hide the OS cursor while the controls are gone. The cursor sits over the
-    /// native mpv child window, where the page's CSS cannot reach it.
-    #[cfg(windows)]
-    fn set_cursor_hidden(&self, app: &AppHandle, hidden: bool) {
-        {
-            let mut inner = self.lock();
-            if inner.cursor_hidden == hidden {
-                return;
-            }
-            inner.cursor_hidden = hidden;
-        }
-        // Window teardown runs on the main thread, so restoring there must not
-        // wait for a queued task the exiting event loop may never run.
-        if self.is_main_thread() {
-            apply_cursor(hidden);
-            return;
-        }
-        let app = app.clone();
-        let _ = app.run_on_main_thread(move || apply_cursor(hidden));
-    }
-
-    #[cfg(not(windows))]
-    fn set_cursor_hidden(&self, _app: &AppHandle, _hidden: bool) {}
-
     // ---- state transitions --------------------------------------------------
 
     pub fn set_mode(&self, app: &AppHandle, player: bool) -> Result<(), String> {
@@ -533,10 +499,6 @@ impl OverlayState {
                     if player { "player" } else { "app" }
                 );
             }
-        }
-
-        if !player {
-            self.set_cursor_hidden(app, false);
         }
 
         if player {
@@ -616,13 +578,6 @@ impl OverlayState {
             }
             (inner.interaction_generation, settled)
         };
-        if self.is_player_mode() {
-            if interactive {
-                self.set_cursor_hidden(app, false);
-            } else if !pointer_button_down() {
-                self.set_cursor_hidden(app, true);
-            }
-        }
         if settled {
             // Collapse the first-show full-height surface to the bar strip.
             if let Err(err) = self.present(app) {
@@ -755,13 +710,6 @@ impl OverlayState {
         if let Err(err) = self.present(app) {
             eprintln!("[overlay] could not follow main window: {err}");
         }
-    }
-
-    /// Put the arrow cursor back before the player windows go away. A cursor
-    /// hidden with `SetCursor(NULL)` outlives the child HWND that was under it
-    /// and would otherwise stay invisible on the desktop.
-    pub fn restore_cursor(&self, app: &AppHandle) {
-        self.set_cursor_hidden(app, false);
     }
 
     pub fn on_main_destroyed(&self) {
@@ -2261,18 +2209,6 @@ fn reassert_controls_chrome(window: &WebviewWindow) {
 
 // ---- cursor wake poller ------------------------------------------------------
 
-/// Apply the arrow / hidden cursor on the thread that owns the main window.
-#[cfg(windows)]
-fn apply_cursor(hidden: bool) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW};
-    let cursor = if hidden {
-        std::ptr::null_mut()
-    } else {
-        unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) }
-    };
-    unsafe { SetCursor(cursor) };
-}
-
 /// Poll the cursor while the app runs: every 16 ms while the pointer is over
 /// the video, 250 ms otherwise. The loop stays parked (no Win32 calls) outside
 /// player UI mode; `stop_wake` is checked every tick and the thread is detached
@@ -2307,7 +2243,6 @@ pub fn spawn_wake_poller(app: AppHandle) {
                 };
                 if !state.is_player_mode() {
                     // Stop tracking so re-entering player mode starts fresh.
-                    state.set_cursor_hidden(&app, false);
                     last = None;
                     last_left_down = false;
                     interval = WAKE_POLL_IDLE;
@@ -2327,7 +2262,6 @@ pub fn spawn_wake_poller(app: AppHandle) {
                 let inside = state.cursor_inside_video(cursor);
                 if !inside {
                     // Re-entering the video starts a fresh movement baseline.
-                    state.set_cursor_hidden(&app, false);
                     last = None;
                     interval = WAKE_POLL_IDLE;
                     continue;
@@ -2340,15 +2274,9 @@ pub fn spawn_wake_poller(app: AppHandle) {
                 // `on_stage_click`, which activates the app and wakes the bar
                 // itself.
                 if !foreground_is_ours() || !cursor_over_main(&app, cursor) {
-                    state.set_cursor_hidden(&app, false);
                     last = None;
                     continue;
                 }
-                // Keep the cursor hidden while the bar is gone. This also
-                // repairs the states the `set_interactive` call cannot cover:
-                // regaining the foreground, re-entering the video, or a hide
-                // timer that fired while the left button was held.
-                state.set_cursor_hidden(&app, state.controls_hidden() && !left_down);
                 // Compare against the last wake, not the previous tick: slow
                 // movement then still crosses the 3 px threshold eventually.
                 match last {

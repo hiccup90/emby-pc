@@ -17,6 +17,7 @@ import {
   type ResizeEdge,
   onOverlayState,
   onOverlayWake,
+  publishOverlayVisibility,
   requestOverlayState,
   sendOverlayAction,
   setOverlayExpanded,
@@ -437,6 +438,9 @@ export default function Overlay() {
     lastInteractiveRef.current = visible;
     void setOverlayInteractive(visible).catch((reason) => {
       console.warn("[overlay] could not toggle click-through", reason);
+    });
+    void publishOverlayVisibility(visible).catch((reason) => {
+      console.warn("[overlay] could not publish cursor visibility", reason);
     });
   }, [desktop, visible]);
 

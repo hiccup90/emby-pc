@@ -2074,6 +2074,15 @@ button:disabled {
   outline: none;
 }
 
+/* The controls overlay tells this page when the bar fades. The pointer is over
+   this WebView (the native video host is HTTRANSPARENT), so cursor: none is the
+   only layer that can hide it; a Win32 SetCursor on another window thread does
+   not own this cursor. */
+.player-layout[data-cursor="hidden"],
+.player-layout[data-cursor="hidden"] * {
+  cursor: none;
+}
+
 .app-shell--player {
   background: #000;
 }

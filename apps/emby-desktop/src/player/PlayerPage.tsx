@@ -177,6 +177,12 @@ export default function PlayerPage({
    * have nowhere to report itself: `void onNext()` used to drop the result.
    */
   const [stepFailure, setStepFailure] = useState<string | null>(null);
+  /**
+   * The controls live in another webview; only it knows when the bar has faded.
+   * The page owns the cursor because the native video host is mouse-transparent
+   * and the pointer is over this WebView, not over the overlay.
+   */
+  const [controlsVisible, setControlsVisible] = useState(true);
 
   /**
    * Overlay logo. The item's own tag is free (copied by `itemPlaybackMeta`);
@@ -859,6 +865,19 @@ export default function PlayerPage({
       .catch((reason) => {
         console.warn("[player] could not listen for overlay actions", reason);
       });
+    void listen<boolean>("overlay-visible", (event) => {
+      setControlsVisible(event.payload);
+    })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+          return;
+        }
+        stops.push(stop);
+      })
+      .catch((reason) => {
+        console.warn("[player] could not listen for overlay visibility", reason);
+      });
     // Native stage clicks arrive from the Rust side: the mpv child window eats
     // the real mouse event, so the window implements focus + double-click and
     // forwards the fullscreen intent here.
@@ -974,6 +993,7 @@ export default function PlayerPage({
   return (
     <main
       className="player-layout"
+      data-cursor={controlsVisible ? "visible" : "hidden"}
       ref={pageRef}
       tabIndex={-1}
       aria-label="播放器"
