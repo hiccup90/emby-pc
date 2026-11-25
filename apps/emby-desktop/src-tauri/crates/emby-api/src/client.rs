@@ -322,7 +322,9 @@ impl EmbyClient {
             ("MediaTypes", "Video".to_string()),
             ("EnableUserData", "true".to_string()),
             ("Fields", ITEM_FIELDS.to_string()),
-            ("EnableImageTypes", "Primary,Backdrop".to_string()),
+            // The hero and continue cards are landscape: ask for Thumb too,
+            // otherwise an episode without a Backdrop falls back to its poster.
+            ("EnableImageTypes", "Primary,Thumb,Backdrop".to_string()),
             ("ImageTypeLimit", "1".to_string()),
         ];
         if limit > 0 {
@@ -1058,8 +1060,8 @@ mod tests {
         assert!(request_line.contains("EnableUserData=true"), "{request_line}");
         assert!(request_line.contains("Fields=PrimaryImageAspectRatio"), "{request_line}");
         assert!(
-            request_line.contains("EnableImageTypes=Primary%2CBackdrop")
-                || request_line.contains("EnableImageTypes=Primary,Backdrop"),
+            request_line.contains("EnableImageTypes=Primary%2CThumb%2CBackdrop")
+                || request_line.contains("EnableImageTypes=Primary,Thumb,Backdrop"),
             "{request_line}"
         );
         assert!(request_line.contains("ImageTypeLimit=1"), "{request_line}");

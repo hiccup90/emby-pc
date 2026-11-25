@@ -111,6 +111,7 @@ fn main() {
                         service.shutdown();
                     }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.restore_cursor(app);
                         state.stop_wake();
                     }
                     // Owned windows are destroyed with their owner, but an
@@ -125,6 +126,7 @@ fn main() {
                         state.save(window);
                     }
                     if let Some(state) = app.try_state::<overlay::OverlayState>() {
+                        state.restore_cursor(app);
                         state.on_main_destroyed();
                     }
                     // Covers programmatic destroys that never emitted
