@@ -1,19 +1,22 @@
-/* Library toolbar: Plex-style dark controls above the poster grid. */
+/* Library toolbar: a quiet Plex-style control row above the poster grid. */
 
 .library-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: 10px 14px;
   margin: 0 0 24px;
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.16);
 }
 
 .library-toolbar__group {
   display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.library-toolbar__field {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
 }
@@ -26,65 +29,70 @@
   white-space: nowrap;
 }
 
-.library-toolbar__segments {
+.library-toolbar__select {
+  position: relative;
   display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.library-toolbar__segment {
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 3px;
-  color: var(--text-2);
-  background: transparent;
-  font-size: 12.5px;
-  line-height: 1;
-  white-space: nowrap;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.library-toolbar__segment:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.library-toolbar__segment.is-active {
-  color: var(--accent);
-  background: rgba(229, 160, 13, 0.14);
-  font-weight: 600;
-}
-
-.library-toolbar__direction {
-  display: inline-flex;
-  height: 30px;
   align-items: center;
-  gap: 6px;
-  padding: 0 10px;
+}
+
+.library-toolbar__select select {
+  height: 34px;
+  min-width: 86px;
+  padding: 0 30px 0 11px;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: 6px;
+  appearance: none;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.library-toolbar__select select:hover {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.library-toolbar__select option {
+  color: var(--text);
+  background: var(--menu);
+}
+
+.library-toolbar__select > svg {
+  position: absolute;
+  right: 10px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.library-toolbar__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
   color: var(--text-2);
-  background: transparent;
-  font-size: 12.5px;
-  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.035);
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.library-toolbar__direction:hover {
-  border-color: rgba(255, 255, 255, 0.28);
+.library-toolbar__icon:hover {
+  border-color: rgba(255, 255, 255, 0.26);
   color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .library-toolbar__switch {
   display: inline-flex;
-  height: 30px;
+  height: 34px;
   align-items: center;
   gap: 8px;
-  padding: 0 4px;
+  padding: 0 2px;
   border: 0;
   color: var(--text-2);
   background: transparent;
@@ -113,7 +121,7 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #d7d7d7;
+  background: var(--text);
   transition: transform 0.15s ease, background-color 0.15s ease;
 }
 
@@ -126,15 +134,50 @@
   transform: translateX(14px);
 }
 
-.library-toolbar__reset {
+.library-toolbar__segments {
   display: inline-flex;
-  height: 28px;
-  align-items: center;
-  gap: 5px;
-  margin-left: auto;
-  padding: 0 9px;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.library-toolbar__segment {
+  height: 30px;
+  padding: 0 11px;
   border: 0;
   border-radius: 4px;
+  color: var(--text-2);
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.library-toolbar__segment:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.library-toolbar__segment.is-active {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+}
+
+.library-toolbar__view {
+  margin-left: auto;
+}
+
+.library-toolbar__reset {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
   color: var(--text-3);
   background: transparent;
   font-size: 12.5px;
@@ -147,18 +190,30 @@
 }
 
 /* A new query is in flight: the controls stay clickable but read as pending. */
-.library-toolbar.is-busy .library-toolbar__segment,
-.library-toolbar.is-busy .library-toolbar__label {
+.library-toolbar.is-busy .library-toolbar__field,
+.library-toolbar.is-busy .library-toolbar__icon,
+.library-toolbar.is-busy .library-toolbar__switch,
+.library-toolbar.is-busy .library-toolbar__segments {
   opacity: 0.6;
 }
 
 @media (max-width: 900px) {
   .library-toolbar {
     gap: 8px 12px;
-    padding: 9px 10px;
+  }
+
+  .library-toolbar__group {
+    gap: 8px;
   }
 
   .library-toolbar__segment {
-    padding: 0 8px;
+    padding: 0 9px;
+  }
+}
+
+/* The view group wraps onto its own line below this width; keep it left. */
+@media (max-width: 700px) {
+  .library-toolbar__view {
+    margin-left: 0;
   }
 }

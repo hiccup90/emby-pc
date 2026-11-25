@@ -8,8 +8,8 @@
 
 .search-hero__title {
   margin: 0 0 18px;
-  font-size: 26px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 600;
   letter-spacing: 0.01em;
 }
 
@@ -30,7 +30,7 @@
 .search-box:focus-within {
   border-color: var(--accent);
   background: rgba(0, 0, 0, 0.55);
-  box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.14);
+  box-shadow: 0 0 0 1px rgba(229, 160, 13, 0.18);
 }
 
 .search-box__icon {
@@ -130,53 +130,8 @@
   line-height: 1.6;
 }
 
-/* Result tile: PosterCard plus a hover play affordance. */
-.search-result {
-  position: relative;
-  min-width: 0;
-}
-
-/* A `poster-card` is a button: without this it shrinks to its title width
-   inside the tile instead of filling the grid column. */
-.search-result .poster-card {
-  width: 100%;
-}
-
-.search-result__play {
-  position: absolute;
-  top: 38%;
-  left: 50%;
-  display: grid;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  place-items: center;
-  color: var(--accent-ink);
-  background: var(--accent);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
-  opacity: 0;
-  transform: translate(-50%, -50%) scale(0.9);
-  transition:
-    opacity 0.15s ease,
-    transform 0.15s ease,
-    background 0.15s ease;
-}
-
-.search-result:hover .search-result__play,
-.search-result:focus-within .search-result__play {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-.search-result__play:hover {
-  background: var(--accent-hover);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .search-box,
-  .search-result__play {
+  .search-box {
     transition: none;
   }
 }

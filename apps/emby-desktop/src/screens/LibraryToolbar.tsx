@@ -16,6 +16,7 @@ const SORT_OPTIONS: ReadonlyArray<{ value: EmbyLibrarySortBy; label: string }> =
 ];
 
 const TYPE_OPTIONS: ReadonlyArray<{ value: EmbyLibraryItemType; label: string }> = [
+  { value: "all", label: "全部" },
   { value: "Movie", label: "电影" },
   { value: "Series", label: "剧集" },
 ];
@@ -38,6 +39,38 @@ function SortArrow({ ascending }: { ascending: boolean }) {
   );
 }
 
+function ToolbarSelect<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <label className="library-toolbar__field">
+      <span className="library-toolbar__label">{label}</span>
+      <span className="library-toolbar__select">
+        <select
+          value={value}
+          aria-label={label}
+          onChange={(event) => onChange(event.target.value as T)}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <Icon name="chevron-down" size={14} />
+      </span>
+    </label>
+  );
+}
+
 export interface LibraryToolbarProps {
   value: EmbyLibraryQuery;
   onChange: (next: EmbyLibraryQuery) => void;
@@ -54,9 +87,9 @@ export interface LibraryToolbarProps {
 }
 
 /**
- * Plex-style library toolbar: sort key + direction, an "unplayed only" switch
- * and, for mixed libraries, a movie/series type filter. Presentational only;
- * every change goes straight to the library data layer.
+ * Plex-style library toolbar: one sort menu, one direction button, an
+ * "unplayed only" switch, an optional type menu and the card shape. Presentational
+ * only; every change goes straight to the library data layer.
  */
 export default function LibraryToolbar({
   value,
@@ -77,32 +110,30 @@ export default function LibraryToolbar({
       aria-busy={busy}
     >
       <div className="library-toolbar__group">
-        <span className="library-toolbar__label">排序</span>
-        <div className="library-toolbar__segments" role="group" aria-label="排序方式">
-          {SORT_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`library-toolbar__segment${value.sortBy === option.value ? " is-active" : ""}`}
-              aria-pressed={value.sortBy === option.value}
-              onClick={() => patch({ sortBy: option.value })}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ToolbarSelect
+          label="排序"
+          value={value.sortBy}
+          options={SORT_OPTIONS}
+          onChange={(sortBy) => patch({ sortBy })}
+        />
+        <button
+          type="button"
+          className="library-toolbar__icon"
+          aria-label={`排序方向：${descending ? "降序" : "升序"}，点击切换`}
+          title={`当前${descending ? "降序" : "升序"}，点击切换`}
+          onClick={() => patch({ sortOrder: descending ? "Ascending" : "Descending" })}
+        >
+          <SortArrow ascending={!descending} />
+        </button>
+        {showTypeFilter && (
+          <ToolbarSelect
+            label="类型"
+            value={value.itemType}
+            options={TYPE_OPTIONS}
+            onChange={(itemType) => patch({ itemType })}
+          />
+        )}
       </div>
-
-      <button
-        type="button"
-        className="library-toolbar__direction"
-        aria-label={`排序方向：${descending ? "降序" : "升序"}，点击切换`}
-        title="切换排序方向"
-        onClick={() => patch({ sortOrder: descending ? "Ascending" : "Descending" })}
-      >
-        <SortArrow ascending={!descending} />
-        <span>{descending ? "降序" : "升序"}</span>
-      </button>
 
       <button
         type="button"
@@ -117,34 +148,7 @@ export default function LibraryToolbar({
         <span>仅未看</span>
       </button>
 
-      {showTypeFilter && (
-        <div className="library-toolbar__group">
-          <span className="library-toolbar__label">类型</span>
-          <div className="library-toolbar__segments" role="group" aria-label="类型筛选">
-            <button
-              type="button"
-              className={`library-toolbar__segment${value.itemType === "all" ? " is-active" : ""}`}
-              aria-pressed={value.itemType === "all"}
-              onClick={() => patch({ itemType: "all" })}
-            >
-              全部
-            </button>
-            {TYPE_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={`library-toolbar__segment${value.itemType === option.value ? " is-active" : ""}`}
-                aria-pressed={value.itemType === option.value}
-                onClick={() => patch({ itemType: option.value })}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="library-toolbar__group">
+      <div className="library-toolbar__group library-toolbar__view">
         <span className="library-toolbar__label">视图</span>
         <div className="library-toolbar__segments" role="group" aria-label="卡片视图">
           <button

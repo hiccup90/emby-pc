@@ -1,9 +1,7 @@
 import { useRef } from "react";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import { itemEpisodeLabel } from "../emby/format";
-import { isPlayableItemType } from "../emby/library";
 import { useSearch } from "../emby/useSearch";
-import { useItemActions } from "./ItemActions";
 import { ErrorNotice, Icon } from "./shared";
 import { PosterCard } from "./cards";
 import "./SearchScreen.css";
@@ -50,9 +48,6 @@ export default function SearchScreen({
   const inputRef = useRef<HTMLInputElement>(null);
   const search = useSearch({ initialQuery, onQueryChange, refreshKey });
   const trimmedQuery = search.query.trim();
-  const itemActions = useItemActions();
-  const selecting = itemActions?.selection.active ?? false;
-
   const clear = () => {
     search.setQuery("");
     inputRef.current?.focus();
@@ -137,30 +132,14 @@ export default function SearchScreen({
                     ? [item.seriesName, itemEpisodeLabel(item)].filter(Boolean).join(" · ")
                     : null;
                 return (
-                  <div className="search-result" key={item.id}>
-                    <PosterCard
-                      item={item}
-                      landscape={false}
-                      onSelect={onOpen}
-                      subtitle={episodeContext}
-                    />
-                    {!selecting && isPlayableItemType(item.type) && (
-                      <button
-                        type="button"
-                        className="search-result__play"
-                        onClick={() => onPlay(item)}
-                        onContextMenu={(event) => {
-                          if (!itemActions) return;
-                          event.preventDefault();
-                          itemActions.openMenu(item, event.clientX, event.clientY);
-                        }}
-                        aria-label={`播放《${item.name}》`}
-                        title="播放"
-                      >
-                        <Icon name="play" size={16} />
-                      </button>
-                    )}
-                  </div>
+                  <PosterCard
+                    key={item.id}
+                    item={item}
+                    landscape={false}
+                    onSelect={onOpen}
+                    onPlay={onPlay}
+                    subtitle={episodeContext}
+                  />
                 );
               })}
             </div>

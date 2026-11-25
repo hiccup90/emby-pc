@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { EmbyItem, EmbyMediaStream, EmbyPerson, EmbyPlaybackTarget, EmbySession } from "../emby/contract";
 import type { PlaybackMeta } from "../player/contract";
 import { findTrackIndexByChoice, readTrackPreference, writeTrackPreference } from "../player/trackPreference";
@@ -6,6 +7,7 @@ import type { TrackChoice, TrackPreference } from "../player/trackPreference";
 import type { EmbyLibraryItem } from "../emby/useEmby";
 import { useEmbyDetail, useEmbyEpisodes, useEmbySimilar, usePlaybackLauncher } from "../emby/useEmby";
 import { useAsyncResource } from "../emby/useAsyncResource";
+import { safeImageUrl } from "../emby/artwork";
 import { describeEmbyError, embyItem, embySetFavorite, embySetPlayed } from "../emby/client";
 import {
   audioStreamSummary,
@@ -174,6 +176,130 @@ function findStream(streams: EmbyMediaStream[], choice: TrackChoice): EmbyMediaS
   return index >= 0 ? streams[index] : null;
 }
 
+/** A small track menu beside the trigger; the cinema hero clips dropdowns. */
+function TrackMenu({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const current = options[selectedIndex]?.label ?? "";
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Capture Escape so the detail page's back handler does not fire too.
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+    const onScroll = () => setOpen(false);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  const moveFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+    if (items.length === 0) return;
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowDown"
+            ? (currentIndex + 1 + items.length) % items.length
+            : (currentIndex - 1 + items.length) % items.length;
+    event.preventDefault();
+    items[next]?.focus();
+  };
+
+  return (
+    <div
+      className="detail-track"
+      ref={rootRef}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setOpen(false);
+      }}
+    >
+      <span className="detail-track__label">{label}</span>
+      <div className="detail-track__menu">
+        <button
+          ref={buttonRef}
+          type="button"
+          className="detail-track__button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`${label}：${current}`}
+          title={`${label}：${current}`}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="detail-track__value">{current}</span>
+          <Icon name="chevron-down" size={14} />
+        </button>
+        {open && (
+          <div
+            className="detail-track__options"
+            role="menu"
+            aria-label={label}
+            onKeyDown={moveFocus}
+          >
+            {options.map((option, index) => {
+              const selected = option.value === value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  autoFocus={index === selectedIndex}
+                  className={`detail-track__option${selected ? " is-selected" : ""}`}
+                  title={option.label}
+                  onClick={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                    buttonRef.current?.focus();
+                  }}
+                >
+                  <span>{option.label}</span>
+                  {selected && <Icon name="check" size={15} />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Audio/subtitle choices for the next play, remembered per movie/series. */
 function TrackPickers({ scope, streams }: { scope: string; streams: EmbyMediaStream[] }) {
   const audioStreams = useMemo(() => streams.filter((stream) => stream.kind === "Audio"), [streams]);
@@ -210,52 +336,47 @@ function TrackPickers({ scope, streams }: { scope: string; streams: EmbyMediaStr
     setVersion((value) => value + 1);
   };
 
+  const audioOptions = audioStreams.map((stream, index) => ({
+    value: String(index),
+    label: mediaStreamLabel(stream),
+  }));
+  const subtitleOptions = [
+    { value: "off", label: "关闭" },
+    ...subtitleStreams.map((stream, index) => ({
+      value: String(index),
+      label: mediaStreamLabel(stream),
+    })),
+  ];
+
   return (
     <div className="detail-tracks" title="播放时使用，并按本片/本剧记住选择">
       {audioStreams.length > 1 && (
-        <label className="detail-track">
-          <span>音轨</span>
-          <select
-            className="detail-track__select"
-            value={audioIndex}
-            onChange={(event) => {
-              const stream = audioStreams[Number(event.target.value)];
-              if (!stream) return;
-              choose({ ...(preference ?? {}), audio: streamChoice(stream) });
-            }}
-          >
-            {audioStreams.map((stream, index) => (
-              <option key={`${stream.index ?? "audio"}-${index}`} value={index}>
-                {mediaStreamLabel(stream)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <TrackMenu
+          label="音轨"
+          value={String(Math.max(0, audioIndex))}
+          options={audioOptions}
+          onChange={(next) => {
+            const stream = audioStreams[Number(next)];
+            if (!stream) return;
+            choose({ ...(preference ?? {}), audio: streamChoice(stream) });
+          }}
+        />
       )}
       {subtitleStreams.length > 0 && (
-        <label className="detail-track">
-          <span>字幕</span>
-          <select
-            className="detail-track__select"
-            value={subtitleIndex >= 0 ? subtitleIndex : "off"}
-            onChange={(event) => {
-              if (event.target.value === "off") {
-                choose({ ...(preference ?? {}), subtitle: null });
-                return;
-              }
-              const stream = subtitleStreams[Number(event.target.value)];
-              if (!stream) return;
-              choose({ ...(preference ?? {}), subtitle: streamChoice(stream) });
-            }}
-          >
-            <option value="off">关闭</option>
-            {subtitleStreams.map((stream, index) => (
-              <option key={`${stream.index ?? "sub"}-${index}`} value={index}>
-                {mediaStreamLabel(stream)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <TrackMenu
+          label="字幕"
+          value={subtitleIndex >= 0 ? String(subtitleIndex) : "off"}
+          options={subtitleOptions}
+          onChange={(next) => {
+            if (next === "off") {
+              choose({ ...(preference ?? {}), subtitle: null });
+              return;
+            }
+            const stream = subtitleStreams[Number(next)];
+            if (!stream) return;
+            choose({ ...(preference ?? {}), subtitle: streamChoice(stream) });
+          }}
+        />
       )}
     </div>
   );
@@ -340,6 +461,71 @@ function groupSeasons(episodes: EmbyLibraryItem[]): SeasonGroup[] {
 function defaultSeason(groups: SeasonGroup[]): string | null {
   const next = groups.find((group) => group.episodes.some((episode) => !episode.userData.played));
   return (next ?? groups[0])?.key ?? null;
+}
+
+/** Lazy 16:9 still for one episode; the URL is only resolved near the viewport. */
+function EpisodeStill({ episode, progress }: { episode: EmbyLibraryItem; progress: number }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const tag = episode.imageTags.Thumb;
+
+  useEffect(() => {
+    setSrc(null);
+    setFailed(false);
+    if (!tag) return undefined;
+    const node = ref.current;
+    if (!node) return undefined;
+    let disposed = false;
+    const load = () => {
+      void safeImageUrl(episode, "Thumb", 320).then((url) => {
+        if (!disposed) setSrc(url);
+      });
+    };
+    if (typeof IntersectionObserver === "undefined") {
+      load();
+      return () => {
+        disposed = true;
+      };
+    }
+    // Resolve one bridge URL per row, only when it approaches the viewport.
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        load();
+      },
+      { rootMargin: "320px 0px" },
+    );
+    observer.observe(node);
+    return () => {
+      disposed = true;
+      observer.disconnect();
+    };
+  }, [episode.id, tag]);
+
+  return (
+    <span className="episode-row__still" ref={ref} aria-hidden="true">
+      {src && !failed ? (
+        <>
+          <img
+            src={src}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+          />
+          <span className="episode-row__still-index">{episode.indexNumber ?? "·"}</span>
+        </>
+      ) : (
+        <span className="episode-row__still-fallback">{episode.indexNumber ?? "·"}</span>
+      )}
+      <span className="episode-row__still-play">
+        <Icon name="play" size={17} />
+      </span>
+      {progress > 0 && <ProgressBar value={progress} className="episode-row__still-progress" />}
+    </span>
+  );
 }
 
 function EpisodeSection({
@@ -482,17 +668,11 @@ function EpisodeSection({
                 aria-label={`播放《${seriesName}》${label} ${episode.name}`}
                 onClick={() => onPlay(episode)}
               >
-                <span className="episode-row__index" aria-hidden="true">
-                  <span className="episode-row__number">{episode.indexNumber ?? "·"}</span>
-                  <span className="episode-row__play">
-                    <Icon name="play" size={16} />
-                  </span>
-                </span>
+                <EpisodeStill episode={episode} progress={progress} />
                 <span className="episode-row__body">
                   <span className="episode-row__title">{episode.name}</span>
                   <span className="episode-row__meta">{meta.join(" · ")}</span>
                   {episode.overview && <span className="episode-row__overview">{episode.overview}</span>}
-                  {progress > 0 && <ProgressBar value={progress} className="episode-row__progress" />}
                 </span>
                 <span className="episode-row__state">
                   {pending ? (

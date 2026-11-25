@@ -52,7 +52,7 @@
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #1e1e1e;
+  background: var(--menu);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
 }
 
@@ -97,7 +97,7 @@
   padding: 8px 10px 8px 18px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: #202020;
+  background: var(--surface-raised);
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
   transform: translateX(-50%);
 }
@@ -154,7 +154,7 @@
   padding: 22px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #1b1b1b;
+  background: var(--surface-raised);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.7);
 }
 

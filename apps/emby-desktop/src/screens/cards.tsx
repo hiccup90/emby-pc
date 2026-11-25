@@ -12,6 +12,7 @@ import {
   itemProgress,
   itemYearLabel,
 } from "../emby/format";
+import { isPlayableItemType } from "../emby/library";
 import { useItemActions } from "./ItemActions";
 import { Icon, MediaArtwork, ProgressBar } from "./shared";
 
@@ -25,11 +26,14 @@ export function PosterCard({
   item,
   landscape,
   onSelect,
+  onPlay,
   subtitle: subtitleOverride,
 }: {
   item: EmbyLibraryItem;
   landscape: boolean;
   onSelect: (item: EmbyLibraryItem) => void;
+  /** When provided, playable items get a hover play action on the artwork. */
+  onPlay?: (item: EmbyLibraryItem) => void;
   /** Overrides the default year line (e.g. series + episode for search hits). */
   subtitle?: string | null;
 }) {
@@ -52,52 +56,69 @@ export function PosterCard({
     onSelect(item);
   };
 
+  const canPlay = Boolean(onPlay) && !selecting && isPlayableItemType(item.type);
+
   return (
-    <button
-      type="button"
-      className={`poster-card${landscape ? " poster-card--landscape" : ""}${selecting ? " is-selecting" : ""}${selected ? " is-selected" : ""}`}
-      onClick={handleClick}
+    <div
+      className={`poster-card${landscape ? " poster-card--landscape" : ""}${subtitle ? "" : " poster-card--bare"}${selecting ? " is-selecting" : ""}${selected ? " is-selected" : ""}`}
       onContextMenu={(event) => {
         if (!actions) return;
         event.preventDefault();
         actions.openMenu(item, event.clientX, event.clientY);
       }}
-      onKeyDown={(event) => {
-        if (!actions || !isContextMenuKey(event)) return;
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        actions.openMenu(item, rect.left + rect.width / 2, rect.top + 8);
-      }}
-      aria-label={selecting ? `选择《${item.name}》` : `查看《${item.name}》详情`}
-      aria-pressed={selecting ? selected : undefined}
     >
-      <span className="poster-card__frame">
-        <MediaArtwork
-          // Match Emby's own thumbnail view: use the 16:9 Thumb when the
-          // server has one, otherwise its 16:9 Backdrop. A poster is 2:3 and
-          // must never be cropped into this card.
-          src={landscape ? item.thumbUrl ?? item.backdropUrl : item.posterUrl}
-          alt=""
-          title={item.name}
-          fallbackLabel="无图"
-          loading="lazy"
-        />
-        {unwatched && <span className="badge-unwatched" aria-hidden="true" />}
-        {unplayedCount > 0 && (
-          <span className="badge-count" aria-hidden="true">
-            {unplayedCount > 99 ? "99+" : unplayedCount}
-          </span>
-        )}
-        {progress > 0 && <ProgressBar value={progress} className="poster-card__progress" />}
-        {selecting && (
-          <span className="poster-card__select" aria-hidden="true">
-            {selected && <Icon name="check" size={14} />}
-          </span>
-        )}
-      </span>
-      <span className="poster-card__title">{item.name}</span>
-      {subtitle && <span className="poster-card__meta">{subtitle}</span>}
-    </button>
+      <button
+        type="button"
+        className="poster-card__open"
+        onClick={handleClick}
+        onKeyDown={(event) => {
+          if (!actions || !isContextMenuKey(event)) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          actions.openMenu(item, rect.left + rect.width / 2, rect.top + 8);
+        }}
+        aria-label={selecting ? `选择《${item.name}》` : `查看《${item.name}》详情`}
+        aria-pressed={selecting ? selected : undefined}
+      >
+        <span className="poster-card__frame">
+          <MediaArtwork
+            // Match Emby's own thumbnail view: use the 16:9 Thumb when the
+            // server has one, otherwise its 16:9 Backdrop. A poster is 2:3 and
+            // must never be cropped into this card.
+            src={landscape ? item.thumbUrl ?? item.backdropUrl : item.posterUrl}
+            alt=""
+            title={item.name}
+            fallbackLabel="无图"
+            loading="lazy"
+          />
+          {unwatched && <span className="badge-unwatched" aria-hidden="true" />}
+          {unplayedCount > 0 && (
+            <span className="badge-count" aria-hidden="true">
+              {unplayedCount > 99 ? "99+" : unplayedCount}
+            </span>
+          )}
+          {progress > 0 && <ProgressBar value={progress} className="poster-card__progress" />}
+          {selecting && (
+            <span className="poster-card__select" aria-hidden="true">
+              {selected && <Icon name="check" size={14} />}
+            </span>
+          )}
+        </span>
+        <span className="poster-card__title">{item.name}</span>
+        {subtitle && <span className="poster-card__meta">{subtitle}</span>}
+      </button>
+      {canPlay && (
+        <button
+          type="button"
+          className="poster-card__play"
+          onClick={() => onPlay?.(item)}
+          aria-label={`播放《${item.name}》`}
+          title="播放"
+        >
+          <Icon name="play" size={18} />
+        </button>
+      )}
+    </div>
   );
 }
 

@@ -236,9 +236,11 @@ function useGridColumns(ref: RefObject<HTMLDivElement | null>): number {
 function HomeLibraryGrid({
   items,
   onOpen,
+  onPlay,
 }: {
   items: EmbyLibraryItem[];
   onOpen: (item: EmbyLibraryItem) => void;
+  onPlay: (item: EmbyLibraryItem) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const columns = useGridColumns(ref);
@@ -246,7 +248,7 @@ function HomeLibraryGrid({
   return (
     <div className="home-library-grid" ref={ref}>
       {items.slice(0, columns).map((item) => (
-        <PosterCard key={item.id} item={item} landscape={false} onSelect={onOpen} />
+        <PosterCard key={item.id} item={item} landscape={false} onSelect={onOpen} onPlay={onPlay} />
       ))}
     </div>
   );
@@ -309,6 +311,7 @@ function HomeLibrarySection({
   userId,
   refreshKey,
   onOpen,
+  onPlay,
   onSeeLibrary,
   onRowState,
 }: {
@@ -316,6 +319,7 @@ function HomeLibrarySection({
   userId: string;
   refreshKey: number;
   onOpen: (item: EmbyLibraryItem) => void;
+  onPlay: (item: EmbyLibraryItem) => void;
   onSeeLibrary: (viewId: string) => void;
   onRowState: (viewId: string, state: HomeRowState) => void;
 }) {
@@ -379,7 +383,7 @@ function HomeLibrarySection({
           </button>
         </p>
       ) : (
-        <HomeLibraryGrid items={items} onOpen={onOpen} />
+        <HomeLibraryGrid items={items} onOpen={onOpen} onPlay={onPlay} />
       )}
     </section>
   );
@@ -451,6 +455,7 @@ export default function HomeScreen({
           userId={userId}
           refreshKey={refreshKey}
           onOpen={onOpen}
+          onPlay={onPlay}
           onSeeLibrary={onSeeLibrary}
           onRowState={reportRowState}
         />

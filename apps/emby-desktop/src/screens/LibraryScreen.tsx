@@ -16,6 +16,8 @@ export interface LibraryScreenProps {
   desktop: boolean;
   library: EmbyLibraryController;
   onOpen: (item: EmbyLibraryItem) => void;
+  /** Start playback directly from a library card's hover action. */
+  onPlay: (item: EmbyLibraryItem) => void;
   /** Toolbar value; the query itself lives in the library data layer. */
   query: EmbyLibraryQuery;
   onQueryChange: (query: EmbyLibraryQuery) => void;
@@ -48,6 +50,7 @@ export default function LibraryScreen({
   desktop,
   library,
   onOpen,
+  onPlay,
   query,
   onQueryChange,
   viewModes,
@@ -143,7 +146,13 @@ export default function LibraryScreen({
           ) : (
             <div className={`poster-grid${landscape ? " poster-grid--landscape" : ""}`}>
               {library.items.map((item) => (
-                <PosterCard key={item.id} item={item} landscape={landscape} onSelect={onOpen} />
+                <PosterCard
+                  key={item.id}
+                  item={item}
+                  landscape={landscape}
+                  onSelect={onOpen}
+                  onPlay={onPlay}
+                />
               ))}
             </div>
           )}

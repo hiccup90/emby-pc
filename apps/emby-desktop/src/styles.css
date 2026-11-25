@@ -18,7 +18,11 @@
     #0b0c0e;
   --sidebar: rgba(0, 0, 0, 0.18);
   --surface: rgba(255, 255, 255, 0.045);
+  --surface-raised: #1a1c1f;
   --menu: #141619;
+  --text-section: 20px;
+  --text-body: 14px;
+  --text-meta: 12.5px;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.14);
   --text: #f4f1ea;
@@ -489,7 +493,7 @@ button:disabled {
 
 .page-title {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--text-section);
   font-weight: 700;
 }
 
@@ -560,13 +564,13 @@ button:disabled {
 
 .hub__title {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--text-section);
   font-weight: 600;
 }
 
 .hub__meta {
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: var(--text-meta);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -695,7 +699,8 @@ button:disabled {
 }
 
 .continue-card__open,
-.poster-card {
+.poster-card,
+.poster-card__open {
   display: grid;
   min-width: 0;
   align-content: start;
@@ -707,12 +712,23 @@ button:disabled {
   text-align: left;
 }
 
-.continue-card__open {
+.continue-card__open,
+.poster-card__open {
   width: 100%;
 }
 
+.poster-card {
+  /* 8px frame margin + 24px title + 20px meta. */
+  --poster-card-text-h: 52px;
+  position: relative;
+}
+
+.poster-card--bare {
+  --poster-card-text-h: 32px;
+}
+
 .continue-card__open:focus-visible,
-.poster-card:focus-visible {
+.poster-card__open:focus-visible {
   outline: none;
 }
 
@@ -753,7 +769,7 @@ button:disabled {
 .continue-card:hover .continue-card__frame,
 .poster-card:hover .poster-card__frame,
 .continue-card__open:focus-visible .continue-card__frame,
-.poster-card:focus-visible .poster-card__frame {
+.poster-card__open:focus-visible .poster-card__frame {
   box-shadow: 0 0 0 2px var(--accent), 0 12px 26px rgba(0, 0, 0, 0.45);
 }
 
@@ -787,11 +803,43 @@ button:disabled {
   pointer-events: auto;
 }
 
+.poster-card__play {
+  position: absolute;
+  top: calc((100% - var(--poster-card-text-h)) / 2);
+  left: 50%;
+  z-index: 1;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: rgba(229, 160, 13, 0.94);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.9);
+  transition: opacity 0.16s ease, transform 0.16s ease, background-color 0.15s ease;
+  pointer-events: none;
+}
+
+.poster-card:hover .poster-card__play,
+.poster-card:focus-within .poster-card__play {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+  pointer-events: auto;
+}
+
+.poster-card__play:hover {
+  background: var(--accent-hover);
+}
+
 .continue-card__title,
 .poster-card__title {
   overflow: hidden;
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 400;
   line-height: 24px;
   text-overflow: ellipsis;
@@ -802,7 +850,7 @@ button:disabled {
 .poster-card__meta {
   overflow: hidden;
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: var(--text-meta);
   line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -900,7 +948,7 @@ button:disabled {
 .continue-card:hover .media-artwork img,
 .poster-card:hover .media-artwork img,
 .continue-card__open:focus-visible .media-artwork img,
-.poster-card:focus-visible .media-artwork img {
+.poster-card__open:focus-visible .media-artwork img {
   transform: scale(1.035);
 }
 
@@ -933,7 +981,8 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .continue-card,
   .poster-card,
-  .continue-card__play {
+  .continue-card__play,
+  .poster-card__play {
     transition: none;
   }
 }
@@ -1413,26 +1462,110 @@ button:disabled {
 .detail-track {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   color: var(--text-3);
   font-size: 11px;
 }
 
-.detail-track__select {
+.detail-track__label {
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.detail-track__menu {
+  position: relative;
+}
+
+.detail-track__button {
+  display: inline-flex;
+  height: 36px;
   max-width: 240px;
-  height: 34px;
-  padding: 0 12px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   color: var(--text);
   background: rgba(0, 0, 0, 0.3);
-  font-size: 12px;
-  backdrop-filter: blur(12px);
+  font-size: 12.5px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.detail-track__select option {
-  color: var(--text);
+.detail-track__button:hover,
+.detail-track__button[aria-expanded="true"] {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.detail-track__button[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.detail-track__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-track__button > svg {
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+
+/* Beside the trigger: the hero clips content below its bottom edge, and a
+   drop-up would cover the primary play button. */
+.detail-track__options {
+  position: absolute;
+  z-index: 3;
+  bottom: 0;
+  left: calc(100% + 8px);
+  width: 220px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: var(--menu);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
+}
+
+.detail-track__option {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-2);
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+}
+
+.detail-track__option:hover,
+.detail-track__option:focus-visible {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.detail-track__option.is-selected {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.detail-track__option > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-track__option > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
 }
 
 .detail-body {
@@ -1448,7 +1581,7 @@ button:disabled {
   max-width: 860px;
   margin: 8px 0 0;
   color: var(--text-2);
-  font-size: 14px;
+  font-size: var(--text-body);
   line-height: 1.75;
   white-space: pre-line;
 }
@@ -1544,14 +1677,14 @@ button:disabled {
 
 .section-title {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--text-section);
   font-weight: 600;
 }
 
 .section-summary {
   margin-left: auto;
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1618,7 +1751,7 @@ button:disabled {
 .episode-row {
   display: grid;
   width: 100%;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
+  grid-template-columns: 160px minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
   padding: 14px 62px 14px 4px;
@@ -1641,44 +1774,77 @@ button:disabled {
   opacity: 0.55;
 }
 
-.episode-row__index {
+.episode-row__still {
   position: relative;
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  justify-self: center;
+  display: block;
+  width: 160px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 6px;
+  background: linear-gradient(160deg, #1a1d21, #101214);
 }
 
-.episode-row__number {
-  color: var(--text-2);
-  font-size: 16px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.episode-row__still img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
-.episode-row__play {
+.episode-row__still-fallback {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  border-radius: 50%;
+  color: var(--text-3);
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.episode-row__still-index {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.62);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.episode-row__still-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   color: var(--accent-ink);
-  background: var(--accent);
+  background: rgba(0, 0, 0, 0.26);
   opacity: 0;
-  transform: scale(0.85);
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.15s ease;
 }
 
-.episode-row:hover:not(:disabled) .episode-row__play,
-.episode-row:focus-visible .episode-row__play {
+.episode-row__still-play svg {
+  width: 17px;
+  height: 17px;
+  padding: 8px;
+  border-radius: 50%;
+  background: rgba(229, 160, 13, 0.94);
+  box-sizing: content-box;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+}
+
+.episode-row:hover:not(:disabled) .episode-row__still-play,
+.episode-row:focus-visible .episode-row__still-play {
   opacity: 1;
-  transform: none;
 }
 
-.episode-row:hover:not(:disabled) .episode-row__number,
-.episode-row:focus-visible .episode-row__number {
-  opacity: 0;
+.episode-row__still-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
 }
 
 .episode-row__body {
@@ -1698,7 +1864,7 @@ button:disabled {
 
 .episode-row__meta {
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: var(--text-meta);
 }
 
 .episode-row__overview {
@@ -1709,13 +1875,6 @@ button:disabled {
   line-height: 1.55;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-}
-
-.episode-row__progress {
-  width: min(240px, 60%);
-  margin-top: 6px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.14);
 }
 
 .episode-row__state {
@@ -1998,6 +2157,16 @@ button:disabled {
     min-height: 520px;
   }
 
+  .episode-row {
+    grid-template-columns: 136px minmax(0, 1fr) auto;
+    gap: 12px;
+    padding-right: 54px;
+  }
+
+  .episode-row__still {
+    width: 136px;
+  }
+
   .detail-cinema__content {
     width: 100%;
   }
@@ -2007,7 +2176,14 @@ button:disabled {
   }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 760px) {
+  /* The hero is narrow here; a right-hand menu would run off screen. */
+  .detail-track__options {
+    right: 0;
+    left: auto;
+    bottom: calc(100% + 6px);
+  }
+
   .detail-cinema {
     min-height: 440px;
   }
@@ -2055,4 +2231,20 @@ button:disabled {
 
 .episode-list__item--focused .episode-row__title {
   color: var(--accent);
+}
+
+@media (max-width: 600px) {
+  .episode-row {
+    grid-template-columns: 112px minmax(0, 1fr) auto;
+    gap: 10px;
+    padding-right: 48px;
+  }
+
+  .episode-row__still {
+    width: 112px;
+  }
+
+  .episode-watch {
+    right: 8px;
+  }
 }
