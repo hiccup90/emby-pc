@@ -642,7 +642,7 @@ export function useEmbyLibrary(
         let resumeFailure: string | null = null;
         if (resumeResult.status === "fulfilled") {
           resumable = await Promise.all(
-            resumeResult.value.items.map((item) => decorateItem(item, true, 640)),
+            resumeResult.value.items.map((item) => decorateItem(item, true, 640, true)),
           );
           if (generation !== generationRef.current) return;
         } else {
@@ -810,7 +810,7 @@ export function useEmbyLibrary(
           return;
         }
         const resumable = await Promise.all(
-          page.items.map((item) => decorateItem(item, true, 640)),
+          page.items.map((item) => decorateItem(item, true, 640, true)),
         );
         if (generation !== generationRef.current || requestId !== resumeRequestRef.current) {
           return;
@@ -900,7 +900,7 @@ export function useEmbyDetail(
 
     void embyItem(itemId)
       .then(async (next) => {
-        const decorated = await decorateItem(next, true, 600);
+        const decorated = await decorateItem(next, true, 600, true);
         if (disposed) return;
         setItem(decorated);
         setLoading(false);

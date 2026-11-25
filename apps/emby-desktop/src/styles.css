@@ -560,8 +560,8 @@ button:disabled {
 
 .hub__title {
   margin: 0;
-  font-size: 21px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 600;
 }
 
 .hub__meta {
@@ -802,7 +802,7 @@ button:disabled {
 .poster-card__meta {
   overflow: hidden;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -810,7 +810,7 @@ button:disabled {
 
 .continue-card__meta {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -821,19 +821,12 @@ button:disabled {
   white-space: nowrap;
 }
 
-/* Remaining time sits on the artwork so the title/meta line stays short. */
+/* Remaining time sits under the artwork with the episode line, so the still
+   stays clean and the numbers line up across the row. */
 .continue-card__remaining {
-  position: absolute;
-  right: 10px;
-  bottom: 12px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  color: rgba(255, 255, 255, 0.92);
-  background: rgba(0, 0, 0, 0.62);
-  backdrop-filter: blur(6px);
-  font-size: 11.5px;
-  font-weight: 600;
-  line-height: 18px;
+  flex: 0 0 auto;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -1269,6 +1262,7 @@ button:disabled {
   letter-spacing: -0.012em;
   line-height: 0.86;
   overflow-wrap: anywhere;
+  text-wrap: balance;
   text-transform: uppercase;
   text-shadow: 0 4px 34px rgba(0, 0, 0, 0.45);
 }
@@ -1334,6 +1328,7 @@ button:disabled {
   gap: 16px;
   color: var(--text-3);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-actions {
@@ -1374,27 +1369,28 @@ button:disabled {
   min-height: 44px;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--line-strong);
+  border: 0;
   border-radius: 50%;
-  color: var(--text-2);
-  background: rgba(0, 0, 0, 0.26);
-  backdrop-filter: blur(14px);
+  color: rgba(244, 241, 234, 0.72);
+  background: transparent;
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.55));
   transition:
     color 0.15s ease,
-    background-color 0.15s ease,
-    border-color 0.15s ease;
+    background-color 0.15s ease;
 }
 
 .detail-action-toggle:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.28);
   color: var(--text);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .detail-action-toggle.is-active {
-  border-color: rgba(229, 160, 13, 0.55);
   color: var(--accent);
   background: rgba(229, 160, 13, 0.14);
+}
+
+.detail-action-toggle.is-active:hover:not(:disabled) {
+  background: rgba(229, 160, 13, 0.22);
 }
 
 .detail-action-toggle:disabled {
@@ -1530,6 +1526,7 @@ button:disabled {
 /* ---- episodes ---------------------------------------------------------------------- */
 
 .episodes {
+  max-width: 980px;
   margin-top: 36px;
   scroll-margin-top: 20px;
 }
@@ -1548,7 +1545,7 @@ button:disabled {
 .section-title {
   margin: 0;
   font-size: 20px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .section-summary {
@@ -1693,7 +1690,7 @@ button:disabled {
 .episode-row__title {
   overflow: hidden;
   color: var(--text);
-  font-size: 14.5px;
+  font-size: 15.5px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1708,7 +1705,7 @@ button:disabled {
   display: -webkit-box;
   overflow: hidden;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.55;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;

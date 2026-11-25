@@ -684,7 +684,7 @@ export default function DetailScreen({
   const rating = formatCommunityRating(item.communityRating);
   const displayTitle = episode && item.seriesName ? item.seriesName : item.name;
   const progressLabel =
-    progressItem.type === "Episode"
+    progressItem.type === "Episode" && !episode
       ? [compactEpisodeLabel(progressItem), progressItem.name].filter(Boolean).join(" · ")
       : "上次看到";
   const mediaKicker = episode
@@ -745,7 +745,7 @@ export default function DetailScreen({
       <section className="detail-cinema" aria-labelledby="detail-title" aria-busy={detail.loading}>
         <MediaArtwork
           className="detail-cinema__art"
-          src={item.backdropUrl ?? item.posterUrl}
+          src={item.backdropUrl ?? item.thumbUrl ?? item.posterUrl}
           alt=""
           title={displayTitle}
           loading="eager"
@@ -828,7 +828,7 @@ export default function DetailScreen({
                   {pendingAction === "played" ? (
                     <span className="spinner spinner--small" aria-hidden="true" />
                   ) : (
-                    <Icon name="check" size={17} />
+                    <Icon name="check" size={19} />
                   )}
                 </button>
                 <button
@@ -843,7 +843,7 @@ export default function DetailScreen({
                   {pendingAction === "favorite" ? (
                     <span className="spinner spinner--small" aria-hidden="true" />
                   ) : (
-                    <HeartIcon filled={favoriteState === true} />
+                    <HeartIcon filled={favoriteState === true} size={19} />
                   )}
                 </button>
               </>

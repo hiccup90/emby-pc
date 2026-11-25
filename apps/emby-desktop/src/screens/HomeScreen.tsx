@@ -74,7 +74,7 @@ function HomeHero({
     <section className="home-hero" aria-labelledby="home-hero-title">
       <MediaArtwork
         className="home-hero__art"
-        src={item.backdropUrl ?? item.posterUrl}
+        src={item.backdropUrl ?? item.thumbUrl ?? item.posterUrl}
         alt=""
         title={title}
         loading="eager"
@@ -104,7 +104,7 @@ function HomeHero({
           <div className="home-hero__progress">
             <ProgressBar value={progress} className="home-hero__bar" />
             <div className="home-hero__progress-copy">
-              <span>{episode ? `${episodeLabel} · ${item.name}` : "上次看到"}</span>
+              <span>{episode ? `已看 ${Math.round(progress * 100)}%` : "上次看到"}</span>
               {remaining && <span>{remaining}</span>}
             </div>
           </div>

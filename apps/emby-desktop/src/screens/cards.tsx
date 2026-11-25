@@ -157,8 +157,7 @@ export function ContinueCard({
         aria-pressed={selecting ? selected : undefined}
       >
         <span className="continue-card__frame">
-          <MediaArtwork src={item.backdropUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
-          {remaining && <span className="continue-card__remaining">{remaining}</span>}
+          <MediaArtwork src={item.backdropUrl ?? item.thumbUrl ?? item.posterUrl} alt="" title={title} loading="lazy" />
           <ProgressBar value={progress} className="continue-card__progress" />
           {selecting && (
             <span className="continue-card__select" aria-hidden="true">
@@ -169,6 +168,7 @@ export function ContinueCard({
         <span className="continue-card__title">{title}</span>
         <span className="continue-card__meta">
           <span className="continue-card__meta-main">{metaMain || "继续观看"}</span>
+          {remaining && <span className="continue-card__remaining">{remaining}</span>}
         </span>
       </button>
       <button
