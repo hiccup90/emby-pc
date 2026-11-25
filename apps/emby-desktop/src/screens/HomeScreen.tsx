@@ -53,11 +53,18 @@ function HomeHero({
   // backdrop: after playback the newest resume item often has no backdrop, and
   // its Primary is the 2:3 poster. Only use Primary when Emby reports a wide
   // aspect ratio; otherwise fall back to the hero's dark field.
+  // An episode's Primary is a screen grab, often a tight close-up. Its
+  // series backdrop is the cinematic art the detail page shows, and Emby
+  // already inherits it as ParentBackdrop. Prefer that for the wide hero.
   const aspect = item.primaryImageAspectRatio;
   const widePrimary =
     aspect != null ? aspect >= 1.2 : item.type === "Episode";
+  const inherited = episode ? item.parentBackdropUrl : null;
   const artwork =
-    item.backdropUrl ?? item.thumbUrl ?? (widePrimary ? item.posterUrl : null);
+    inherited ??
+    item.backdropUrl ??
+    item.thumbUrl ??
+    (widePrimary ? item.posterUrl : null);
   const episodeLabel = episode ? compactEpisodeLabel(item) : "";
   const title = episode && item.seriesName ? item.seriesName : item.name;
   const subtitle = episode

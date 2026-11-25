@@ -67,6 +67,9 @@ export interface EmbyItem {
   runTimeTicks: number | null;
   imageTags: Record<string, string>;
   backdropImageTags: string[];
+  /** Series/season backdrop inherited by an episode (`ParentBackdrop*`). */
+  parentBackdropItemId?: string | null;
+  parentBackdropImageTags?: string[];
   /** Emby's PrimaryImageAspectRatio (portrait poster < 1, landscape > 1). */
   primaryImageAspectRatio?: number | null;
   userData: EmbyUserData;

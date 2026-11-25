@@ -35,6 +35,8 @@ export type DecoratedItem<T extends EmbyItem = EmbyItem> = T & {
   posterUrl: string | null;
   thumbUrl: string | null;
   backdropUrl: string | null;
+  /** Episode-only: the series/season backdrop Emby inherits for it. */
+  parentBackdropUrl: string | null;
 };
 
 /** Decorate one raw item with resolved poster/thumbnail/backdrop URLs. */
@@ -44,12 +46,25 @@ export async function decorateItem<T extends EmbyItem>(
   posterWidth = 400,
   includeThumb = false,
 ): Promise<DecoratedItem<T>> {
-  const [posterUrl, thumbUrl, backdropUrl] = await Promise.all([
+  const parentBackdropItemId = item.parentBackdropItemId;
+  const parentBackdropTag = item.parentBackdropImageTags?.[0];
+  const [posterUrl, thumbUrl, backdropUrl, parentBackdropUrl] = await Promise.all([
     safeImageUrl(item, "Primary", posterWidth),
     includeThumb ? safeImageUrl(item, "Thumb", 640) : Promise.resolve(null),
     includeBackdrop ? safeImageUrl(item, "Backdrop", 1280) : Promise.resolve(null),
+    includeBackdrop && parentBackdropItemId && parentBackdropTag
+      ? safeImageUrl(
+          {
+            id: parentBackdropItemId,
+            imageTags: {},
+            backdropImageTags: [parentBackdropTag],
+          },
+          "Backdrop",
+          1280,
+        )
+      : Promise.resolve(null),
   ]);
-  return { ...item, posterUrl, thumbUrl, backdropUrl };
+  return { ...item, posterUrl, thumbUrl, backdropUrl, parentBackdropUrl };
 }
 
 /** Decorate a list of raw items (search results, actor works, home rows). */

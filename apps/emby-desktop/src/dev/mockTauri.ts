@@ -175,6 +175,12 @@ function makeItem(fields: Partial<EmbyItem> & Pick<EmbyItem, "id" | "name" | "ty
     runTimeTicks: null,
     imageTags: scenario.noArt ? {} : { Primary: "p", Thumb: "t" },
     backdropImageTags: scenario.noArt || fields.type === "Episode" ? [] : ["b"],
+    // Emby inherits the series backdrop for an episode; the home hero uses it
+    // instead of the episode's close-up Primary screenshot.
+    parentBackdropItemId:
+      fields.type === "Episode" && !scenario.noArt ? fields.seriesId ?? null : null,
+    parentBackdropImageTags:
+      fields.type === "Episode" && !scenario.noArt && fields.seriesId ? ["b"] : [],
     userData: { playbackPositionTicks: null, played: false, favorite: false, unplayedItemCount: null },
     seriesId: null,
     seriesName: null,

@@ -249,7 +249,13 @@ function emptyStore(): LibraryStore {
 }
 
 function plainLibraryItem(item: EmbyItem): EmbyLibraryItem {
-  return { ...item, posterUrl: null, thumbUrl: null, backdropUrl: null };
+  return {
+    ...item,
+    posterUrl: null,
+    thumbUrl: null,
+    backdropUrl: null,
+    parentBackdropUrl: null,
+  };
 }
 
 /** Map a structured command error to a session reason; unknown errors are server errors. */

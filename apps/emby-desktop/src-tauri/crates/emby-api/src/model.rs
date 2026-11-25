@@ -58,6 +58,10 @@ pub struct EmbyItem {
     pub run_time_ticks: Option<i64>,
     pub image_tags: HashMap<String, String>,
     pub backdrop_image_tags: Vec<String>,
+    /// Series/season backdrop inherited by an episode. The episode's own
+    /// Primary is a close-up screen grab; the hero prefers this wider art.
+    pub parent_backdrop_item_id: Option<String>,
+    pub parent_backdrop_image_tags: Vec<String>,
     pub primary_image_aspect_ratio: Option<f64>,
     pub user_data: EmbyUserData,
     pub series_id: Option<String>,
@@ -261,6 +265,8 @@ pub(crate) struct RawItem {
     pub run_time_ticks: Option<i64>,
     pub image_tags: Option<HashMap<String, String>>,
     pub backdrop_image_tags: Option<Vec<String>>,
+    pub parent_backdrop_item_id: Option<String>,
+    pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub primary_image_aspect_ratio: Option<f64>,
     pub user_data: Option<RawUserData>,
     pub series_id: Option<String>,
@@ -453,6 +459,8 @@ impl RawItem {
             run_time_ticks: self.run_time_ticks,
             image_tags: self.image_tags.unwrap_or_default(),
             backdrop_image_tags: self.backdrop_image_tags.unwrap_or_default(),
+            parent_backdrop_item_id: self.parent_backdrop_item_id,
+            parent_backdrop_image_tags: self.parent_backdrop_image_tags.unwrap_or_default(),
             primary_image_aspect_ratio: self.primary_image_aspect_ratio,
             user_data: self.user_data.unwrap_or_default().into(),
             series_id: self.series_id,
@@ -740,6 +748,15 @@ mod tests {
             .into_item();
         assert_eq!(item.user_data, EmbyUserData::default());
         assert!(!item.user_data.favorite);
+    }
+
+    #[test]
+    fn parent_backdrop_reaches_the_frontend_contract() {
+        let raw = r#"{"Id":"e1","Name":"Episode","Type":"Episode","SeriesId":"s1","ParentBackdropItemId":"s1","ParentBackdropImageTags":["tag"]}"#;
+        let item = serde_json::from_str::<RawItem>(raw).unwrap().into_item();
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["parentBackdropItemId"], "s1");
+        assert_eq!(value["parentBackdropImageTags"][0], "tag");
     }
 
     #[test]
