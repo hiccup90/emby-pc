@@ -139,7 +139,16 @@ fn main() {
                 // caused a show/hide loop with the overlay's own activation
                 // attempts. The cursor poller checks the foreground window
                 // separately so hover wakes only apply to the active player.
-                WindowEvent::Focused(_) => {}
+                WindowEvent::Focused(false) => {
+                    // A hidden native cursor must not follow the user into
+                    // another app. Showing it on focus loss is harmless when
+                    // it was already visible; the overlay re-hides it on the
+                    // next bar transition.
+                    if let Some(service) = app.try_state::<player::PlayerService>() {
+                        service.set_cursor_hidden(false);
+                    }
+                }
+                WindowEvent::Focused(true) => {}
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     if let Some(state) = app.try_state::<window_state::WindowState>() {
                         state.track(window);
