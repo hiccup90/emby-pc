@@ -212,6 +212,7 @@ fn main() {
             player::player_stats,
             player::player_toggle_fullscreen,
             player::player_subscribe,
+            player::player_set_cursor_hidden,
             overlay::player_ui_mode,
             overlay::overlay_set_expanded,
             overlay::overlay_set_interactive,

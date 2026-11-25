@@ -19,6 +19,7 @@ import {
   onOverlayWake,
   publishOverlayVisibility,
   requestOverlayState,
+  setPlayerCursorHidden,
   sendOverlayAction,
   setOverlayExpanded,
   setOverlayInteractive,
@@ -442,6 +443,9 @@ export default function Overlay() {
     void publishOverlayVisibility(visible).catch((reason) => {
       console.warn("[overlay] could not publish cursor visibility", reason);
     });
+    void setPlayerCursorHidden(!visible).catch((reason) => {
+      console.warn("[overlay] could not toggle the native cursor", reason);
+    });
   }, [desktop, visible]);
 
   useEffect(() => {
@@ -454,6 +458,7 @@ export default function Overlay() {
       void setOverlayInteractive(false).catch(() => {
         // The window is closing; nothing left to report.
       });
+      void setPlayerCursorHidden(false).catch(() => {});
     };
   }, [desktop]);
 

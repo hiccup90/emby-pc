@@ -94,6 +94,7 @@ export async function invokePlayerToggleFullscreen(): Promise<boolean> {
   return invoke<boolean>("player_toggle_fullscreen");
 }
 
+
 export function createPlayerChannel(onEvent: (snapshot: PlayerSnapshot) => void): Channel<PlayerSnapshot> {
   const channel = new Channel<PlayerSnapshot>();
   channel.onmessage = onEvent;

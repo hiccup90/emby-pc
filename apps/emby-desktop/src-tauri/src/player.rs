@@ -15,7 +15,7 @@ use emby_mpv::{
     SHUTDOWN_TIMEOUT, STATUS_IDLE,
 };
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::settings::{AppSettings, SettingsStore, VideoQuality};
 use crate::video_window::VideoHost;
@@ -611,6 +611,14 @@ impl PlayerService {
         eprintln!("[player] video re-sync after fullscreen: posted={posted}");
     }
 
+    /// Hide/show the OS cursor over the native video host. Must run on the
+    /// main thread: `VideoHost` owns Win32 windows and their class cursors.
+    pub fn set_cursor_hidden(&self, hidden: bool) {
+        if let Some(host) = &self.host {
+            host.set_cursor_hidden(hidden);
+        }
+    }
+
     /// Stop mpv (quit + join, 2 s timeout) and then destroy the host window.
     /// Must be called on the main thread. Idempotent.
     pub fn shutdown(&self) {
@@ -781,4 +789,17 @@ pub fn player_subscribe(
     state: State<'_, PlayerService>,
 ) -> Result<(), String> {
     state.subscribe(on_event)
+}
+
+/// Hide/show the cursor together with the controls overlay. The page sends
+/// this on every bar transition; the Win32 calls stay on the main thread.
+#[tauri::command]
+pub fn player_set_cursor_hidden(app: tauri::AppHandle, hidden: bool) -> Result<(), String> {
+    app.clone()
+        .run_on_main_thread(move || {
+            if let Some(service) = app.try_state::<PlayerService>() {
+                service.set_cursor_hidden(hidden);
+            }
+        })
+        .map_err(|err| format!("player_set_cursor_hidden: {err}"))
 }

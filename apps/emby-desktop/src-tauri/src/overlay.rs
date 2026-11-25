@@ -501,6 +501,16 @@ impl OverlayState {
             }
         }
 
+        // Either direction starts with a visible arrow: entering the player
+        // shows the bar first; leaving must never leave the desktop cursor
+        // hidden. Overlay visibility re-hides it once the bar fades.
+        let app_for_cursor = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(service) = app_for_cursor.try_state::<crate::player::PlayerService>() {
+                service.set_cursor_hidden(false);
+            }
+        });
+
         if player {
             let mut first_error = None;
             if let Err(err) = main.set_background_color(Some(Color(0, 0, 0, 255))) {
@@ -1926,8 +1936,8 @@ unsafe extern "system" fn caption_guard_proc(
     _data: usize,
 ) -> isize {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WS_CAPTION, WS_DLGFRAME, WS_EX_TOOLWINDOW,
-        WS_EX_WINDOWEDGE,
+        SetCursor, GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WM_SETCURSOR, WS_CAPTION, WS_DLGFRAME,
+        WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE,
     };
 
     match msg {
@@ -1960,6 +1970,10 @@ unsafe extern "system" fn caption_guard_proc(
                     }
                 }
             }
+        }
+        WM_SETCURSOR if crate::video_window::cursor_is_hidden() => {
+            SetCursor(std::ptr::null_mut());
+            return 1;
         }
         WM_STYLECHANGED_MSG => {
             // Backstop only. If a change was already queued when the guard went

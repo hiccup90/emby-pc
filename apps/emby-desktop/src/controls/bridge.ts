@@ -71,6 +71,11 @@ export async function sendOverlayAction(action: OverlayAction): Promise<void> {
   await emitTo("main", "overlay-action", action);
 }
 
+/** Overlay window: ask Rust to hide/show the native video/mpv cursor. */
+export async function setPlayerCursorHidden(hidden: boolean): Promise<void> {
+  await invoke<void>("player_set_cursor_hidden", { hidden });
+}
+
 /**
  * Overlay window: mirror the bar's visibility. The cursor belongs to the
  * WebView under the mouse-transparent video host, so the main page has to set

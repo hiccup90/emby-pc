@@ -49,6 +49,15 @@ function HomeHero({
 }) {
   const actions = useItemActions();
   const episode = item.type === "Episode";
+  // A portrait poster blown up to a full-width hero is a close-up crop, not a
+  // backdrop: after playback the newest resume item often has no backdrop, and
+  // its Primary is the 2:3 poster. Only use Primary when Emby reports a wide
+  // aspect ratio; otherwise fall back to the hero's dark field.
+  const aspect = item.primaryImageAspectRatio;
+  const widePrimary =
+    aspect != null ? aspect >= 1.2 : item.type === "Episode";
+  const artwork =
+    item.backdropUrl ?? item.thumbUrl ?? (widePrimary ? item.posterUrl : null);
   const episodeLabel = episode ? compactEpisodeLabel(item) : "";
   const title = episode && item.seriesName ? item.seriesName : item.name;
   const subtitle = episode
@@ -74,7 +83,7 @@ function HomeHero({
     <section className="home-hero" aria-labelledby="home-hero-title">
       <MediaArtwork
         className="home-hero__art"
-        src={item.backdropUrl ?? item.thumbUrl ?? item.posterUrl}
+        src={artwork}
         alt=""
         title={title}
         loading="eager"

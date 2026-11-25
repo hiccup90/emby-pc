@@ -48,14 +48,14 @@ mod imp {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, CREATESTRUCTW, DefWindowProcW, DestroyWindow, EnumChildWindows,
-        GetClientRect,
-        GetParent, GetWindow, GetWindowLongPtrW, KillTimer, LoadCursorW, PostMessageW,
-        RegisterClassExW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA,
+        GetClientRect, GetParent, GetWindow, GetWindowLongPtrW, KillTimer, LoadCursorW,
+        PostMessageW, RegisterClassExW, SetClassLongPtrW, SetCursor, SetTimer,
+        SetWindowLongPtrW, SetWindowPos, ShowCursor, ShowWindow, GCLP_HCURSOR, GWLP_USERDATA,
         GWL_EXSTYLE, GW_HWNDPREV, HTTRANSPARENT, HWND_TOP, IDC_ARROW, MA_NOACTIVATE,
         SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
         SW_SHOWNA, WM_APP, WM_CREATE, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-        WM_PAINT, WM_PARENTNOTIFY, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
-        WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOPARENTNOTIFY, WS_EX_TRANSPARENT,
+        WM_PAINT, WM_PARENTNOTIFY, WM_SETCURSOR, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_CHILD,
+        WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOPARENTNOTIFY, WS_EX_TRANSPARENT,
     };
 
     /// `WM_APP + 1`: "apply the latest `VideoSync`" (posted from IPC threads so
@@ -91,6 +91,14 @@ mod imp {
     /// one pixel wider is invisible, while one pixel narrower would expose the
     /// seam.
     const HOST_BLEED: i32 = 1;
+
+    /// True while the controls are hidden. The host window procedure, the
+    /// main-window subclass and the mpv child all consult this one flag.
+    static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+    pub fn cursor_is_hidden() -> bool {
+        CURSOR_HIDDEN.load(Ordering::SeqCst)
+    }
 
     static CLASS_REGISTRATION: OnceLock<Result<(), u32>> = OnceLock::new();
 
@@ -258,8 +266,42 @@ mod imp {
             unsafe { PostMessageW(self.hwnd as HWND, WM_EMBY_VIDEO_SYNC, 0, 0) != 0 }
         }
 
+        /// Hide/show the arrow cursor over the native video and its mpv child.
+        ///
+        /// Called on the main thread. `ShowCursor` covers the thread that owns
+        /// this window; clearing the class cursor and answering `WM_SETCURSOR`
+        /// keeps Windows from restoring the arrow when the pointer moves over
+        /// the host or the mpv child. The page still sets `cursor: none` for the
+        /// WebView case, because that cursor belongs to a different window.
+        pub fn set_cursor_hidden(&self, hidden: bool) {
+            if self.state.destroyed.load(Ordering::SeqCst) || self.hwnd == 0 {
+                return;
+            }
+            if CURSOR_HIDDEN.swap(hidden, Ordering::SeqCst) == hidden {
+                return;
+            }
+            unsafe {
+                let cursor = if hidden {
+                    std::ptr::null_mut()
+                } else {
+                    LoadCursorW(std::ptr::null_mut(), IDC_ARROW)
+                };
+                // Per-thread display counter: exactly one FALSE on hide and one
+                // TRUE on show, so a show/hide cycle cannot unbalance it.
+                ShowCursor(if hidden { 0 } else { 1 });
+                let hwnd = self.hwnd as HWND;
+                SetClassLongPtrW(hwnd, GCLP_HCURSOR, cursor as isize);
+                set_direct_child_class_cursor(hwnd, cursor);
+                SetCursor(cursor);
+            }
+        }
+
         /// Must be called on the main thread, after the mpv thread terminated.
         pub fn destroy(&self) {
+            if self.state.destroyed.load(Ordering::SeqCst) {
+                return;
+            }
+            self.set_cursor_hidden(false);
             if self.state.destroyed.swap(true, Ordering::SeqCst) {
                 return;
             }
@@ -406,6 +448,14 @@ mod imp {
                 }
                 0
             }
+            WM_SETCURSOR => {
+                if CURSOR_HIDDEN.load(Ordering::SeqCst) {
+                    SetCursor(std::ptr::null_mut());
+                    1
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
             WM_NCDESTROY => {
                 KillTimer(hwnd, TIMER_ID);
                 let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Arc<HostState>;
@@ -450,6 +500,31 @@ mod imp {
             hwnd,
             Some(sync_child_proc),
             &mut context as *mut ChildSyncContext as LPARAM,
+        );
+    }
+
+    struct ChildCursorContext {
+        host: HWND,
+        cursor: *mut c_void,
+    }
+
+    /// `GCLP_HCURSOR` is class-wide. mpv has one VO child per host, but the
+    /// class can outlive this session, so `set_cursor_hidden(false)` puts the
+    /// arrow back before the host is destroyed.
+    unsafe extern "system" fn child_cursor_proc(child: HWND, lparam: LPARAM) -> i32 {
+        let context = &*(lparam as *const ChildCursorContext);
+        if GetParent(child) == context.host {
+            SetClassLongPtrW(child, GCLP_HCURSOR, context.cursor as isize);
+        }
+        1
+    }
+
+    unsafe fn set_direct_child_class_cursor(host: HWND, cursor: *mut c_void) {
+        let mut context = ChildCursorContext { host, cursor };
+        EnumChildWindows(
+            host,
+            Some(child_cursor_proc),
+            &mut context as *mut ChildCursorContext as LPARAM,
         );
     }
 
@@ -553,7 +628,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::VideoHost;
+pub use imp::{cursor_is_hidden, VideoHost};
 
 #[cfg(not(windows))]
 mod stub {
@@ -581,6 +656,8 @@ mod stub {
         pub fn hide(&self) -> bool {
             false
         }
+
+        pub fn set_cursor_hidden(&self, _hidden: bool) {}
 
         pub fn destroy(&self) {}
     }
