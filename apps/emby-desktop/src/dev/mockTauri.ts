@@ -253,6 +253,14 @@ children.set(
           productionYear: seed.year + seasonIndex,
           runTimeTicks,
           overview: OVERVIEWS[(number + seasonIndex) % OVERVIEWS.length],
+          // Emby's Screen Grabber and TMDB episode providers write Primary;
+          // only manually added landscape stills get a Thumb tag. The first
+          // series stays Primary-only so this fallback is exercised in dev.
+          imageTags: scenario.noArt
+            ? {}
+            : seriesIndex === 0
+              ? { Primary: "p" }
+              : { Primary: "p", Thumb: "t" },
           userData: {
             playbackPositionTicks: resumeHere ? Math.round(runTimeTicks * 0.42) : null,
             played: watched,

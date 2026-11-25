@@ -468,7 +468,11 @@ function EpisodeStill({ episode, progress }: { episode: EmbyLibraryItem; progres
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
-  const tag = episode.imageTags.Thumb;
+  // Emby stores most episode stills as Primary (the Screen Grabber and TMDB
+  // episode providers both write Primary); a manual Thumb wins when present.
+  const thumbTag = episode.imageTags.Thumb;
+  const imageType: "Thumb" | "Primary" = thumbTag ? "Thumb" : "Primary";
+  const tag = thumbTag || episode.imageTags.Primary;
 
   useEffect(() => {
     setSrc(null);
@@ -478,7 +482,7 @@ function EpisodeStill({ episode, progress }: { episode: EmbyLibraryItem; progres
     if (!node) return undefined;
     let disposed = false;
     const load = () => {
-      void safeImageUrl(episode, "Thumb", 320).then((url) => {
+      void safeImageUrl(episode, imageType, 320).then((url) => {
         if (!disposed) setSrc(url);
       });
     };
@@ -502,7 +506,7 @@ function EpisodeStill({ episode, progress }: { episode: EmbyLibraryItem; progres
       disposed = true;
       observer.disconnect();
     };
-  }, [episode.id, tag]);
+  }, [episode.id, imageType, tag]);
 
   return (
     <span className="episode-row__still" ref={ref} aria-hidden="true">
