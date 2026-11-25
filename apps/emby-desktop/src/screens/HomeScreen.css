@@ -3,7 +3,8 @@
    cards themselves live in cards.tsx / styles.css; this file owns the page
    shell, the hero and the library grids. */
 
-.home-page {
+/* Repeat `.page` so this wins over the shared page padding that loads later. */
+.page.home-page {
   position: relative;
   padding-top: 0;
 }
@@ -45,7 +46,7 @@
   background:
     linear-gradient(90deg, rgba(11, 12, 14, 0.96) 0%, rgba(11, 12, 14, 0.58) 44%, rgba(11, 12, 14, 0.1) 76%, rgba(11, 12, 14, 0.28) 100%),
     linear-gradient(0deg, #0b0c0e 0%, rgba(11, 12, 14, 0.72) 24%, transparent 62%),
-    linear-gradient(180deg, rgba(11, 12, 14, 0.6) 0%, transparent 24%);
+    linear-gradient(180deg, #0b0c0e 0%, rgba(11, 12, 14, 0.72) 8%, transparent 30%);
 }
 
 .home-hero__content {

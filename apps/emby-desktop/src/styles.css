@@ -154,6 +154,12 @@ button:disabled {
   user-select: none;
 }
 
+/* The home hero begins at the title bar; dropping the hairline lets the two
+   dark surfaces meet without a visible seam. */
+.app-shell--home .titlebar {
+  box-shadow: none;
+}
+
 .titlebar__lead {
   display: flex;
   height: 100%;
