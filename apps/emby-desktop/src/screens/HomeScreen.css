@@ -188,7 +188,7 @@
 }
 
 .home-hero .home-hero__play {
-  min-height: max(44px, calc(46 * var(--home-unit)));
+  min-height: max(44px, calc(56 * var(--home-unit)));
   padding: 0 max(18px, calc(22 * var(--home-unit)));
   border-radius: 999px;
   font-weight: 600;
