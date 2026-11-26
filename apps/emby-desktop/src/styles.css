@@ -1280,8 +1280,8 @@ button:disabled {
   display: grid;
   width: min(760px, 100%);
   align-content: end;
-  gap: 10px;
-  padding: 0 var(--page-x) clamp(34px, 5.5vh, 64px);
+  gap: clamp(8px, calc(0.65vw + 3px), 13px);
+  padding: 0 var(--page-x) clamp(30px, min(5.5vh, 3.5vw), 64px);
 }
 
 .detail-kicker {
@@ -1359,13 +1359,13 @@ button:disabled {
 
 .detail-progress {
   display: grid;
-  width: min(360px, 100%);
-  gap: 7px;
+  width: clamp(320px, 42vw, 680px);
+  gap: clamp(6px, calc(0.4vw + 3px), 9px);
   margin-top: 2px;
 }
 
 .detail-progress__bar {
-  height: 2px;
+  height: clamp(2px, calc(0.1vw + 1.2px), 3px);
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.22);
 }
@@ -1377,9 +1377,9 @@ button:disabled {
 .detail-progress__copy {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: clamp(12px, calc(0.6vw + 7px), 18px);
   color: var(--text-3);
-  font-size: 11px;
+  font-size: clamp(11px, calc(0.25vw + 8.5px), 13px);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1387,8 +1387,8 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 11px;
-  margin: 8px 0 2px;
+  gap: clamp(8px, calc(0.7vw + 3px), 14px);
+  margin: clamp(6px, calc(0.5vw + 2px), 11px) 0 2px;
 }
 
 /* One solid action, then quiet circular toggles: the same hierarchy as home. */
@@ -1408,17 +1408,17 @@ button:disabled {
 }
 
 .detail-actions .button--large {
-  min-height: 46px;
-  padding: 0 22px;
+  min-height: clamp(44px, calc(1.4vw + 33.5px), 56px);
+  padding: 0 clamp(20px, calc(1.2vw + 11px), 31px);
   border-radius: 999px;
   font-weight: 600;
 }
 
 .detail-action-toggle {
   display: inline-grid;
-  width: 44px;
-  height: 44px;
-  min-height: 44px;
+  width: clamp(42px, calc(1.4vw + 31.5px), 54px);
+  height: clamp(42px, calc(1.4vw + 31.5px), 54px);
+  min-height: clamp(42px, calc(1.4vw + 31.5px), 54px);
   place-items: center;
   padding: 0;
   border: 0;
@@ -1458,21 +1458,21 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: clamp(8px, calc(0.4vw + 3px), 12px) clamp(10px, calc(0.5vw + 4px), 16px);
   margin: 4px 0 0;
 }
 
 .detail-track {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: clamp(7px, calc(0.4vw + 4px), 10px);
   color: var(--text-3);
   font-size: 11px;
 }
 
 .detail-track__label {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: clamp(11px, calc(0.15vw + 9.5px), 12.5px);
   white-space: nowrap;
 }
 
@@ -1482,16 +1482,16 @@ button:disabled {
 
 .detail-track__button {
   display: inline-flex;
-  height: 36px;
+  height: clamp(32px, calc(0.9vw + 23px), 40px);
   max-width: 240px;
   align-items: center;
-  gap: 8px;
-  padding: 0 11px;
+  gap: clamp(7px, calc(0.4vw + 4px), 10px);
+  padding: 0 clamp(10px, calc(0.8vw + 6px), 15px);
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   color: var(--text);
   background: rgba(0, 0, 0, 0.3);
-  font-size: 12.5px;
+  font-size: clamp(12.5px, calc(0.2vw + 10.5px), 14px);
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
@@ -2184,18 +2184,10 @@ button:disabled {
     bottom: calc(100% + 6px);
   }
 
-  .detail-cinema__content {
-    gap: 8px;
-    padding-bottom: 28px;
-  }
-
   .detail-title {
     font-size: clamp(36px, 10vw, 52px);
   }
 
-  .detail-progress {
-    width: 100%;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
