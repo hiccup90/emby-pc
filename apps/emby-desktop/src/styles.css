@@ -1237,7 +1237,10 @@ button:disabled {
 .detail-cinema {
   position: relative;
   display: flex;
-  min-height: clamp(520px, 70vh, 760px);
+  /* One fluid height instead of fixed 580/520/440 steps: 70vh caps tall/wide
+     windows, while 56vw keeps the backdrop near its own 16:9 crop as the
+     window narrows, so resizing no longer jumps at 1100/900/760. */
+  min-height: clamp(440px, min(70vh, 56vw), 760px);
   align-items: flex-end;
   margin: 0 calc(var(--page-x) * -1) 34px;
   overflow: hidden;
@@ -2131,10 +2134,6 @@ button:disabled {
     grid-auto-columns: 208px;
   }
 
-  .detail-cinema {
-    min-height: 580px;
-  }
-
   .detail-title {
     font-size: clamp(44px, 6vw, 76px);
   }
@@ -2162,10 +2161,6 @@ button:disabled {
     grid-template-columns: repeat(auto-fill, 208px);
   }
 
-  .detail-cinema {
-    min-height: 520px;
-  }
-
   .episode-row {
     grid-template-columns: 136px minmax(0, 1fr) auto;
     gap: 12px;
@@ -2174,10 +2169,6 @@ button:disabled {
 
   .episode-row__still {
     width: 136px;
-  }
-
-  .detail-cinema__content {
-    width: 100%;
   }
 
   .detail-title {
@@ -2191,10 +2182,6 @@ button:disabled {
     right: 0;
     left: auto;
     bottom: calc(100% + 6px);
-  }
-
-  .detail-cinema {
-    min-height: 440px;
   }
 
   .detail-cinema__content {
