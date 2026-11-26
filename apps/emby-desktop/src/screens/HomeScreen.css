@@ -13,9 +13,15 @@
    use, no extra request. Negative side margins let it run to the window edge
    while the page keeps its normal gutter for the rows below. */
 .home-hero {
+  /* One content scale for the home hero, same idea as the detail hero: the
+     title, progress, buttons, gaps and column are multiples of this unit.
+     760px ≈ 0.66, 1600px = 1.0, wide screens stop at 1.10. */
+  --home-unit: clamp(0.56px, calc(0.0405vw + 0.3524px), 1.1px);
   position: relative;
   display: flex;
-  min-height: clamp(340px, 46vh, 480px);
+  /* Height is its own group: a continuous line from 760px to ~1230px, then
+     the 46vh cap takes over. No 900/640 steps. */
+  min-height: clamp(280px, min(46vh, calc(30vw + 90px)), 480px);
   align-items: flex-end;
   margin: 0 calc(var(--page-x) * -1) 26px;
   overflow: hidden;
@@ -53,10 +59,11 @@
   position: relative;
   z-index: 1;
   display: grid;
-  width: min(720px, 100%);
+  grid-template-columns: minmax(0, 1fr);
+  width: min(calc(720 * var(--home-unit)), 100%);
   align-content: end;
-  gap: 9px;
-  padding: 0 var(--page-x) clamp(30px, 4.5vh, 46px);
+  gap: max(7px, calc(9 * var(--home-unit)));
+  padding: 0 var(--page-x) calc(46 * var(--home-unit));
 }
 
 .home-hero__kicker {
@@ -84,7 +91,7 @@
   margin: 0;
   color: var(--text);
   font-family: var(--display-font);
-  font-size: clamp(46px, 6.2vw, 100px);
+  font-size: calc(100 * var(--home-unit));
   font-weight: 700;
   letter-spacing: -0.012em;
   line-height: 0.84;
@@ -132,8 +139,9 @@
 
 .home-hero__progress {
   display: grid;
-  width: min(330px, 100%);
-  gap: 7px;
+  width: calc(330 * var(--home-unit));
+  max-width: 100%;
+  gap: max(5px, calc(7 * var(--home-unit)));
   margin-top: 3px;
 }
 
@@ -159,8 +167,8 @@
 .home-hero__actions {
   display: flex;
   align-items: center;
-  gap: 11px;
-  margin-top: 6px;
+  gap: max(8px, calc(11 * var(--home-unit)));
+  margin-top: max(4px, calc(6 * var(--home-unit)));
 }
 
 /* The one solid button on the page: warm white, amber is left for progress. */
@@ -179,17 +187,17 @@
   background: #e4dfd4;
 }
 
-.home-hero__play {
-  min-height: 46px;
-  padding: 0 22px;
+.home-hero .home-hero__play {
+  min-height: max(44px, calc(46 * var(--home-unit)));
+  padding: 0 max(18px, calc(22 * var(--home-unit)));
   border-radius: 999px;
   font-weight: 600;
 }
 
-.home-hero__icon {
+.home-hero .home-hero__icon {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: max(40px, calc(44 * var(--home-unit)));
+  height: max(40px, calc(44 * var(--home-unit)));
   place-items: center;
   padding: 0;
   border: 0;
@@ -215,8 +223,8 @@
 }
 
 .home-hero--skeleton .home-hero__content {
-  width: min(640px, 100%);
-  gap: 14px;
+  width: min(calc(640 * var(--home-unit)), 100%);
+  gap: max(10px, calc(14 * var(--home-unit)));
 }
 
 .home-hero--skeleton .skeleton-line--title {
@@ -242,51 +250,9 @@
 }
 
 @media (max-width: 900px) {
-  .home-hero {
-    min-height: 310px;
-  }
-
-  .home-hero__title {
-    font-size: clamp(42px, 9vw, 66px);
-  }
-
-  .home-hero__content {
-    gap: 8px;
-    padding-bottom: 26px;
-  }
-
   .home-library-grid {
     grid-template-columns: repeat(auto-fill, 136px);
     gap: 22px 14px;
-  }
-}
-
-@media (max-width: 640px) {
-  .home-hero {
-    min-height: 280px;
-  }
-
-  .home-hero__title {
-    max-width: 100%;
-    font-size: clamp(36px, 11vw, 52px);
-  }
-
-  .home-hero__meta {
-    font-size: 11.5px;
-  }
-
-  .home-hero__actions {
-    gap: 9px;
-  }
-
-  .home-hero__play {
-    min-height: 42px;
-    padding: 0 18px;
-  }
-
-  .home-hero__icon {
-    width: 40px;
-    height: 40px;
   }
 }
 

@@ -8,7 +8,8 @@
   color-scheme: dark;
   --titlebar-height: 48px;
   --sidebar-width: 64px;
-  --page-x: 40px;
+  /* One continuous gutter instead of the 40/28/22 steps. */
+  --page-x: clamp(22px, calc(2.4vw + 1.6px), 48px);
 
   /* Cinema-dark field: warm white text, amber kept for progress and focus. */
   --bg: #0b0c0e;
@@ -1235,6 +1236,11 @@ button:disabled {
    column of text. The image bleeds to both page edges; everything below the
    hero keeps the normal gutter. */
 .detail-cinema {
+  /* The hero's content group shares one scale: every size is a multiple of
+     this unit, so the title, progress bar, buttons, gaps and column keep the
+     1600px design's proportions at any width. 760px ≈ 0.72, 1600px = 1.0,
+     wide screens stop at 1.12. The image/height stays in its own group. */
+  --hero-unit: clamp(0.68px, calc(0.0333vw + 0.4667px), 1.12px);
   position: relative;
   display: flex;
   /* One fluid height instead of fixed 580/520/440 steps: 70vh caps tall/wide
@@ -1278,10 +1284,11 @@ button:disabled {
   position: relative;
   z-index: 1;
   display: grid;
-  width: min(760px, 100%);
+  grid-template-columns: minmax(0, 1fr);
+  width: min(calc(760 * var(--hero-unit)), 100%);
   align-content: end;
-  gap: clamp(8px, calc(0.65vw + 3px), 13px);
-  padding: 0 var(--page-x) clamp(30px, min(5.5vh, 3.5vw), 64px);
+  gap: calc(13 * var(--hero-unit));
+  padding: 0 var(--page-x) calc(55 * var(--hero-unit));
 }
 
 .detail-kicker {
@@ -1309,7 +1316,7 @@ button:disabled {
   margin: 0;
   color: var(--text);
   font-family: var(--display-font);
-  font-size: clamp(46px, calc(4.4vw + 24px), 96px);
+  font-size: calc(96 * var(--hero-unit));
   font-weight: 700;
   letter-spacing: -0.012em;
   line-height: 0.86;
@@ -1359,13 +1366,14 @@ button:disabled {
 
 .detail-progress {
   display: grid;
-  width: clamp(320px, 42vw, 680px);
-  gap: clamp(6px, calc(0.4vw + 3px), 9px);
+  width: calc(672 * var(--hero-unit));
+  max-width: 100%;
+  gap: calc(9 * var(--hero-unit));
   margin-top: 2px;
 }
 
 .detail-progress__bar {
-  height: clamp(2px, calc(0.1vw + 1.2px), 3px);
+  height: max(2px, calc(3 * var(--hero-unit)));
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.22);
 }
@@ -1387,8 +1395,8 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: clamp(8px, calc(0.7vw + 3px), 14px);
-  margin: clamp(6px, calc(0.5vw + 2px), 11px) 0 2px;
+  gap: max(8px, calc(14 * var(--hero-unit)));
+  margin: max(6px, calc(11 * var(--hero-unit))) 0 2px;
 }
 
 /* One solid action, then quiet circular toggles: the same hierarchy as home. */
@@ -1408,17 +1416,17 @@ button:disabled {
 }
 
 .detail-actions .button--large {
-  min-height: clamp(44px, calc(1.4vw + 33.5px), 56px);
-  padding: 0 clamp(20px, calc(1.2vw + 11px), 31px);
+  min-height: max(42px, calc(56 * var(--hero-unit)));
+  padding: 0 max(20px, calc(31 * var(--hero-unit)));
   border-radius: 999px;
   font-weight: 600;
 }
 
 .detail-action-toggle {
   display: inline-grid;
-  width: clamp(42px, calc(1.4vw + 31.5px), 54px);
-  height: clamp(42px, calc(1.4vw + 31.5px), 54px);
-  min-height: clamp(42px, calc(1.4vw + 31.5px), 54px);
+  width: max(40px, calc(54 * var(--hero-unit)));
+  height: max(40px, calc(54 * var(--hero-unit)));
+  min-height: max(40px, calc(54 * var(--hero-unit)));
   place-items: center;
   padding: 0;
   border: 0;
@@ -2129,10 +2137,6 @@ button:disabled {
 /* ---- narrow windows ------------------------------------------------------------------- */
 
 @media (max-width: 1100px) {
-  :root {
-    --page-x: 28px;
-  }
-
   .hub__track {
     grid-auto-columns: 208px;
   }
@@ -2140,10 +2144,6 @@ button:disabled {
 }
 
 @media (max-width: 900px) {
-  :root {
-    --page-x: 22px;
-  }
-
   .sidebar__skeleton {
     padding: 12px 14px;
   }
