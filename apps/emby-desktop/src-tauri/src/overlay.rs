@@ -2334,7 +2334,7 @@ fn cursor_position() -> Option<(i32, i32)> {
 /// clicks are handled separately and still activate the app via
 /// [`OverlayState::on_stage_click`].
 #[cfg(windows)]
-fn foreground_is_ours() -> bool {
+pub(crate) fn foreground_is_ours() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId,
     };

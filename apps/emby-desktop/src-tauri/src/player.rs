@@ -793,10 +793,21 @@ pub fn player_subscribe(
 
 /// Hide/show the cursor together with the controls overlay. The page sends
 /// this on every bar transition; the Win32 calls stay on the main thread.
+///
+/// A hide request is ignored when this process no longer owns the foreground:
+/// the controls' 2.5s auto-hide timer can fire after the user switched to
+/// another app, and hiding the class cursor then makes the pointer disappear
+/// over the inactive player window.
 #[tauri::command]
 pub fn player_set_cursor_hidden(app: tauri::AppHandle, hidden: bool) -> Result<(), String> {
     app.clone()
         .run_on_main_thread(move || {
+            #[cfg(windows)]
+            {
+                if hidden && !crate::overlay::foreground_is_ours() {
+                    return;
+                }
+            }
             if let Some(service) = app.try_state::<PlayerService>() {
                 service.set_cursor_hidden(hidden);
             }
