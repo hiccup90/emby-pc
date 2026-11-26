@@ -94,6 +94,8 @@ type Route =
       playback: EmbyPlaybackTarget;
       meta: PlaybackMeta;
       returnTo: DetailRoute;
+      /** True when the player was opened from a detail page; back returns there. */
+      returnToDetail: boolean;
       /** Series or movie id used to remember the chosen audio/subtitle track. */
       trackScope: string | null;
     };
@@ -216,8 +218,8 @@ export default function App() {
 
   // Pages scroll inside `.app-content` (title bar and sidebar stay put): detail
   // pages start at the top, while home/search/library resume where the user
-  // left them after a detail round-trip. Clicking their sidebar icon clears
-  // the saved offset, so an explicit navigation still starts at the top.
+  // left them after a detail or player round-trip. Clicking their sidebar icon
+  // clears the saved offset, so an explicit navigation still starts at the top.
   useLayoutEffect(() => {
     const box = contentRef.current;
     const previous = lastScreenRef.current;
@@ -225,9 +227,11 @@ export default function App() {
     if (!box) return;
     if (route.screen === "library") box.scrollTop = libraryScrollRef.current;
     else if (route.screen === "home") {
-      box.scrollTop = previous === "detail" ? homeScrollRef.current : 0;
+      box.scrollTop =
+        previous === "detail" || previous === "player" ? homeScrollRef.current : 0;
     } else if (route.screen === "search") {
-      box.scrollTop = previous === "detail" ? searchScrollRef.current : 0;
+      box.scrollTop =
+        previous === "detail" || previous === "player" ? searchScrollRef.current : 0;
     } else box.scrollTop = 0;
   }, [route]);
 
@@ -554,12 +558,13 @@ export default function App() {
       returnTo: DetailRoute,
       queue: EmbyItem[] | null = null,
       trackScope: string | null = null,
+      returnToDetail = false,
     ) => {
       // The queue is a forward slice (the detail page hands over the episodes
       // after the clicked one), so it only identifies the item on screen; the
       // full run is resolved from the series once, see loadEpisodeRun.
       playingItemRef.current = queue?.[0] ?? null;
-      setRoute({ screen: "player", playback, meta, returnTo, trackScope });
+      setRoute({ screen: "player", playback, meta, returnTo, trackScope, returnToDetail });
     },
     [],
   );
@@ -656,6 +661,13 @@ export default function App() {
   const resumeItem = useCallback(
     async (item: EmbyLibraryItem) => {
       failedPlayItemRef.current = item;
+      // Remember the browsing position before the player replaces the page;
+      // "back" returns here, not to the item's detail page.
+      const current = routeRef.current;
+      const top = contentRef.current?.scrollTop ?? 0;
+      if (current.screen === "home") homeScrollRef.current = top;
+      else if (current.screen === "search") searchScrollRef.current = top;
+      else if (current.screen === "library") libraryScrollRef.current = top;
       const target = await launch(item.id, itemStartSeconds(item));
       // `launch` reports its own failure through the launcher's error state,
       // which is rendered above the content instead of being swallowed: a
@@ -663,7 +675,6 @@ export default function App() {
       if (!target) return;
       failedPlayItemRef.current = null;
       const meta = playbackMeta(item, target.chapters);
-      const current = routeRef.current;
       const returnTo: DetailRoute =
         item.type === "Episode" && item.seriesId
           ? { itemId: item.seriesId, seed: null, trail: [], origin: originOf(current) }
@@ -721,16 +732,22 @@ export default function App() {
             clearEpisodeRunCache();
             playingItemRef.current = null;
             setEpisodeRunIds(null);
-            setRoute({
-              screen: "detail",
-              itemId: route.returnTo.itemId,
-              seed: route.returnTo.seed,
-              trail: route.returnTo.trail,
-              origin: route.returnTo.origin,
-              // route.playback is the item actually on screen, so auto-play's
-              // next episode is the one revealed when the user goes back.
-              focusEpisodeId: route.playback.itemId,
-            });
+            if (route.returnToDetail) {
+              setRoute({
+                screen: "detail",
+                itemId: route.returnTo.itemId,
+                seed: route.returnTo.seed,
+                trail: route.returnTo.trail,
+                origin: route.returnTo.origin,
+                // route.playback is the item actually on screen, so auto-play's
+                // next episode is the one revealed when the user goes back.
+                focusEpisodeId: route.playback.itemId,
+              });
+            } else {
+              // Started from a card/hero: back goes to the page it was opened
+              // from, not to the item's detail page.
+              setRoute(route.returnTo.origin);
+            }
           }}
         />
       </div>
@@ -904,6 +921,7 @@ export default function App() {
                   },
                   queue,
                   trackScope,
+                  true,
                 )
               }
               onOpenPerson={openActor}
