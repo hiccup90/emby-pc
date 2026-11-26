@@ -1309,7 +1309,7 @@ button:disabled {
   margin: 0;
   color: var(--text);
   font-family: var(--display-font);
-  font-size: clamp(48px, 6.4vw, 96px);
+  font-size: clamp(46px, calc(4.4vw + 24px), 96px);
   font-weight: 700;
   letter-spacing: -0.012em;
   line-height: 0.86;
@@ -1662,6 +1662,8 @@ button:disabled {
 /* ---- episodes ---------------------------------------------------------------------- */
 
 .episodes {
+  --episode-still: clamp(112px, calc(6vw + 64px), 160px);
+
   max-width: 980px;
   margin-top: 36px;
   scroll-margin-top: 20px;
@@ -1754,10 +1756,11 @@ button:disabled {
 .episode-row {
   display: grid;
   width: 100%;
-  grid-template-columns: 160px minmax(0, 1fr) auto;
+  grid-template-columns: var(--episode-still) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 16px;
-  padding: 14px 62px 14px 4px;
+  gap: clamp(10px, calc(0.8vw + 4px), 16px);
+  padding: clamp(10px, calc(0.6vw + 4px), 14px) clamp(48px, calc(1.4vw + 39.6px), 62px)
+    clamp(10px, calc(0.6vw + 4px), 14px) 4px;
   border: 0;
   border-radius: 4px;
   color: inherit;
@@ -1780,7 +1783,7 @@ button:disabled {
 .episode-row__still {
   position: relative;
   display: block;
-  width: 160px;
+  width: var(--episode-still);
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 6px;
@@ -2134,9 +2137,6 @@ button:disabled {
     grid-auto-columns: 208px;
   }
 
-  .detail-title {
-    font-size: clamp(44px, 6vw, 76px);
-  }
 }
 
 @media (max-width: 900px) {
@@ -2161,19 +2161,7 @@ button:disabled {
     grid-template-columns: repeat(auto-fill, 208px);
   }
 
-  .episode-row {
-    grid-template-columns: 136px minmax(0, 1fr) auto;
-    gap: 12px;
-    padding-right: 54px;
-  }
 
-  .episode-row__still {
-    width: 136px;
-  }
-
-  .detail-title {
-    font-size: clamp(40px, 8vw, 62px);
-  }
 }
 
 @media (max-width: 760px) {
@@ -2184,9 +2172,6 @@ button:disabled {
     bottom: calc(100% + 6px);
   }
 
-  .detail-title {
-    font-size: clamp(36px, 10vw, 52px);
-  }
 
 }
 
@@ -2222,15 +2207,6 @@ button:disabled {
 }
 
 @media (max-width: 600px) {
-  .episode-row {
-    grid-template-columns: 112px minmax(0, 1fr) auto;
-    gap: 10px;
-    padding-right: 48px;
-  }
-
-  .episode-row__still {
-    width: 112px;
-  }
 
   .episode-watch {
     right: 8px;
