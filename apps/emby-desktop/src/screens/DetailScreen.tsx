@@ -1070,31 +1070,22 @@ export default function DetailScreen({
 
         <DetailFacts item={item} />
 
-        {(cast.length > 0 || similar.items.length > 0) && (
+        {cast.length > 0 && (
           <div className="detail-rows">
-            {cast.length > 0 && (
-              <HubRow title="演职人员" variant="person">
-                {cast.map((person, index) => (
-                  <PersonCard
-                    key={`${person.id ?? person.name}-${person.kind}-${index}`}
-                    person={person}
-                    photo={person.id ? detail.photos[person.id] : undefined}
-                    onOpen={
-                      onOpenPerson && person.id
-                        ? () => onOpenPerson(person)
-                        : undefined
-                    }
-                  />
-                ))}
-              </HubRow>
-            )}
-            {similar.items.length > 0 && (
-              <HubRow title="更多类似内容" variant="poster">
-                {similar.items.map((other) => (
-                  <PosterCard key={other.id} item={other} landscape={false} onSelect={onOpenItem} />
-                ))}
-              </HubRow>
-            )}
+            <HubRow title="演职人员" variant="person">
+              {cast.map((person, index) => (
+                <PersonCard
+                  key={`${person.id ?? person.name}-${person.kind}-${index}`}
+                  person={person}
+                  photo={person.id ? detail.photos[person.id] : undefined}
+                  onOpen={
+                    onOpenPerson && person.id
+                      ? () => onOpenPerson(person)
+                      : undefined
+                  }
+                />
+              ))}
+            </HubRow>
           </div>
         )}
 
@@ -1132,6 +1123,16 @@ export default function DetailScreen({
               />
             )}
           </section>
+        )}
+
+        {similar.items.length > 0 && (
+          <div className="detail-rows">
+            <HubRow title="更多类似内容" variant="poster">
+              {similar.items.map((other) => (
+                <PosterCard key={other.id} item={other} landscape={false} onSelect={onOpenItem} />
+              ))}
+            </HubRow>
+          </div>
         )}
       </div>
     </main>
