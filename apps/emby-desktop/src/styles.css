@@ -1679,7 +1679,8 @@ button:disabled {
 .episodes {
   --episode-still: clamp(112px, calc(6vw + 64px), 160px);
 
-  max-width: 980px;
+  /* Fill the detail column: a 980px cap left a large empty strip at the right
+     on fullscreen windows, while the cast and similar rows already span it. */
   margin-top: 36px;
   scroll-margin-top: 20px;
 }
@@ -1885,7 +1886,9 @@ button:disabled {
 }
 
 .episode-row__overview {
+  /* Full-width rows still keep prose readable: cap the line length, not the row. */
   display: -webkit-box;
+  max-width: 1100px;
   overflow: hidden;
   color: var(--text-2);
   font-size: 13.5px;
