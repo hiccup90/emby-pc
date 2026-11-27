@@ -1684,10 +1684,6 @@ button:disabled {
   scroll-margin-top: 20px;
 }
 
-.detail-body > .episodes:first-child {
-  margin-top: 0;
-}
-
 .section-header {
   display: flex;
   align-items: baseline;

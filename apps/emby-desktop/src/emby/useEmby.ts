@@ -996,9 +996,15 @@ export function useEmbyEpisodes(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const seriesRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setItems([]);
+    // A refresh after marking an episode watched must not empty the list: the
+    // rows stay on screen while the new copy lands. Clearing here made the
+    // section unmount, which scrolled the page and flashed the list.
+    const sameSeries = seriesRef.current === seriesId;
+    seriesRef.current = seriesId;
+    if (!sameSeries) setItems([]);
     setError(null);
 
     if (!seriesId || !enabled || !desktop) {

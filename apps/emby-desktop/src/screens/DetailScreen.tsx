@@ -536,6 +536,7 @@ function EpisodeSection({
   episodes,
   seriesName,
   focusEpisodeId,
+  focusLayoutKey,
   nextEpisodeId,
   pendingId,
   playbackPending,
@@ -545,6 +546,7 @@ function EpisodeSection({
   episodes: EmbyLibraryItem[];
   seriesName: string;
   focusEpisodeId: string | null;
+  focusLayoutKey: string;
   nextEpisodeId: string | null;
   pendingId: string | null;
   playbackPending: boolean;
@@ -556,6 +558,8 @@ function EpisodeSection({
   const [watchedOverrides, setWatchedOverrides] = useState<Record<string, boolean>>({});
   const [pendingWatched, setPendingWatched] = useState<string | null>(null);
   const [watchedError, setWatchedError] = useState<string | null>(null);
+  const focusedRowRef = useRef<HTMLLIElement | null>(null);
+  const scrolledFocusRef = useRef<string | null>(null);
 
   // Keep an optimistic mark only until the refreshed episode list agrees.
   useEffect(() => {
@@ -621,6 +625,19 @@ function EpisodeSection({
     : focusSeasonKey ?? nextGroupKey ?? defaultSeason(groups);
   const active = groups.find((group) => group.key === activeKey) ?? groups[0];
 
+  // Returning from the player puts the episode list at the bottom of the page;
+  // bring the row that was just watched back into view instead of leaving the
+  // user at the hero. Only the first focus per episode id scrolls, so a watched
+  // toggle refresh cannot yank the list around.
+  useEffect(() => {
+    const scrollKey = focusEpisodeId ? `${focusEpisodeId}:${focusLayoutKey}` : null;
+    if (!scrollKey || scrolledFocusRef.current === scrollKey) return;
+    const row = focusedRowRef.current;
+    if (!row) return;
+    scrolledFocusRef.current = scrollKey;
+    row.scrollIntoView({ block: "center" });
+  }, [activeKey, episodes, focusEpisodeId, focusLayoutKey]);
+
   if (!active) return null;
 
   return (
@@ -656,6 +673,7 @@ function EpisodeSection({
           return (
             <li
               key={episode.id}
+              ref={focused ? focusedRowRef : undefined}
               className={[
                 "episode-list__item",
                 focused ? "episode-list__item--focused" : "",
@@ -738,6 +756,7 @@ export default function DetailScreen({
    * saved position, otherwise the first unplayed one, otherwise start over.
    * The full episode list is already loaded, so no extra request is needed.
    */
+  const episodesInitialLoading = isSeries && episodes.loading && episodes.items.length === 0;
   const nextEpisode = useMemo(() => {
     if (!isSeries || episodes.items.length === 0) return null;
     // The episode a Continue-watching card came from wins over the first
@@ -975,14 +994,14 @@ export default function DetailScreen({
                 className="button button--primary button--large"
                 type="button"
                 onClick={() => void playEpisode(nextEpisode.episode)}
-                disabled={playback.pending || Boolean(pendingEpisodeId) || episodes.loading}
+                disabled={playback.pending || Boolean(pendingEpisodeId) || episodesInitialLoading}
               >
                 {playback.pending || pendingEpisodeId ? (
                   <span className="spinner spinner--small spinner--dark" aria-hidden="true" />
                 ) : (
                   <Icon name="play" size={18} />
                 )}
-                {episodes.loading
+                {episodesInitialLoading
                   ? "正在读取剧集…"
                   : `${nextEpisode.mode === "resume" ? "继续播放" : nextEpisode.mode === "restart" ? "重新播放" : "播放"} ${compactEpisodeLabel(nextEpisode.episode)}`}
               </button>
@@ -1043,40 +1062,6 @@ export default function DetailScreen({
       </section>
 
       <div className="detail-body">
-        {isSeries && (
-          <section className="episodes" aria-labelledby="episodes-title">
-            <div className="section-header">
-              <h2 className="section-title" id="episodes-title">
-                剧集
-              </h2>
-              {episodes.items.length > 0 && (
-                <span className="section-summary">
-                  {episodes.items.length} 集 · 已看 {episodes.items.filter((entry) => entry.userData.played).length}
-                </span>
-              )}
-            </div>
-            {episodes.loading && (
-              <p className="status-line">
-                <span className="spinner spinner--small" aria-hidden="true" /> 正在读取剧集…
-              </p>
-            )}
-            {episodes.error && <ErrorNotice message={episodes.error} onRetry={episodes.reload} retryLabel="重新读取" />}
-            {!episodes.loading && !episodes.error && episodes.items.length === 0 && <p className="empty-state">未找到剧集。</p>}
-            {episodes.items.length > 0 && (
-              <EpisodeSection
-                key={item.id}
-                episodes={episodes.items}
-                seriesName={item.name}
-                focusEpisodeId={focusEpisodeId ?? null}
-                nextEpisodeId={nextEpisode && nextEpisode.mode !== "restart" ? nextEpisode.episode.id : null}
-                pendingId={pendingEpisodeId}
-                playbackPending={playback.pending}
-                onPlay={(next) => void playEpisode(next)}
-                onTogglePlayed={toggleEpisodeWatched}
-              />
-            )}
-          </section>
-        )}
 
         <section className="detail-about" aria-label="简介">
           {item.tagline && <p className="detail-tagline">{item.tagline}</p>}
@@ -1111,6 +1096,42 @@ export default function DetailScreen({
               </HubRow>
             )}
           </div>
+        )}
+
+        {isSeries && (
+          <section className="episodes" aria-labelledby="episodes-title">
+            <div className="section-header">
+              <h2 className="section-title" id="episodes-title">
+                剧集
+              </h2>
+              {episodes.items.length > 0 && (
+                <span className="section-summary">
+                  {episodes.items.length} 集 · 已看 {episodes.items.filter((entry) => entry.userData.played).length}
+                </span>
+              )}
+            </div>
+            {episodes.loading && episodes.items.length === 0 && (
+              <p className="status-line">
+                <span className="spinner spinner--small" aria-hidden="true" /> 正在读取剧集…
+              </p>
+            )}
+            {episodes.error && <ErrorNotice message={episodes.error} onRetry={episodes.reload} retryLabel="重新读取" />}
+            {!episodes.loading && !episodes.error && episodes.items.length === 0 && <p className="empty-state">未找到剧集。</p>}
+            {episodes.items.length > 0 && (
+              <EpisodeSection
+                key={item.id}
+                episodes={episodes.items}
+                seriesName={item.name}
+                focusEpisodeId={focusEpisodeId ?? null}
+                focusLayoutKey={String(similar.items.length)}
+                nextEpisodeId={nextEpisode && nextEpisode.mode !== "restart" ? nextEpisode.episode.id : null}
+                pendingId={pendingEpisodeId}
+                playbackPending={playback.pending}
+                onPlay={(next) => void playEpisode(next)}
+                onTogglePlayed={toggleEpisodeWatched}
+              />
+            )}
+          </section>
         )}
       </div>
     </main>
